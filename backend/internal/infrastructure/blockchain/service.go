@@ -2,13 +2,16 @@ package blockchain
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"fmt"
 	"math/big"
+	"strings"
 	"time"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 )
 
@@ -18,6 +21,7 @@ type BlockchainService interface {
 	GetTokenBalance(ctx context.Context, address string) (string, error)
 	GetTransaction(ctx context.Context, txHash string) (string, error)
 	WaitForConfirmation(ctx context.Context, txHash string, confirmations int) (string, error)
+	TransferToken(ctx context.Context, recipient string, amount string) (string, error)
 }
 
 // ---------- Mock ----------
@@ -60,25 +64,36 @@ func (m *MockBlockchainService) WaitForConfirmation(ctx context.Context, txHash 
 	return fmt.Sprintf(`{"status":"success","confirmations":%d}`, confirmations), nil
 }
 
+// TransferToken returns a synthetic hash without broadcasting.
+func (m *MockBlockchainService) TransferToken(ctx context.Context, recipient string, amount string) (string, error) {
+	txHash := "0x" + fmt.Sprintf("%064x", time.Now().UnixNano())
+	return txHash, nil
+}
+
 // ---------- Real (Ethereum RPC) ----------
 
 // EthereumService implements BlockchainService against a live Ethereum RPC endpoint
-// (e.g. Alchemy Sepolia). It reads its configuration from BlockchainConfig.
+// (e.g. Alchemy Sepolia). It reads its configuration from EthereumConfig.
 type EthereumService struct {
-	client     *ethclient.Client
-	chainID    int64
-	token      common.Address
-	tokenSymbol string
+	client        *ethclient.Client
+	chainID       int64
+	token         common.Address
+	tokenSymbol   string
 	tokenDecimals int
+	signerKey     *ecdsa.PrivateKey // derive from hex key in config; never logged
+	from          common.Address
 }
 
 // EthereumConfig describes a live Ethereum connection.
 type EthereumConfig struct {
-	RPCURL          string
-	ChainID         int64
-	StablecoinSymbol string
+	RPCURL             string
+	ChainID            int64
+	StablecoinSymbol   string
 	StablecoinDecimals int
 	StablecoinContract string
+	// PrivateKeyHex is the hex-encoded signer private key used for transfers.
+	// It is read from the environment and must never be logged or committed.
+	PrivateKeyHex string
 }
 
 // NewEthereumService dials the RPC endpoint and builds a real service.
@@ -87,13 +102,23 @@ func NewEthereumService(ctx context.Context, cfg EthereumConfig) (*EthereumServi
 	if err != nil {
 		return nil, fmt.Errorf("dial rpc: %w", err)
 	}
-	return &EthereumService{
-		client:      client,
-		chainID:     cfg.ChainID,
-		token:       common.HexToAddress(cfg.StablecoinContract),
-		tokenSymbol: cfg.StablecoinSymbol,
+	svc := &EthereumService{
+		client:        client,
+		chainID:       cfg.ChainID,
+		token:         common.HexToAddress(cfg.StablecoinContract),
+		tokenSymbol:   cfg.StablecoinSymbol,
 		tokenDecimals: cfg.StablecoinDecimals,
-	}, nil
+	}
+	if cfg.PrivateKeyHex != "" {
+		key, err := crypto.HexToECDSA(strings.TrimPrefix(cfg.PrivateKeyHex, "0x"))
+		if err != nil {
+			client.Close()
+			return nil, fmt.Errorf("invalid signer private key: %w", err)
+		}
+		svc.signerKey = key
+		svc.from = crypto.PubkeyToAddress(key.PublicKey)
+	}
+	return svc, nil
 }
 
 // Close releases the underlying RPC connection.
@@ -201,6 +226,57 @@ func (s *EthereumService) WaitForConfirmation(ctx context.Context, txHash string
 	}
 }
 
+// TransferToken sends `amount` (in human-readable token units, e.g. "1.50" USDC)
+// of the stablecoin from the signer address to `recipient`. It broadcasts the
+// transaction and returns its hash. Requires a configured signer key and a
+// sender funded with both the stablecoin and ETH (for gas).
+func (s *EthereumService) TransferToken(ctx context.Context, recipient string, amount string) (string, error) {
+	if s.signerKey == nil {
+		return "", fmt.Errorf("signer key not configured")
+	}
+	if !common.IsHexAddress(recipient) {
+		return "", fmt.Errorf("invalid recipient address %q", recipient)
+	}
+	scaled, ok := new(big.Int).SetString(strings.ReplaceAll(amount, ",", ""), 10)
+	if !ok {
+		return "", fmt.Errorf("invalid amount %q", amount)
+	}
+	// Scale human units to base units (e.g. 6 decimals -> *1e6).
+	multiplier := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(s.tokenDecimals)), nil)
+	value := new(big.Int).Mul(scaled, multiplier)
+
+	to := common.HexToAddress(recipient)
+
+	nonce, err := s.client.PendingNonceAt(ctx, s.from)
+	if err != nil {
+		return "", fmt.Errorf("get nonce: %w", err)
+	}
+	gasLimit := uint64(65000)
+	gasPrice, err := s.client.SuggestGasPrice(ctx)
+	if err != nil {
+		return "", fmt.Errorf("suggest gas price: %w", err)
+	}
+
+	chainID := big.NewInt(s.chainID)
+	tx := types.NewTx(&types.LegacyTx{
+		Nonce:    nonce,
+		To:       &s.token,
+		Value:    big.NewInt(0),
+		Gas:      gasLimit,
+		GasPrice: gasPrice,
+		Data:     encodeTransfer(to, value),
+	})
+
+	signed, err := types.SignTx(tx, types.LatestSignerForChainID(chainID), s.signerKey)
+	if err != nil {
+		return "", fmt.Errorf("sign tx: %w", err)
+	}
+	if err := s.client.SendTransaction(ctx, signed); err != nil {
+		return "", fmt.Errorf("send tx: %w", err)
+	}
+	return signed.Hash().Hex(), nil
+}
+
 // callContract performs a read-only eth_call against a contract.
 func (s *EthereumService) callContract(ctx context.Context, to common.Address, data []byte) ([]byte, error) {
 	msg := ethereum.CallMsg{To: &to, Data: data}
@@ -214,6 +290,16 @@ func encodeBalanceOf(owner common.Address) []byte {
 	data := make([]byte, 4+32)
 	copy(data[:4], common.FromHex("70a08231"))
 	copy(data[4+12:4+32], owner.Bytes()) // right-align the 20-byte address
+	return data
+}
+
+// encodeTransfer builds the ABI payload for transfer(address,uint256).
+// selector transfer(address,uint256): 0xa9059cbb
+func encodeTransfer(to common.Address, value *big.Int) []byte {
+	data := make([]byte, 4+32+32)
+	copy(data[:4], common.FromHex("a9059cbb"))
+	copy(data[4+12:4+32], to.Bytes()) // right-align address
+	value.FillBytes(data[4+32:])      // 32-byte big-endian amount
 	return data
 }
 

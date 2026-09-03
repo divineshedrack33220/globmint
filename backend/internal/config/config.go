@@ -32,6 +32,9 @@ type BlockchainConfig struct {
 	StablecoinEnabled bool
 	StablecoinContract string
 	Mode            string // "mock" or "real"
+	// PrivateKeyHex is the signer private key for on-chain transfers. It is
+	// read from the environment and must never be logged or committed.
+	PrivateKeyHex string
 }
 
 // Load reads configuration from the environment, applying defaults.
@@ -54,6 +57,7 @@ func Load() Config {
 			StablecoinEnabled: boolEnv("GLOBMINT_STABLECOIN_ENABLED", true),
 			StablecoinContract: envOr("GLOBMINT_STABLECOIN_CONTRACT_ADDRESS", "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238"),
 			Mode:            envOr("GLOBMINT_BLOCKCHAIN_MODE", "mock"),
+			PrivateKeyHex:   os.Getenv("GLOBMINT_STABLECOIN_PRIVATE_KEY"),
 		},
 	}
 }

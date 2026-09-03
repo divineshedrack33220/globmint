@@ -50,6 +50,7 @@ func main() {
 		StablecoinSymbol:    cfg.Blockchain.Stablecoin,
 		StablecoinDecimals:  cfg.Blockchain.StablecoinDecimals,
 		StablecoinContract:  cfg.Blockchain.StablecoinContract,
+		PrivateKeyHex:       cfg.Blockchain.PrivateKeyHex,
 	})
 	if err != nil {
 		log.Fatalf("initialize blockchain service: %v", err)
