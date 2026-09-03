@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"net/http"
+	"strings"
+	"time"
 
 	"globmint/backend/internal/httpapi/middleware"
 )
@@ -21,14 +23,31 @@ func NewHandler(deps *Deps, auth middleware.Authenticator) http.Handler {
 	mux.Handle("GET /balances", middleware.Auth(auth, http.HandlerFunc(deps.handleListBalances)))
 	mux.Handle("GET /transactions", middleware.Auth(auth, http.HandlerFunc(deps.handleListTransactions)))
 
-	// Money movement (idempotent)
-	authIDem := func(f func(http.ResponseWriter, *http.Request)) http.Handler {
-		return middleware.Auth(auth, middleware.Idempotency(http.HandlerFunc(f)))
-	}
-	mux.Handle("POST /money/deposit", authIDem(deps.handleDeposit))
-	mux.Handle("POST /money/withdraw", authIDem(deps.handleWithdraw))
-	mux.Handle("POST /money/transfer", authIDem(deps.handleTransfer))
-	mux.Handle("POST /money/convert", authIDem(deps.handleConvert))
+	// Money movement (idempotent + rate limited)
+	mux.Handle("POST /money/deposit", middleware.RateLimiter(
+		middleware.Auth(auth, middleware.Idempotency(http.HandlerFunc(deps.handleDeposit))),
+		time.Second,
+		20,
+		func(r *http.Request) string { return strings.TrimSpace(r.RemoteAddr) },
+	))
+	mux.Handle("POST /money/withdraw", middleware.RateLimiter(
+		middleware.Auth(auth, middleware.Idempotency(http.HandlerFunc(deps.handleWithdraw))),
+		time.Second,
+		20,
+		func(r *http.Request) string { return strings.TrimSpace(r.RemoteAddr) },
+	))
+	mux.Handle("POST /money/transfer", middleware.RateLimiter(
+		middleware.Auth(auth, middleware.Idempotency(http.HandlerFunc(deps.handleTransfer))),
+		time.Second,
+		20,
+		func(r *http.Request) string { return strings.TrimSpace(r.RemoteAddr) },
+	))
+	mux.Handle("POST /money/convert", middleware.RateLimiter(
+		middleware.Auth(auth, middleware.Idempotency(http.HandlerFunc(deps.handleConvert))),
+		time.Second,
+		20,
+		func(r *http.Request) string { return strings.TrimSpace(r.RemoteAddr) },
+	))
 
 	// Conversions (quotes are read-only, no idempotency needed)
 	mux.Handle("POST /money/quote", middleware.Auth(auth, http.HandlerFunc(deps.handleQuoteConversion)))
