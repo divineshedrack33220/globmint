@@ -31,7 +31,12 @@ type BlockchainConfig struct {
 	StablecoinDecimals int
 	StablecoinEnabled bool
 	StablecoinContract string
-	Mode            string // "mock" or "real"
+	// VaultContract is the deployed GlobmintVault address. The vault is the
+	// non-custodial on-chain contract that tracks each user's balance. It is
+	// referenced by the savings/deposit-info endpoint so clients can build the
+	// approve + deposit calls. Empty when the vault is not yet deployed.
+	VaultContract string
+	Mode          string // "mock" or "real"
 	// PrivateKeyHex is the signer private key for on-chain transfers. It is
 	// read from the environment and must never be logged or committed.
 	PrivateKeyHex string
@@ -56,7 +61,8 @@ func Load() Config {
 			StablecoinDecimals: intEnv("GLOBMINT_STABLECOIN_DECIMALS", 6),
 			StablecoinEnabled: boolEnv("GLOBMINT_STABLECOIN_ENABLED", true),
 			StablecoinContract: envOr("GLOBMINT_STABLECOIN_CONTRACT_ADDRESS", "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238"),
-			Mode:            envOr("GLOBMINT_BLOCKCHAIN_MODE", "mock"),
+			VaultContract:      envOr("GLOBMINT_VAULT_CONTRACT_ADDRESS", ""),
+			Mode:               envOr("GLOBMINT_BLOCKCHAIN_MODE", "mock"),
 			PrivateKeyHex:   os.Getenv("GLOBMINT_STABLECOIN_PRIVATE_KEY"),
 		},
 	}

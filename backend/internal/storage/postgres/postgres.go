@@ -121,3 +121,4 @@ func (s *Store) LedgerRepo() storage.LedgerRepository       { return NewLedgerRe
 func (s *Store) BeneficiaryRepo() storage.BeneficiaryRepository { return NewBeneficiaryRepo(s.q) }
 func (s *Store) BankAccountRepo() storage.BankAccountRepository { return NewBankAccountRepo(s.q) }
 func (s *Store) ExchangeRateRepo() storage.ExchangeRateRepository { return NewExchangeRateRepo(s.q) }
+func (s *Store) DepositAddressRepo() storage.DepositAddressRepository { return NewDepositAddressRepo(s.q) }

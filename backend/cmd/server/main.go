@@ -41,6 +41,7 @@ func main() {
 	balanceSvc := services.NewBalanceService(store)
 	ledgerSvc := services.NewLedgerService(store)
 	moneySvc := services.NewMoneyService(store)
+	savingsSvc := services.NewSavingsService(store, services.FromConfig(cfg))
 
 	// Blockchain settlement layer. Uses the mock service unless the configured
 	// mode is "real" and a valid RPC URL is present.
@@ -63,6 +64,7 @@ func main() {
 		Balance:    balanceSvc,
 		Ledger:     ledgerSvc,
 		Money:      moneySvc,
+		Savings:    savingsSvc,
 		Blockchain: chainSvc,
 	}
 	handler := httpapi.NewHandler(deps, authSvc)

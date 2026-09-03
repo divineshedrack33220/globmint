@@ -68,6 +68,18 @@ type ExchangeRateRepository interface {
 	FindByPair(ctx context.Context, base, quote string) (*domain.ExchangeRate, error)
 }
 
+// DepositAddressRepository persists the on-chain deposit address a user links
+// to their account for non-custodial vault deposits.
+type DepositAddressRepository interface {
+	// FindByUser returns nil (not found) when the user has not linked an address.
+	FindByUser(ctx context.Context, userID string) (*domain.DepositAddress, error)
+	// Set upserts the user's deposit address. Returns ErrConflict if the
+	// address is already claimed by another user.
+	Set(ctx context.Context, da *domain.DepositAddress) error
+	// OwnerOf returns the user ID that claimed the given address, or "" if none.
+	OwnerOf(ctx context.Context, address string) (string, error)
+}
+
 // Store bundles the repositories and exposes transaction-scoped operations so
 // multi-row financial writes (ledger + balance) are atomic.
 type Store interface {
@@ -77,4 +89,5 @@ type Store interface {
 	LedgerRepo() LedgerRepository
 	BeneficiaryRepo() BeneficiaryRepository
 	BankAccountRepo() BankAccountRepository
+	DepositAddressRepo() DepositAddressRepository
 }

@@ -60,6 +60,8 @@ func safeMessage(err error) string {
 		return "The request conflicts with existing data."
 	case errors.Is(err, domain.ErrInvalidAmount):
 		return "The amount provided is invalid."
+	case errors.Is(err, domain.ErrInvalidAddress):
+		return "A valid Ethereum deposit address is required."
 	case errors.Is(err, domain.ErrBadRequest):
 		return "The request could not be processed."
 	default:
@@ -97,7 +99,8 @@ func errorStatus(err error) int {	switch {
 		errors.Is(err, domain.ErrInsufficientBalance),
 		errors.Is(err, domain.ErrBadRequest),
 		errors.Is(err, domain.ErrUnsupportedCurrency),
-		errors.Is(err, domain.ErrRateExceeded):
+		errors.Is(err, domain.ErrRateExceeded),
+		errors.Is(err, domain.ErrInvalidAddress):
 		return http.StatusBadRequest
 	default:
 		return http.StatusInternalServerError

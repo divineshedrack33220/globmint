@@ -73,6 +73,10 @@ func NewHandler(deps *Deps, auth middleware.Authenticator) http.Handler {
 	mux.Handle("POST "+api+"/bank-accounts/{id}/default", middleware.Auth(auth, http.HandlerFunc(deps.handleSetDefaultBankAccount)))
 	mux.Handle("DELETE "+api+"/bank-accounts/{id}", middleware.Auth(auth, http.HandlerFunc(deps.handleDeleteBankAccount)))
 
+	// Savings (non-custodial on-chain vault)
+	mux.Handle("GET "+api+"/savings/deposit-info", middleware.Auth(auth, http.HandlerFunc(deps.handleGetDepositInfo)))
+	mux.Handle("PUT "+api+"/savings/deposit-address", middleware.Auth(auth, http.HandlerFunc(deps.handleSetDepositAddress)))
+
 	return middleware.Origin("*")(middleware.Logging(middleware.RequestID(mux)))
 }
 
