@@ -18,6 +18,12 @@ dependencies:
   # Routing
   go_router: ^14.8.1
 
+  # Networking
+  http: ^1.3.0
+
+  # Persistence
+  shared_preferences: ^2.2.2
+
   # Models
   freezed_annotation: ^2.4.4
   json_annotation: ^4.9.0

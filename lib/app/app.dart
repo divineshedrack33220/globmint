@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/theme/app_theme.dart';
 import 'router.dart';
 
@@ -7,11 +8,13 @@ class GlobeMintApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp.router(
-      title: 'Globe Mint',
-      debugShowCheckedModeBanner: false,
-      theme: AppTheme.dark(),
-      routerConfig: appRouter,
+    return ProviderScope(
+      child: MaterialApp.router(
+        title: 'Globe Mint',
+        debugShowCheckedModeBanner: false,
+        theme: AppTheme.dark(),
+        routerConfig: appRouter,
+      ),
     );
   }
 }
