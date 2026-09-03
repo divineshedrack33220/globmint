@@ -6,9 +6,7 @@ import (
 	"globmint/backend/internal/httpapi/middleware"
 )
 
-// NewHandler builds the full HTTP handler, applying middleware and registering
-// all routes. Public routes require no authentication; the rest require a valid
-// bearer token via the Auth middleware.
+// NewHandler builds the full HTTP handler, applying middleware and registering routes.
 func NewHandler(deps *Deps, auth middleware.Authenticator) http.Handler {
 	mux := http.NewServeMux()
 
@@ -49,7 +47,7 @@ func NewHandler(deps *Deps, auth middleware.Authenticator) http.Handler {
 	mux.Handle("POST /bank-accounts/{id}/default", middleware.Auth(auth, http.HandlerFunc(deps.handleSetDefaultBankAccount)))
 	mux.Handle("DELETE /bank-accounts/{id}", middleware.Auth(auth, http.HandlerFunc(deps.handleDeleteBankAccount)))
 
-	return middleware.Logging(middleware.RequestID(mux))
+	return middleware.Origin("*")(middleware.Logging(middleware.RequestID(mux)))
 }
 
 func (d *Deps) handleHealth(w http.ResponseWriter, r *http.Request) {
