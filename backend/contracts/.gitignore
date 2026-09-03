@@ -1,0 +1,13 @@
+# Dependencies
+node_modules/
+
+# Hardhat artifacts & cache (generated)
+artifacts/
+cache/
+typechain-types/
+
+# Deployed addresses (config-specific, gitignored)
+deployments/
+
+# Hardhat local chain data
+deployments/sepolia/
