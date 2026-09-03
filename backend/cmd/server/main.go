@@ -12,6 +12,7 @@ import (
 
 	"globmint/backend/internal/config"
 	"globmint/backend/internal/httpapi"
+	"globmint/backend/internal/infrastructure/blockchain"
 	"globmint/backend/internal/services"
 	"globmint/backend/internal/storage/postgres"
 )
@@ -41,7 +42,28 @@ func main() {
 	ledgerSvc := services.NewLedgerService(store)
 	moneySvc := services.NewMoneyService(store)
 
-	deps := &httpapi.Deps{Auth: authSvc, Balance: balanceSvc, Ledger: ledgerSvc, Money: moneySvc}
+	// Blockchain settlement layer. Uses the mock service unless the configured
+	// mode is "real" and a valid RPC URL is present.
+	chainSvc, closeChain, err := blockchain.NewFromConfig(ctx, cfg.Blockchain.Mode, blockchain.EthereumConfig{
+		RPCURL:              cfg.Blockchain.RPCURL,
+		ChainID:             cfg.Blockchain.ChainID,
+		StablecoinSymbol:    cfg.Blockchain.Stablecoin,
+		StablecoinDecimals:  cfg.Blockchain.StablecoinDecimals,
+		StablecoinContract:  cfg.Blockchain.StablecoinContract,
+	})
+	if err != nil {
+		log.Fatalf("initialize blockchain service: %v", err)
+	}
+	defer closeChain()
+	log.Printf("blockchain service mode=%s network=%s", cfg.Blockchain.Mode, cfg.Blockchain.Network)
+
+	deps := &httpapi.Deps{
+		Auth:       authSvc,
+		Balance:    balanceSvc,
+		Ledger:     ledgerSvc,
+		Money:      moneySvc,
+		Blockchain: chainSvc,
+	}
 	handler := httpapi.NewHandler(deps, authSvc)
 
 	srv := &http.Server{

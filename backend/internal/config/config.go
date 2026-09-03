@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -15,6 +16,22 @@ type Config struct {
 	TokenIssuer   string
 	LogLevel      string
 	RequestIDSalt string
+
+	// Blockchain holds settings for the on-chain settlement layer.
+	Blockchain BlockchainConfig
+}
+
+// BlockchainConfig holds blockchain and stablecoin settings.
+type BlockchainConfig struct {
+	Network         string // "mock", "sepolia", "mainnet"
+	RPCURL          string // e.g. Alchemy/Infura endpoint
+	ChainID         int64
+	Stablecoin      string // e.g. "USDC"
+	StablecoinName  string
+	StablecoinDecimals int
+	StablecoinEnabled bool
+	StablecoinContract string
+	Mode            string // "mock" or "real"
 }
 
 // Load reads configuration from the environment, applying defaults.
@@ -27,7 +44,45 @@ func Load() Config {
 		TokenIssuer:   envOr("GLOBMINT_TOKEN_ISSUER", "globmint"),
 		LogLevel:      envOr("GLOBMINT_LOG_LEVEL", "info"),
 		RequestIDSalt: envOr("GLOBMINT_REQUEST_ID_SALT", "dev-request-salt"),
+		Blockchain: BlockchainConfig{
+			Network:          envOr("GLOBMINT_BLOCKCHAIN_NETWORK", "mock"),
+			RPCURL:           os.Getenv("GLOBMINT_BLOCKCHAIN_RPC_URL"),
+			ChainID:          int64Env("GLOBMINT_BLOCKCHAIN_CHAIN_ID", 11155111), // Sepolia default
+			Stablecoin:       envOr("GLOBMINT_STABLECOIN_SYMBOL", "USDC"),
+			StablecoinName:   envOr("GLOBMINT_STABLECOIN_NAME", "USD Coin"),
+			StablecoinDecimals: intEnv("GLOBMINT_STABLECOIN_DECIMALS", 6),
+			StablecoinEnabled: boolEnv("GLOBMINT_STABLECOIN_ENABLED", true),
+			StablecoinContract: envOr("GLOBMINT_STABLECOIN_CONTRACT_ADDRESS", "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238"),
+			Mode:            envOr("GLOBMINT_BLOCKCHAIN_MODE", "mock"),
+		},
 	}
+}
+
+func int64Env(key string, def int64) int64 {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
+func intEnv(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
+func boolEnv(key string, def bool) bool {
+	if v := os.Getenv(key); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			return b
+		}
+	}
+	return def
 }
 
 func envOr(key, def string) string {
