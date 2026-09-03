@@ -114,7 +114,10 @@ func (s *Store) RunInTx(ctx context.Context, fn func(store storage.Store) error)
 	return tx.Commit(ctx)
 }
 
-func (s *Store) UserRepo() storage.UserRepository     { return NewUserRepo(s.q) }
-func (s *Store) SessionRepo() storage.SessionRepository { return NewSessionRepo(s.q) }
-func (s *Store) AccountRepo() storage.AccountRepository { return NewAccountRepo(s.q) }
-func (s *Store) LedgerRepo() storage.LedgerRepository   { return NewLedgerRepo(s.q) }
+func (s *Store) UserRepo() storage.UserRepository         { return NewUserRepo(s.q) }
+func (s *Store) SessionRepo() storage.SessionRepository     { return NewSessionRepo(s.q) }
+func (s *Store) AccountRepo() storage.AccountRepository     { return NewAccountRepo(s.q) }
+func (s *Store) LedgerRepo() storage.LedgerRepository       { return NewLedgerRepo(s.q) }
+func (s *Store) BeneficiaryRepo() storage.BeneficiaryRepository { return NewBeneficiaryRepo(s.q) }
+func (s *Store) BankAccountRepo() storage.BankAccountRepository { return NewBankAccountRepo(s.q) }
+func (s *Store) ExchangeRateRepo() storage.ExchangeRateRepository { return NewExchangeRateRepo(s.q) }

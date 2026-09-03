@@ -25,15 +25,27 @@ func scanAccount(row pgxRow) (*domain.Account, error) {
 // EnsureDefaultAccounts creates the standard available and savings accounts.
 func (r *accountRepo) EnsureDefaultAccounts(ctx context.Context, userID string) error {
 	for _, kind := range []domain.AccountKind{domain.AccountKindAvailable, domain.AccountKindSavings} {
-		_, err := r.q.Exec(ctx, `
-			INSERT INTO accounts (user_id, kind, currency)
-			VALUES ($1::uuid, $2, 'NGN')
-			ON CONFLICT (user_id, kind, currency) DO NOTHING`, userID, kind)
+		_, err := r.EnsureAccount(ctx, userID, kind, "NGN")
 		if err != nil {
-			return mapPgErr(err)
+			return err
 		}
 	}
 	return nil
+}
+
+// EnsureAccount inserts an account for the given kind/currency if absent and
+// returns it.
+func (r *accountRepo) EnsureAccount(ctx context.Context, userID string, kind domain.AccountKind, currency string) (*domain.Account, error) {
+	row := r.q.QueryRow(ctx, `
+		INSERT INTO accounts (user_id, kind, currency)
+		VALUES ($1::uuid, $2, $3)
+		ON CONFLICT (user_id, kind, currency) DO UPDATE SET kind = EXCLUDED.kind
+		RETURNING `+accountCols, userID, kind, currency)
+	a, err := scanAccount(row)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	return a, nil
 }
 
 func (r *accountRepo) FindByID(ctx context.Context, id string) (*domain.Account, error) {

@@ -25,6 +25,7 @@ type SessionRepository interface {
 // AccountRepository persists accounts and their balances.
 type AccountRepository interface {
 	EnsureDefaultAccounts(ctx context.Context, userID string) error
+	EnsureAccount(ctx context.Context, userID string, kind domain.AccountKind, currency string) (*domain.Account, error)
 	FindByID(ctx context.Context, id string) (*domain.Account, error)
 	FindByUserAndKind(ctx context.Context, userID string, kind domain.AccountKind, currency string) (*domain.Account, error)
 	ListByUser(ctx context.Context, userID string) ([]domain.Account, error)
@@ -43,6 +44,30 @@ type LedgerRepository interface {
 	SumBalanceByAccount(ctx context.Context, accountID string) (int64, error)
 }
 
+// BeneficiaryRepository persists saved payees.
+type BeneficiaryRepository interface {
+	Create(ctx context.Context, b *domain.Beneficiary) error
+	ListByUser(ctx context.Context, userID string) ([]domain.Beneficiary, error)
+	Update(ctx context.Context, b *domain.Beneficiary) error
+	Delete(ctx context.Context, userID, id string) error
+	ToggleFavorite(ctx context.Context, userID, id string) error
+	FindByAccountNumber(ctx context.Context, userID, accountNumber string) (*domain.Beneficiary, error)
+}
+
+// BankAccountRepository persists a user's saved external bank accounts.
+type BankAccountRepository interface {
+	Create(ctx context.Context, a *domain.BankAccount) error
+	ListByUser(ctx context.Context, userID string) ([]domain.BankAccount, error)
+	Delete(ctx context.Context, userID, id string) error
+	SetDefault(ctx context.Context, userID, id string) error
+	SetNotDefault(ctx context.Context, userID string) error
+}
+
+// ExchangeRateRepository persists currency conversion rates.
+type ExchangeRateRepository interface {
+	FindByPair(ctx context.Context, base, quote string) (*domain.ExchangeRate, error)
+}
+
 // Store bundles the repositories and exposes transaction-scoped operations so
 // multi-row financial writes (ledger + balance) are atomic.
 type Store interface {
@@ -50,4 +75,6 @@ type Store interface {
 	SessionRepo() SessionRepository
 	AccountRepo() AccountRepository
 	LedgerRepo() LedgerRepository
+	BeneficiaryRepo() BeneficiaryRepository
+	BankAccountRepo() BankAccountRepository
 }

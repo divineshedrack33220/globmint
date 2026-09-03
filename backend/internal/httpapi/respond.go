@@ -42,12 +42,18 @@ func safeMessage(err error) string {
 		return "Your session is invalid or has expired."
 	case errors.Is(err, domain.ErrUserLocked):
 		return "Your account is locked. Contact support."
-	case errors.Is(err, domain.ErrNotFound), errors.Is(err, domain.ErrAccountNotFound):
+	case errors.Is(err, domain.ErrNotFound), errors.Is(err, domain.ErrAccountNotFound), errors.Is(err, domain.ErrRateNotFound):
 		return "The requested resource was not found."
 	case errors.Is(err, domain.ErrDuplicateEmail):
 		return "An account with this email already exists."
 	case errors.Is(err, domain.ErrInsufficientBalance):
 		return "You do not have enough available funds."
+	case errors.Is(err, domain.ErrRateExpired):
+		return "The exchange rate has expired. Please request a new quote."
+	case errors.Is(err, domain.ErrRateExceeded):
+		return "The amount is outside the allowed range for this exchange rate."
+	case errors.Is(err, domain.ErrUnsupportedCurrency):
+		return "The currency is not supported."
 	case errors.Is(err, domain.ErrIdempotentReplay):
 		return "This request was already processed."
 	case errors.Is(err, domain.ErrConflict):
@@ -80,15 +86,18 @@ func errorStatus(err error) int {	switch {
 		return http.StatusUnauthorized
 	case errors.Is(err, domain.ErrUserLocked):
 		return http.StatusForbidden
-	case errors.Is(err, domain.ErrNotFound), errors.Is(err, domain.ErrAccountNotFound):
+	case errors.Is(err, domain.ErrNotFound), errors.Is(err, domain.ErrAccountNotFound), errors.Is(err, domain.ErrRateNotFound):
 		return http.StatusNotFound
 	case errors.Is(err, domain.ErrConflict),
 		errors.Is(err, domain.ErrDuplicateEmail),
-		errors.Is(err, domain.ErrIdempotentReplay):
+		errors.Is(err, domain.ErrIdempotentReplay),
+		errors.Is(err, domain.ErrRateExpired):
 		return http.StatusConflict
 	case errors.Is(err, domain.ErrInvalidAmount),
 		errors.Is(err, domain.ErrInsufficientBalance),
-		errors.Is(err, domain.ErrBadRequest):
+		errors.Is(err, domain.ErrBadRequest),
+		errors.Is(err, domain.ErrUnsupportedCurrency),
+		errors.Is(err, domain.ErrRateExceeded):
 		return http.StatusBadRequest
 	default:
 		return http.StatusInternalServerError

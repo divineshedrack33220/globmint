@@ -10,4 +10,5 @@ type Deps struct {
 	Auth    *services.AuthService
 	Balance *services.BalanceService
 	Ledger  *services.LedgerService
+	Money   *services.MoneyService
 }

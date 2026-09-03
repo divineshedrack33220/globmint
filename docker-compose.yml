@@ -1,0 +1,21 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: globmint-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: globmint
+      POSTGRES_USER: globmint
+      POSTGRES_PASSWORD: globmint_dev
+    ports:
+      - "5434:5432"
+    volumes:
+      - globmint_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U globmint -d globmint"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  globmint_pgdata:

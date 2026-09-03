@@ -15,6 +15,7 @@ import (
 type store interface {
 	storage.Store
 	RunInTx(ctx context.Context, fn func(store storage.Store) error) error
+	ExchangeRateRepo() storage.ExchangeRateRepository
 }
 
 // LedgerMoveRequest describes a single atomic balance movement.

@@ -39,8 +39,9 @@ func main() {
 	authSvc := services.NewAuthService(store, cfg.SessionTTL)
 	balanceSvc := services.NewBalanceService(store)
 	ledgerSvc := services.NewLedgerService(store)
+	moneySvc := services.NewMoneyService(store)
 
-	deps := &httpapi.Deps{Auth: authSvc, Balance: balanceSvc, Ledger: ledgerSvc}
+	deps := &httpapi.Deps{Auth: authSvc, Balance: balanceSvc, Ledger: ledgerSvc, Money: moneySvc}
 	handler := httpapi.NewHandler(deps, authSvc)
 
 	srv := &http.Server{
