@@ -135,7 +135,12 @@ class ConfirmationModal extends StatelessWidget {
               const SizedBox(height: 24),
               AppButton(
                 text: confirmText,
-                onPressed: onConfirm,
+                onPressed: isLoading
+                    ? null
+                    : () {
+                        onConfirm?.call();
+                        Navigator.of(context).pop(true);
+                      },
                 variant: isDestructive
                     ? AppButtonVariant.destructive
                     : AppButtonVariant.primary,
