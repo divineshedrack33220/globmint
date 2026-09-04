@@ -8,6 +8,7 @@ import '../shared/services/bank_account_service.dart';
 import '../shared/services/beneficiary_service.dart';
 import '../shared/services/conversion_service.dart';
 import '../shared/services/savings_client.dart';
+import '../shared/services/security_service.dart';
 import '../shared/services/transaction_service.dart';
 import '../shared/services/transfer_service.dart';
 
@@ -36,6 +37,9 @@ final beneficiaryServiceProvider =
 
 final bankAccountServiceProvider =
     Provider<BankAccountService>((ref) => BankAccountService(ref.watch(apiClientProvider)));
+
+final securityServiceProvider =
+    Provider<SecurityService>((ref) => SecurityService(ref.watch(apiClientProvider)));
 
 /// Async providers used by pages to render live data.
 
@@ -72,6 +76,19 @@ final bankAccountsProvider = FutureProvider<List<BankAccount>>((ref) async {
 
 final depositInfoProvider = FutureProvider<DepositInfo>((ref) async {
   return ref.watch(savingsClientProvider).getDepositInfo();
+});
+
+final devicesProvider = FutureProvider<List<Device>>((ref) async {
+  return ref.watch(securityServiceProvider).getDevices();
+});
+
+final securityEventsProvider = FutureProvider<List<SecurityEvent>>((ref) async {
+  return ref.watch(securityServiceProvider).getSecurityEvents();
+});
+
+final notificationsProvider =
+    FutureProvider<({List<AppNotification> items, int unread})>((ref) async {
+  return ref.watch(securityServiceProvider).getNotifications();
 });
 
 /// Providers that expose mutable helpers/repositories for invalidation.

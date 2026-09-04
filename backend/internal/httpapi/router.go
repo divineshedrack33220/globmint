@@ -77,6 +77,17 @@ func NewHandler(deps *Deps, auth middleware.Authenticator) http.Handler {
 	mux.Handle("GET "+api+"/savings/deposit-info", middleware.Auth(auth, http.HandlerFunc(deps.handleGetDepositInfo)))
 	mux.Handle("PUT "+api+"/savings/deposit-address", middleware.Auth(auth, http.HandlerFunc(deps.handleSetDepositAddress)))
 
+	// Devices (active sessions)
+	mux.Handle("GET "+api+"/devices", middleware.Auth(auth, http.HandlerFunc(deps.handleListDevices)))
+	mux.Handle("POST "+api+"/devices/revoke-others", middleware.Auth(auth, http.HandlerFunc(deps.handleRevokeOtherDevices)))
+	mux.Handle("POST "+api+"/devices/{id}/revoke", middleware.Auth(auth, http.HandlerFunc(deps.handleRevokeDevice)))
+
+	// Security activity + notifications
+	mux.Handle("GET "+api+"/security-events", middleware.Auth(auth, http.HandlerFunc(deps.handleListSecurityEvents)))
+	mux.Handle("GET "+api+"/notifications", middleware.Auth(auth, http.HandlerFunc(deps.handleListNotifications)))
+	mux.Handle("POST "+api+"/notifications/read-all", middleware.Auth(auth, http.HandlerFunc(deps.handleMarkAllNotificationsRead)))
+	mux.Handle("POST "+api+"/notifications/{id}/read", middleware.Auth(auth, http.HandlerFunc(deps.handleMarkNotificationRead)))
+
 	return middleware.Origin("*")(middleware.Logging(middleware.RequestID(mux)))
 }
 

@@ -83,6 +83,13 @@ func (s *AuthService) Register(ctx context.Context, req RegisterInput) (user *do
 	if err != nil {
 		return nil, "", err
 	}
+	s.recordSecurity(ctx, user.ID, domain.SecurityEventRegister, "Account created", "Welcome to Globmint", req.IP, req.Device)
+	_ = s.store.NotificationRepo().Create(ctx, &domain.Notification{
+		UserID:   user.ID,
+		Category: domain.NotificationCategoryGeneral,
+		Title:    "Welcome to Globmint",
+		Body:     "Your digital savings vault is ready.",
+	})
 	return user, token, nil
 }
 
@@ -106,6 +113,7 @@ func (s *AuthService) Login(ctx context.Context, email, password, device, ip str
 	if err != nil {
 		return nil, "", err
 	}
+	s.recordSecurity(ctx, user.ID, domain.SecurityEventLogin, "New login", "Signed in from a new device", ip, device)
 	return user, token, nil
 }
 
@@ -129,6 +137,7 @@ func (s *AuthService) Authenticate(ctx context.Context, token string) (*domain.U
 	if user.Status == domain.UserStatusSuspended || user.Status == domain.UserStatusLocked {
 		return nil, domain.ErrUserLocked
 	}
+	_ = s.store.SessionRepo().TouchLastActive(ctx, sess.ID)
 	return user, nil
 }
 
@@ -141,7 +150,37 @@ func (s *AuthService) Logout(ctx context.Context, token string) error {
 	if err != nil {
 		return err
 	}
-	return s.store.SessionRepo().Revoke(ctx, sess.ID)
+	if err := s.store.SessionRepo().Revoke(ctx, sess.ID); err != nil {
+		return err
+	}
+	s.recordSecurity(ctx, sess.UserID, domain.SecurityEventLogout, "Signed out", "You signed out of this device", sess.IP, sess.Device)
+	return nil
+}
+
+// CurrentSessionID resolves the session ID for a raw token, or "" when the
+// token does not map to a valid session. Used to identify the "current" device.
+func (s *AuthService) CurrentSessionID(ctx context.Context, token string) string {
+	if token == "" {
+		return ""
+	}
+	sess, err := s.store.SessionRepo().FindByTokenHash(ctx, tokenHash(token))
+	if err != nil {
+		return ""
+	}
+	return sess.ID
+}
+
+// recordSecurity appends a security event. Failures are intentionally ignored
+// so that an audit-log write never fails the primary auth operation.
+func (s *AuthService) recordSecurity(ctx context.Context, userID string, etype domain.SecurityEventType, title, detail, ip, device string) {
+	_ = s.store.SecurityEventRepo().Create(ctx, &domain.SecurityEvent{
+		UserID: userID,
+		Type:   etype,
+		Title:  title,
+		Detail: detail,
+		IP:     ip,
+		Device: device,
+	})
 }
 
 func (s *AuthService) issueSession(ctx context.Context, userID, device, ip string) (string, error) {

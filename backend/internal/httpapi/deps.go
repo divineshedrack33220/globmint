@@ -13,5 +13,6 @@ type Deps struct {
 	Ledger      *services.LedgerService
 	Money       *services.MoneyService
 	Savings     *services.SavingsService
+	Security    *services.SecurityService
 	Blockchain  blockchain.BlockchainService
 }

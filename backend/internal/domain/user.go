@@ -28,12 +28,13 @@ type User struct {
 // Session represents an authenticated session (device login). The actual
 // bearer token is never stored in plaintext; only its hash is persisted.
 type Session struct {
-	ID        string
-	UserID    string
-	TokenHash string
-	Device    string
-	IP        string
-	ExpiresAt time.Time
-	RevokedAt *time.Time
-	CreatedAt time.Time
+	ID           string
+	UserID       string
+	TokenHash    string
+	Device       string
+	IP           string
+	ExpiresAt    time.Time
+	RevokedAt    *time.Time
+	CreatedAt    time.Time
+	LastActiveAt time.Time
 }

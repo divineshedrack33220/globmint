@@ -18,8 +18,12 @@ type UserRepository interface {
 type SessionRepository interface {
 	Create(ctx context.Context, s *domain.Session) error
 	FindByTokenHash(ctx context.Context, hash string) (*domain.Session, error)
+	FindByID(ctx context.Context, id string) (*domain.Session, error)
+	ListActiveByUser(ctx context.Context, userID string) ([]domain.Session, error)
 	Revoke(ctx context.Context, id string) error
 	RevokeAllForUser(ctx context.Context, userID string) error
+	RevokeAllExcept(ctx context.Context, userID, keepID string) error
+	TouchLastActive(ctx context.Context, id string) error
 }
 
 // AccountRepository persists accounts and their balances.
@@ -80,6 +84,21 @@ type DepositAddressRepository interface {
 	OwnerOf(ctx context.Context, address string) (string, error)
 }
 
+// SecurityEventRepository persists security-activity events.
+type SecurityEventRepository interface {
+	Create(ctx context.Context, e *domain.SecurityEvent) error
+	ListByUser(ctx context.Context, userID string, limit int) ([]domain.SecurityEvent, error)
+}
+
+// NotificationRepository persists the in-app notification inbox.
+type NotificationRepository interface {
+	Create(ctx context.Context, n *domain.Notification) error
+	ListByUser(ctx context.Context, userID string, limit int) ([]domain.Notification, error)
+	CountUnread(ctx context.Context, userID string) (int, error)
+	MarkRead(ctx context.Context, userID, id string) error
+	MarkAllRead(ctx context.Context, userID string) error
+}
+
 // Store bundles the repositories and exposes transaction-scoped operations so
 // multi-row financial writes (ledger + balance) are atomic.
 type Store interface {
@@ -90,4 +109,6 @@ type Store interface {
 	BeneficiaryRepo() BeneficiaryRepository
 	BankAccountRepo() BankAccountRepository
 	DepositAddressRepo() DepositAddressRepository
+	SecurityEventRepo() SecurityEventRepository
+	NotificationRepo() NotificationRepository
 }

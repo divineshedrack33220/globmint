@@ -122,3 +122,5 @@ func (s *Store) BeneficiaryRepo() storage.BeneficiaryRepository { return NewBene
 func (s *Store) BankAccountRepo() storage.BankAccountRepository { return NewBankAccountRepo(s.q) }
 func (s *Store) ExchangeRateRepo() storage.ExchangeRateRepository { return NewExchangeRateRepo(s.q) }
 func (s *Store) DepositAddressRepo() storage.DepositAddressRepository { return NewDepositAddressRepo(s.q) }
+func (s *Store) SecurityEventRepo() storage.SecurityEventRepository { return NewSecurityEventRepo(s.q) }
+func (s *Store) NotificationRepo() storage.NotificationRepository { return NewNotificationRepo(s.q) }
