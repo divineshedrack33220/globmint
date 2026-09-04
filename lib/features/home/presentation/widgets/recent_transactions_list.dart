@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import '../../../../app/providers.dart';
 import '../../../../core/enums/transaction_type.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/radius_tokens.dart';
@@ -8,15 +10,13 @@ import '../../../../core/utils/formatters.dart';
 import '../../../../core/widgets/animated_press.dart';
 import '../../../../core/widgets/section_header.dart';
 import '../../../../shared/models/transaction.dart';
-import '../../../../shared/services/mock_data.dart';
 
-class RecentTransactionsList extends StatelessWidget {
+class RecentTransactionsList extends ConsumerWidget {
   const RecentTransactionsList({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    final transactions = MockData.transactions.take(5).toList()
-      ..sort((a, b) => b.date.compareTo(a.date));
+  Widget build(BuildContext context, WidgetRef ref) {
+    final transactionsAsync = ref.watch(recentTransactionsProvider);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -27,28 +27,50 @@ class RecentTransactionsList extends StatelessWidget {
           onTrailingTap: () => context.go('/activity'),
         ),
         const SizedBox(height: 12),
-        Container(
-          decoration: BoxDecoration(
-            color: AppColors.surface,
-            borderRadius: BorderRadius.circular(AppRadius.lg),
-            border: Border.all(color: AppColors.border, width: 1),
+        transactionsAsync.when(
+          loading: () => const Center(
+            child: Padding(
+              padding: EdgeInsets.all(24),
+              child: CircularProgressIndicator(color: AppColors.primary),
+            ),
           ),
-          child: Column(
-            children: List.generate(transactions.length, (index) {
-              final tx = transactions[index];
-              return Column(
-                children: [
-                  _TransactionTile(transaction: tx),
-                  if (index < transactions.length - 1)
-                    const Divider(
-                      height: 1,
-                      indent: 68,
-                      color: AppColors.divider,
-                    ),
-                ],
+          error: (_, _) => const SizedBox(
+            height: 80,
+            child: Center(child: Text('Unable to load transactions')),
+          ),
+          data: (transactions) {
+            final sorted = List<Transaction>.from(transactions)
+              ..sort((a, b) => b.date.compareTo(a.date));
+            if (sorted.isEmpty) {
+              return const SizedBox(
+                height: 80,
+                child: Center(child: Text('No recent activity')),
               );
-            }),
-          ),
+            }
+            return Container(
+              decoration: BoxDecoration(
+                color: AppColors.surface,
+                borderRadius: BorderRadius.circular(AppRadius.lg),
+                border: Border.all(color: AppColors.border, width: 1),
+              ),
+              child: Column(
+                children: List.generate(sorted.length, (index) {
+                  final tx = sorted[index];
+                  return Column(
+                    children: [
+                      _TransactionTile(transaction: tx),
+                      if (index < sorted.length - 1)
+                        const Divider(
+                          height: 1,
+                          indent: 68,
+                          color: AppColors.divider,
+                        ),
+                    ],
+                  );
+                }),
+              ),
+            );
+          },
         ),
       ],
     );

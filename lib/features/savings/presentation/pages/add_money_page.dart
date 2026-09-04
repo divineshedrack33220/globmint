@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import '../../../../app/providers.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/widgets/app_button.dart';
@@ -7,16 +9,15 @@ import '../../../../core/widgets/app_text_field.dart';
 import '../../../../core/widgets/app_confirmation_modal.dart';
 import '../../../../core/widgets/success_dialog.dart';
 import '../../../../core/utils/formatters.dart';
-import '../../../../shared/services/mock_data.dart';
 
-class AddMoneyPage extends StatefulWidget {
+class AddMoneyPage extends ConsumerStatefulWidget {
   const AddMoneyPage({super.key});
 
   @override
-  State<AddMoneyPage> createState() => _AddMoneyPageState();
+  ConsumerState<AddMoneyPage> createState() => _AddMoneyPageState();
 }
 
-class _AddMoneyPageState extends State<AddMoneyPage> {
+class _AddMoneyPageState extends ConsumerState<AddMoneyPage> {
   final _formKey = GlobalKey<FormState>();
   final _amountController = TextEditingController();
   String _currency = 'NGN';
@@ -46,10 +47,24 @@ class _AddMoneyPageState extends State<AddMoneyPage> {
 
     if (confirmed == true) {
       setState(() => _isLoading = true);
-      await Future.delayed(const Duration(milliseconds: 1200));
-      if (mounted) {
-        setState(() => _isLoading = false);
-        _showSuccess(amount);
+      try {
+        await ref.read(transferServiceProvider).deposit(
+              amount: amount,
+              currency: _currency,
+            );
+        if (mounted) {
+          ref.invalidate(accountSummaryProvider);
+          ref.invalidate(transactionsProvider);
+          setState(() => _isLoading = false);
+          _showSuccess(amount);
+        }
+      } catch (e) {
+        if (mounted) {
+          setState(() => _isLoading = false);
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Deposit failed: $e')),
+          );
+        }
       }
     }
   }
@@ -67,7 +82,8 @@ class _AddMoneyPageState extends State<AddMoneyPage> {
 
   @override
   Widget build(BuildContext context) {
-    final available = MockData.availableAccount;
+    final summaryAsync = ref.watch(accountSummaryProvider);
+    final availableBalance = summaryAsync.valueOrNull?.available.balance ?? 0;
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -97,7 +113,7 @@ class _AddMoneyPageState extends State<AddMoneyPage> {
                         style: context.typography.bodyMedium,
                       ),
                       Text(
-                        CurrencyFormatter.ngn(available.balance),
+                        CurrencyFormatter.ngn(availableBalance),
                         style: context.typography.amountMedium,
                       ),
                     ],

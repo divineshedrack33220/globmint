@@ -1,23 +1,24 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import '../../../../app/providers.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/widgets/app_button.dart';
 import '../../../../core/widgets/app_confirmation_modal.dart';
 import '../../../../core/widgets/app_text_field.dart';
 import '../../../../shared/models/beneficiary.dart';
-import '../../../../shared/services/mock_data.dart';
 
-class BeneficiaryDetailsPage extends StatefulWidget {
+class BeneficiaryDetailsPage extends ConsumerStatefulWidget {
   const BeneficiaryDetailsPage({super.key, this.beneficiary});
 
   final Beneficiary? beneficiary;
 
   @override
-  State<BeneficiaryDetailsPage> createState() => _BeneficiaryDetailsPageState();
+  ConsumerState<BeneficiaryDetailsPage> createState() => _BeneficiaryDetailsPageState();
 }
 
-class _BeneficiaryDetailsPageState extends State<BeneficiaryDetailsPage> {
+class _BeneficiaryDetailsPageState extends ConsumerState<BeneficiaryDetailsPage> {
   late Beneficiary _beneficiary;
 
   @override
@@ -100,15 +101,6 @@ class _BeneficiaryDetailsPageState extends State<BeneficiaryDetailsPage> {
               text: 'Save',
               onPressed: () {
                 if (formKey.currentState!.validate()) {
-                  setState(() {
-                    _beneficiary = _beneficiary.copyWith(
-                      name: nameController.text.trim(),
-                      bank: bankController.text.trim(),
-                      accountNumber: accountNumberController.text.trim(),
-                      isFavorite: isFavoriteController.value,
-                    );
-                  });
-                  MockData.updateBeneficiary(_beneficiary);
                   Navigator.pop(context, true);
                 }
               },
@@ -119,7 +111,14 @@ class _BeneficiaryDetailsPageState extends State<BeneficiaryDetailsPage> {
     );
 
     if (result == true && mounted) {
-      await Future.delayed(const Duration(milliseconds: 400));
+      await ref.read(beneficiaryServiceProvider).remove(_beneficiary.id);
+      await ref.read(beneficiaryServiceProvider).create(
+            name: nameController.text.trim(),
+            bank: bankController.text.trim(),
+            accountNumber: accountNumberController.text.trim(),
+            isFavorite: isFavoriteController.value,
+          );
+      ref.invalidate(beneficiariesProvider);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Beneficiary updated')),
@@ -140,11 +139,14 @@ class _BeneficiaryDetailsPageState extends State<BeneficiaryDetailsPage> {
       isDestructive: true,
     );
     if (confirmed == true && mounted) {
-      MockData.removeBeneficiary(_beneficiary.id);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('${_beneficiary.name} removed')),
-      );
-      context.pop();
+      await ref.read(beneficiaryServiceProvider).remove(_beneficiary.id);
+      ref.invalidate(beneficiariesProvider);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('${_beneficiary.name} removed')),
+        );
+        context.pop();
+      }
     }
   }
 

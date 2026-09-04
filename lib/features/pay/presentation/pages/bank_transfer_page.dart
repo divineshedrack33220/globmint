@@ -1,26 +1,26 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/widgets/app_button.dart';
 import '../../../../core/widgets/app_text_field.dart';
-import '../../../../shared/services/mock_transfer_service.dart';
+import '../../../../app/providers.dart';
 import '../../../../shared/models/beneficiary.dart';
 
-class BankTransferPage extends StatefulWidget {
+class BankTransferPage extends ConsumerStatefulWidget {
   const BankTransferPage({super.key});
 
   @override
-  State<BankTransferPage> createState() => _BankTransferPageState();
+  ConsumerState<BankTransferPage> createState() => _BankTransferPageState();
 }
 
-class _BankTransferPageState extends State<BankTransferPage> {
+class _BankTransferPageState extends ConsumerState<BankTransferPage> {
   final _formKey = GlobalKey<FormState>();
   final _amountController = TextEditingController();
   final _accountNumberController = TextEditingController();
   final _bankController = TextEditingController();
   final _noteController = TextEditingController();
-  final MockTransferService _service = MockTransferService();
 
   String? _resolvedName;
   bool _resolving = false;
@@ -33,10 +33,15 @@ class _BankTransferPageState extends State<BankTransferPage> {
       return;
     }
     setState(() => _resolving = true);
-    final name = await _service.resolveAccount(num);
+    final beneficiary = await ref
+        .read(beneficiaryServiceProvider)
+        .resolveAccount(num);
     if (mounted) {
       setState(() {
-        _resolvedName = name;
+        _resolvedName = beneficiary?.name;
+        if (beneficiary != null) {
+          _bankController.text = beneficiary.bank;
+        }
         _resolving = false;
       });
     }
@@ -68,7 +73,7 @@ class _BankTransferPageState extends State<BankTransferPage> {
             ),
             const SizedBox(height: 12),
             FutureBuilder<List<Beneficiary>>(
-              future: _service.getBeneficiaries(),
+              future: ref.read(beneficiaryServiceProvider).getBeneficiaries(),
               builder: (context, snapshot) {
                 final benes = snapshot.data ?? <Beneficiary>[];
                 return Column(

@@ -1,16 +1,25 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/radius_tokens.dart';
 import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/utils/formatters.dart';
-import '../../../../shared/services/mock_data.dart';
+import '../../../../shared/models/account.dart';
 
 class SavingsSummaryCard extends StatelessWidget {
-  const SavingsSummaryCard({super.key});
+  const SavingsSummaryCard({super.key, required this.summaryAsync});
+
+  final AsyncValue<AccountSummary> summaryAsync;
 
   @override
   Widget build(BuildContext context) {
-    final savings = MockData.savingsAccount;
+    final summary = summaryAsync.valueOrNull;
+    final savings = summary?.savings;
+    final ngnValue = summary?.totalUsdtEquivalent != null
+        ? summary!.totalUsdtEquivalent * (summary.currentRate == 0 ? 1604.5 : summary.currentRate)
+        : 0.0;
+    final usdtValue = savings?.balance ?? 0;
 
     return Container(
       width: double.infinity,
@@ -59,7 +68,7 @@ class SavingsSummaryCard extends StatelessWidget {
                     Text('Savings Value', style: context.typography.labelMedium),
                     const SizedBox(height: 4),
                     Text(
-                      CurrencyFormatter.ngn(savings.balance),
+                      CurrencyFormatter.ngn(ngnValue),
                       style: context.typography.amountMedium,
                     ),
                   ],
@@ -79,7 +88,7 @@ class SavingsSummaryCard extends StatelessWidget {
                       Text('USDT Equivalent', style: context.typography.labelMedium),
                       const SizedBox(height: 4),
                       Text(
-                        CurrencyFormatter.usdt(savings.usdtEquivalent ?? 0),
+                        CurrencyFormatter.usdt(usdtValue),
                         style: context.typography.amountMedium.copyWith(
                           color: AppColors.primary,
                         ),
@@ -91,7 +100,6 @@ class SavingsSummaryCard extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 16),
-          // Progress bar
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -100,7 +108,7 @@ class SavingsSummaryCard extends StatelessWidget {
                 children: [
                   Text('Goal Progress', style: context.typography.labelMedium),
                   Text(
-                    '78%',
+                    '--%',
                     style: context.typography.labelMedium.copyWith(
                       color: AppColors.primary,
                     ),
@@ -111,7 +119,7 @@ class SavingsSummaryCard extends StatelessWidget {
               ClipRRect(
                 borderRadius: BorderRadius.circular(4),
                 child: LinearProgressIndicator(
-                  value: 0.78,
+                  value: 0.0,
                   backgroundColor: AppColors.surfaceHighlight,
                   valueColor: const AlwaysStoppedAnimation<Color>(AppColors.primary),
                   minHeight: 6,

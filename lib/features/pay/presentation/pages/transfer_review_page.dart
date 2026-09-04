@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import '../../../../app/providers.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/utils/formatters.dart';
@@ -7,7 +9,7 @@ import '../../../../core/widgets/app_button.dart';
 import '../../../../core/widgets/app_confirmation_modal.dart';
 import '../../../../shared/services/mock_data.dart';
 
-class TransferReviewPage extends StatefulWidget {
+class TransferReviewPage extends ConsumerStatefulWidget {
   const TransferReviewPage({
     super.key,
     this.amount,
@@ -24,10 +26,10 @@ class TransferReviewPage extends StatefulWidget {
   final String? note;
 
   @override
-  State<TransferReviewPage> createState() => _TransferReviewPageState();
+  ConsumerState<TransferReviewPage> createState() => _TransferReviewPageState();
 }
 
-class _TransferReviewPageState extends State<TransferReviewPage> {
+class _TransferReviewPageState extends ConsumerState<TransferReviewPage> {
   bool _isLoading = false;
 
   Future<void> _confirmTransfer({
@@ -52,7 +54,20 @@ class _TransferReviewPageState extends State<TransferReviewPage> {
 
     if (confirmed == true && mounted) {
       setState(() => _isLoading = true);
-      await Future.delayed(const Duration(milliseconds: 900));
+      try {
+        await ref.read(transferServiceProvider).transfer(
+          amount: amount,
+          currency: 'NGN',
+          accountName: widget.accountName,
+          accountNumber: widget.accountNumber,
+          bankName: widget.bankName,
+          narration: widget.note,
+        );
+        ref.invalidate(accountSummaryProvider);
+        ref.invalidate(transactionsProvider);
+      } finally {
+        if (mounted) setState(() => _isLoading = false);
+      }
       if (mounted) {
         context.push('/pay/result', extra: {
           'amount': amount,

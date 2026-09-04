@@ -1,23 +1,24 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import '../../../../app/providers.dart';
 import '../../../../core/enums/transaction_type.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/utils/formatters.dart';
 import '../../../../core/widgets/animated_press.dart';
 import '../../../../shared/models/transaction.dart';
-import '../../../../shared/services/mock_data.dart';
 
 enum _ActivityFilter { all, deposits, withdrawals, transfers, conversions }
 
-class ActivityPage extends StatefulWidget {
+class ActivityPage extends ConsumerStatefulWidget {
   const ActivityPage({super.key});
 
   @override
-  State<ActivityPage> createState() => _ActivityPageState();
+  ConsumerState<ActivityPage> createState() => _ActivityPageState();
 }
 
-class _ActivityPageState extends State<ActivityPage> {
+class _ActivityPageState extends ConsumerState<ActivityPage> {
   _ActivityFilter _filter = _ActivityFilter.all;
 
   String get _filterLabel => switch (_filter) {
@@ -49,9 +50,7 @@ class _ActivityPageState extends State<ActivityPage> {
 
   @override
   Widget build(BuildContext context) {
-    final allTransactions = List<Transaction>.from(MockData.transactions)
-      ..sort((a, b) => b.date.compareTo(a.date));
-    final transactions = _applyFilter(allTransactions);
+    final transactionsAsync = ref.watch(transactionsProvider);
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -107,8 +106,22 @@ class _ActivityPageState extends State<ActivityPage> {
             const SizedBox(height: 16),
             // Transaction list
             Expanded(
-              child: transactions.isEmpty
-                  ? Center(
+              child: transactionsAsync.when(
+                loading: () => const Center(
+                  child: CircularProgressIndicator(color: AppColors.primary),
+                ),
+                error: (_, _) => Center(
+                  child: Text(
+                    'Unable to load transactions',
+                    style: context.typography.bodyMedium,
+                  ),
+                ),
+                data: (txns) {
+                  final sorted = List<Transaction>.from(txns)
+                    ..sort((a, b) => b.date.compareTo(a.date));
+                  final transactions = _applyFilter(sorted);
+                  if (transactions.isEmpty) {
+                    return Center(
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
@@ -131,24 +144,27 @@ class _ActivityPageState extends State<ActivityPage> {
                           ),
                         ],
                       ),
-                    )
-                  : AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 250),
-                      child: ListView.separated(
-                        key: ValueKey(_filter),
-                        padding: const EdgeInsets.symmetric(horizontal: 24),
-                        itemCount: transactions.length,
-                        separatorBuilder: (_, _) => const Divider(
-                          height: 1,
-                          indent: 68,
-                          color: AppColors.divider,
-                        ),
-                        itemBuilder: (context, index) {
-                          final tx = transactions[index];
-                          return _TransactionTile(transaction: tx);
-                        },
+                    );
+                  }
+                  return AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 250),
+                    child: ListView.separated(
+                      key: ValueKey(_filter),
+                      padding: const EdgeInsets.symmetric(horizontal: 24),
+                      itemCount: transactions.length,
+                      separatorBuilder: (_, _) => const Divider(
+                        height: 1,
+                        indent: 68,
+                        color: AppColors.divider,
                       ),
+                      itemBuilder: (context, index) {
+                        final tx = transactions[index];
+                        return _TransactionTile(transaction: tx);
+                      },
                     ),
+                  );
+                },
+              ),
             ),
           ],
         ),

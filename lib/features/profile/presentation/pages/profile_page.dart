@@ -1,21 +1,31 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import '../../../../app/providers.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/radius_tokens.dart';
 import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/widgets/app_confirmation_modal.dart';
 import '../../../../core/widgets/animated_press.dart';
 import '../../../../shared/models/models.dart';
-import '../../../../shared/services/mock_data.dart';
 import 'help_center_sheet.dart';
 import 'terms_privacy_sheet.dart';
 
-class ProfilePage extends StatelessWidget {
+class ProfilePage extends ConsumerWidget {
   const ProfilePage({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    final user = MockData.user;
+  Widget build(BuildContext context, WidgetRef ref) {
+    final user = ref.watch(currentUserProvider).valueOrNull;
+    final fallback = User(
+      id: '',
+      firstName: '',
+      lastName: '',
+      email: '',
+      phone: '',
+      createdAt: DateTime.now(),
+    );
+    final displayUser = user ?? fallback;
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -41,7 +51,7 @@ class ProfilePage extends StatelessWidget {
                       ),
                       child: Center(
                         child: Text(
-                          user.initials,
+                          displayUser.initials,
                           style: context.typography.amountLarge.copyWith(
                             color: AppColors.primary,
                           ),
@@ -49,9 +59,9 @@ class ProfilePage extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(height: 12),
-                    Text(user.fullName, style: context.typography.headline),
+                    Text(displayUser.fullName, style: context.typography.headline),
                     const SizedBox(height: 4),
-                    Text(user.email, style: context.typography.bodyMedium),
+                    Text(displayUser.email, style: context.typography.bodyMedium),
                   ],
                 ),
               ),
@@ -118,7 +128,7 @@ class ProfilePage extends StatelessWidget {
               // Logout
               Center(
                 child: AnimatedPress(
-                  onTap: () => _confirmSignOut(context),
+                  onTap: () => _confirmSignOut(context, ref),
                   child: Container(
                     padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
                     child: Text(
@@ -162,7 +172,7 @@ class ProfilePage extends StatelessWidget {
     );
   }
 
-  Future<void> _confirmSignOut(BuildContext context) async {
+  Future<void> _confirmSignOut(BuildContext context, WidgetRef ref) async {
     final confirmed = await ConfirmationModal.show(
       context: context,
       title: 'Sign out?',
@@ -173,8 +183,11 @@ class ProfilePage extends StatelessWidget {
       cancelText: 'Cancel',
       isDestructive: true,
     );
-    if (confirmed == true && context.mounted) {
-      context.go('/welcome');
+    if (confirmed == true) {
+      await ref.read(authServiceProvider).logout();
+      if (context.mounted) {
+        context.go('/welcome');
+      }
     }
   }
 }

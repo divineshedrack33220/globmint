@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import '../../../../app/providers.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/widgets/app_button.dart';
@@ -7,19 +9,17 @@ import '../../../../core/widgets/app_text_field.dart';
 import '../../../../core/widgets/animated_press.dart';
 import '../../../../core/widgets/skeleton_loader.dart';
 import '../../../../shared/models/beneficiary.dart';
-import '../../../../shared/services/mock_transfer_service.dart';
 
-class SendToBeneficiaryPage extends StatefulWidget {
+class SendToBeneficiaryPage extends ConsumerStatefulWidget {
   const SendToBeneficiaryPage({super.key});
 
   @override
-  State<SendToBeneficiaryPage> createState() => _SendToBeneficiaryPageState();
+  ConsumerState<SendToBeneficiaryPage> createState() => _SendToBeneficiaryPageState();
 }
 
-class _SendToBeneficiaryPageState extends State<SendToBeneficiaryPage> {
+class _SendToBeneficiaryPageState extends ConsumerState<SendToBeneficiaryPage> {
   final _formKey = GlobalKey<FormState>();
   final _amountController = TextEditingController();
-  final MockTransferService _service = MockTransferService();
 
   Beneficiary? _selected;
   bool _loading = false;
@@ -63,7 +63,7 @@ class _SendToBeneficiaryPageState extends State<SendToBeneficiaryPage> {
             ),
             const SizedBox(height: 12),
             FutureBuilder<List<Beneficiary>>(
-              future: _service.getBeneficiaries(),
+              future: ref.watch(beneficiaryServiceProvider).getBeneficiaries(),
               builder: (context, snapshot) {
                 final benes = snapshot.data ?? <Beneficiary>[];
                 if (snapshot.connectionState == ConnectionState.waiting) {

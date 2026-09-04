@@ -1,23 +1,23 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import '../../../../app/providers.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/widgets/app_button.dart';
 import '../../../../core/widgets/app_text_field.dart';
 import '../../../../shared/models/bank_account.dart';
-import '../../../../shared/services/mock_transfer_service.dart';
 
-class WithdrawPage extends StatefulWidget {
+class WithdrawPage extends ConsumerStatefulWidget {
   const WithdrawPage({super.key});
 
   @override
-  State<WithdrawPage> createState() => _WithdrawPageState();
+  ConsumerState<WithdrawPage> createState() => _WithdrawPageState();
 }
 
-class _WithdrawPageState extends State<WithdrawPage> {
+class _WithdrawPageState extends ConsumerState<WithdrawPage> {
   final _formKey = GlobalKey<FormState>();
   final _amountController = TextEditingController();
-  final MockTransferService _service = MockTransferService();
   BankAccount? _selectedAccount;
   bool _loadingAccounts = true;
   bool _loading = false;
@@ -29,13 +29,24 @@ class _WithdrawPageState extends State<WithdrawPage> {
   }
 
   Future<void> _loadAccounts() async {
-    final accounts = await _service.getSavedAccounts();
-    if (mounted) {
-      setState(() {
-        _selectedAccount = accounts.firstWhere((a) => a.isDefault,
-            orElse: () => accounts.first);
-        _loadingAccounts = false;
-      });
+    try {
+      final accounts = await ref.read(bankAccountServiceProvider).getAccounts();
+      if (mounted && accounts.isNotEmpty) {
+        setState(() {
+          _selectedAccount = accounts.firstWhere((a) => a.isDefault,
+              orElse: () => accounts.first);
+          _loadingAccounts = false;
+        });
+      } else if (mounted) {
+        setState(() => _loadingAccounts = false);
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _loadingAccounts = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to load accounts: $e')),
+        );
+      }
     }
   }
 
@@ -43,62 +54,12 @@ class _WithdrawPageState extends State<WithdrawPage> {
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
-      builder: (_) => Container(
-        decoration: const BoxDecoration(
-          color: AppColors.surface,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-          border: Border(top: BorderSide(color: AppColors.border)),
-        ),
-        padding: const EdgeInsets.only(bottom: 32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const SizedBox(height: 12),
-            Container(width: 40, height: 4,
-              decoration: BoxDecoration(color: AppColors.borderLight, borderRadius: BorderRadius.circular(2)),
-            ),
-            const SizedBox(height: 16),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 24),
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: Text('Select bank account', style: context.typography.headline),
-              ),
-            ),
-            const SizedBox(height: 12),
-            // Fetch accounts
-            FutureBuilder<List<BankAccount>>(
-              future: _service.getSavedAccounts(),
-              builder: (context, snapshot) {
-                final accounts = snapshot.data ?? <BankAccount>[];
-                return Column(
-                  children: accounts.map((acc) {
-                    final isSelected = _selectedAccount?.id == acc.id;
-                    return ListTile(
-                      onTap: () {
-                        setState(() => _selectedAccount = acc);
-                        Navigator.pop(context);
-                      },
-                      leading: Container(
-                        width: 40, height: 40,
-                        decoration: BoxDecoration(
-                          color: isSelected ? AppColors.primaryMuted : AppColors.surfaceHighlight,
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        child: Icon(Icons.account_balance, color: isSelected ? AppColors.primary : AppColors.textSecondary, size: 20),
-                      ),
-                      title: Text(acc.bankName, style: context.typography.labelLarge),
-                      subtitle: Text(acc.maskedNumber, style: context.typography.bodySmall),
-                      trailing: isSelected
-                          ? const Icon(Icons.check_circle, color: AppColors.primary)
-                          : const Icon(Icons.circle_outlined, color: AppColors.textTertiary),
-                    );
-                  }).toList(),
-                );
-              },
-            ),
-          ],
-        ),
+      builder: (_) => _AccountSheet(
+        selectedAccount: _selectedAccount,
+        onSelected: (acc) {
+          setState(() => _selectedAccount = acc);
+          Navigator.pop(context);
+        },
       ),
     );
   }
@@ -197,6 +158,76 @@ class _WithdrawPageState extends State<WithdrawPage> {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _AccountSheet extends ConsumerWidget {
+  const _AccountSheet({required this.selectedAccount, required this.onSelected});
+
+  final BankAccount? selectedAccount;
+  final ValueChanged<BankAccount> onSelected;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final accountsAsync = ref.watch(bankAccountsProvider);
+
+    return Container(
+      decoration: const BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        border: Border(top: BorderSide(color: AppColors.border)),
+      ),
+      padding: const EdgeInsets.only(bottom: 32),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(height: 12),
+          Container(width: 40, height: 4,
+            decoration: BoxDecoration(color: AppColors.borderLight, borderRadius: BorderRadius.circular(2)),
+          ),
+          const SizedBox(height: 16),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text('Select bank account', style: context.typography.headline),
+            ),
+          ),
+          const SizedBox(height: 12),
+          accountsAsync.when(
+            data: (accounts) => Column(
+              children: accounts.map((acc) {
+                final isSelected = selectedAccount?.id == acc.id;
+                return ListTile(
+                  onTap: () => onSelected(acc),
+                  leading: Container(
+                    width: 40, height: 40,
+                    decoration: BoxDecoration(
+                      color: isSelected ? AppColors.primaryMuted : AppColors.surfaceHighlight,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Icon(Icons.account_balance, color: isSelected ? AppColors.primary : AppColors.textSecondary, size: 20),
+                  ),
+                  title: Text(acc.bankName, style: context.typography.labelLarge),
+                  subtitle: Text(acc.maskedNumber, style: context.typography.bodySmall),
+                  trailing: isSelected
+                      ? const Icon(Icons.check_circle, color: AppColors.primary)
+                      : const Icon(Icons.circle_outlined, color: AppColors.textTertiary),
+                );
+              }).toList(),
+            ),
+            loading: () => const Padding(
+              padding: EdgeInsets.all(24),
+              child: CircularProgressIndicator(color: AppColors.primary),
+            ),
+            error: (e, _) => Padding(
+              padding: const EdgeInsets.all(24),
+              child: Text('Failed to load accounts', style: context.typography.bodyMedium),
+            ),
+          ),
+        ],
       ),
     );
   }

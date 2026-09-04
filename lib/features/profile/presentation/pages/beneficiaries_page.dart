@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import '../../../../app/providers.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/widgets/app_button.dart';
@@ -8,19 +10,15 @@ import '../../../../core/widgets/app_text_field.dart';
 import '../../../../core/widgets/animated_press.dart';
 import '../../../../core/widgets/skeleton_loader.dart';
 import '../../../../shared/models/beneficiary.dart';
-import '../../../../shared/services/mock_data.dart';
-import '../../../../shared/services/mock_transfer_service.dart';
 
-class BeneficiariesPage extends StatefulWidget {
+class BeneficiariesPage extends ConsumerStatefulWidget {
   const BeneficiariesPage({super.key});
 
   @override
-  State<BeneficiariesPage> createState() => _BeneficiariesPageState();
+  ConsumerState<BeneficiariesPage> createState() => _BeneficiariesPageState();
 }
 
-class _BeneficiariesPageState extends State<BeneficiariesPage> {
-  final MockTransferService _service = MockTransferService();
-
+class _BeneficiariesPageState extends ConsumerState<BeneficiariesPage> {
   Future<void> _addBeneficiary() async {
     final formKey = GlobalKey<FormState>();
     final nameController = TextEditingController();
@@ -102,14 +100,13 @@ class _BeneficiariesPageState extends State<BeneficiariesPage> {
     );
 
     if (result is Map<String, dynamic>) {
-      MockData.addBeneficiary(
-        name: result['name'] as String,
-        bank: result['bank'] as String,
-        accountNumber: result['accountNumber'] as String,
-        isFavorite: result['isFavorite'] as bool,
-      );
-      setState(() {});
-      await Future.delayed(const Duration(milliseconds: 600));
+      await ref.read(beneficiaryServiceProvider).create(
+            name: result['name'] as String,
+            bank: result['bank'] as String,
+            accountNumber: result['accountNumber'] as String,
+            isFavorite: result['isFavorite'] as bool,
+          );
+      ref.invalidate(beneficiariesProvider);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Beneficiary added')),
@@ -130,18 +127,20 @@ class _BeneficiariesPageState extends State<BeneficiariesPage> {
       isDestructive: true,
     );
     if (confirmed == true && mounted) {
-      MockData.removeBeneficiary(beneficiary.id);
-      setState(() {});
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('${beneficiary.name} removed')),
-      );
+      await ref.read(beneficiaryServiceProvider).remove(beneficiary.id);
+      ref.invalidate(beneficiariesProvider);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('${beneficiary.name} removed')),
+        );
+      }
     }
   }
 
   Future<void> _toggleFavorite(Beneficiary beneficiary) async {
-    MockData.toggleFavoriteBeneficiary(beneficiary.id);
+    await ref.read(beneficiaryServiceProvider).toggleFavorite(beneficiary.id);
+    ref.invalidate(beneficiariesProvider);
     if (mounted) {
-      setState(() {});
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(beneficiary.isFavorite ? 'Removed from favorites' : 'Added to favorites')),
       );
@@ -150,6 +149,8 @@ class _BeneficiariesPageState extends State<BeneficiariesPage> {
 
   @override
   Widget build(BuildContext context) {
+    final beneficiariesAsync = ref.watch(beneficiariesProvider);
+
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
@@ -162,22 +163,33 @@ class _BeneficiariesPageState extends State<BeneficiariesPage> {
         ],
       ),
       body: SafeArea(
-        child: FutureBuilder<List<Beneficiary>>(
-          future: _service.getBeneficiaries(),
-          builder: (context, snapshot) {
-            final beneficiaries = snapshot.data ?? <Beneficiary>[];
-            if (snapshot.connectionState == ConnectionState.waiting) {
-              return const Padding(
-                padding: EdgeInsets.all(20),
-                child: Column(
-                  children: [
-                    SkeletonBalanceCard(),
-                    SizedBox(height: 16),
-                    SkeletonActionRow(count: 3),
-                  ],
+        child: beneficiariesAsync.when(
+          loading: () => const Padding(
+            padding: EdgeInsets.all(20),
+            child: Column(
+              children: [
+                SkeletonBalanceCard(),
+                SizedBox(height: 16),
+                SkeletonActionRow(count: 3),
+              ],
+            ),
+          ),
+          error: (_, _) => Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.error_outline, color: AppColors.destructive, size: 40),
+                const SizedBox(height: 16),
+                Text('Unable to load beneficiaries', style: context.typography.headline),
+                const SizedBox(height: 24),
+                AppButton(
+                  text: 'Retry',
+                  onPressed: () => ref.invalidate(beneficiariesProvider),
                 ),
-              );
-            }
+              ],
+            ),
+          ),
+          data: (beneficiaries) {
             if (beneficiaries.isEmpty) {
               return Center(
                 child: Column(

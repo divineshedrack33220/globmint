@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../../../app/providers.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/widgets/app_button.dart';
@@ -7,19 +9,15 @@ import '../../../../core/widgets/app_text_field.dart';
 import '../../../../core/widgets/animated_press.dart';
 import '../../../../core/widgets/skeleton_loader.dart';
 import '../../../../shared/models/bank_account.dart';
-import '../../../../shared/services/mock_data.dart';
-import '../../../../shared/services/mock_transfer_service.dart';
 
-class BankAccountsPage extends StatefulWidget {
+class BankAccountsPage extends ConsumerStatefulWidget {
   const BankAccountsPage({super.key});
 
   @override
-  State<BankAccountsPage> createState() => _BankAccountsPageState();
+  ConsumerState<BankAccountsPage> createState() => _BankAccountsPageState();
 }
 
-class _BankAccountsPageState extends State<BankAccountsPage> {
-  final MockTransferService _service = MockTransferService();
-
+class _BankAccountsPageState extends ConsumerState<BankAccountsPage> {
   Future<void> _addAccount() async {
     final formKey = GlobalKey<FormState>();
     final bankNameController = TextEditingController();
@@ -110,15 +108,14 @@ class _BankAccountsPageState extends State<BankAccountsPage> {
     );
 
     if (result is Map<String, dynamic>) {
-      MockData.addBankAccount(
-        bankName: result['bankName'] as String,
-        bankCode: result['bankCode'] as String,
-        accountNumber: result['accountNumber'] as String,
-        accountName: result['accountName'] as String,
-        isDefault: result['isDefault'] as bool,
-      );
-      setState(() {});
-      await Future.delayed(const Duration(milliseconds: 600));
+      await ref.read(bankAccountServiceProvider).create(
+            bankName: result['bankName'] as String,
+            bankCode: result['bankCode'] as String,
+            accountNumber: result['accountNumber'] as String,
+            accountName: result['accountName'] as String,
+            isDefault: result['isDefault'] as bool,
+          );
+      ref.invalidate(bankAccountsProvider);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Bank account added')),
@@ -139,18 +136,20 @@ class _BankAccountsPageState extends State<BankAccountsPage> {
       isDestructive: true,
     );
     if (confirmed == true && mounted) {
-      MockData.removeBankAccount(account.id);
-      setState(() {});
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('${account.bankName} removed')),
-      );
+      await ref.read(bankAccountServiceProvider).remove(account.id);
+      ref.invalidate(bankAccountsProvider);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('${account.bankName} removed')),
+        );
+      }
     }
   }
 
   Future<void> _setDefault(BankAccount account) async {
-    MockData.setDefaultBankAccount(account.id);
+    await ref.read(bankAccountServiceProvider).setDefault(account.id);
+    ref.invalidate(bankAccountsProvider);
     if (mounted) {
-      setState(() {});
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('${account.bankName} set as default')),
       );
@@ -241,6 +240,8 @@ class _BankAccountsPageState extends State<BankAccountsPage> {
 
   @override
   Widget build(BuildContext context) {
+    final accountsAsync = ref.watch(bankAccountsProvider);
+
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
@@ -253,22 +254,33 @@ class _BankAccountsPageState extends State<BankAccountsPage> {
         ],
       ),
       body: SafeArea(
-        child: FutureBuilder<List<BankAccount>>(
-          future: _service.getSavedAccounts(),
-          builder: (context, snapshot) {
-            final accounts = snapshot.data ?? <BankAccount>[];
-            if (snapshot.connectionState == ConnectionState.waiting) {
-              return const Padding(
-                padding: EdgeInsets.all(20),
-                child: Column(
-                  children: [
-                    SkeletonBalanceCard(),
-                    SizedBox(height: 16),
-                    SkeletonActionRow(count: 3),
-                  ],
+        child: accountsAsync.when(
+          loading: () => const Padding(
+            padding: EdgeInsets.all(20),
+            child: Column(
+              children: [
+                SkeletonBalanceCard(),
+                SizedBox(height: 16),
+                SkeletonActionRow(count: 3),
+              ],
+            ),
+          ),
+          error: (_, _) => Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.error_outline, color: AppColors.destructive, size: 40),
+                const SizedBox(height: 16),
+                Text('Unable to load bank accounts', style: context.typography.headline),
+                const SizedBox(height: 24),
+                AppButton(
+                  text: 'Retry',
+                  onPressed: () => ref.invalidate(bankAccountsProvider),
                 ),
-              );
-            }
+              ],
+            ),
+          ),
+          data: (accounts) {
             if (accounts.isEmpty) {
               return Center(
                 child: Column(
@@ -395,8 +407,8 @@ class _BankAccountTile extends StatelessWidget {
             itemBuilder: (_) => [
               PopupMenuItem(
                 value: 'default',
-                child: Text(account.isDefault ? 'Default account' : 'Set as default'),
                 enabled: !account.isDefault,
+                child: Text(account.isDefault ? 'Default account' : 'Set as default'),
               ),
               PopupMenuItem(
                 value: 'remove',

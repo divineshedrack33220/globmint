@@ -1,19 +1,24 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../../../../app/providers.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/utils/formatters.dart';
-import '../../../../shared/services/mock_data.dart';
+import '../../../../shared/models/account.dart';
+import '../../../../shared/models/models.dart';
 import '../widgets/balance_card.dart';
 import '../widgets/quick_actions_row.dart';
 import '../widgets/savings_summary_card.dart';
 import '../widgets/recent_transactions_list.dart';
 
-class HomePage extends StatelessWidget {
+class HomePage extends ConsumerWidget {
   const HomePage({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    final summary = MockData.accountSummary;
+  Widget build(BuildContext context, WidgetRef ref) {
+    final summaryAsync = ref.watch(accountSummaryProvider);
+    final userAsync = ref.watch(currentUserProvider);
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -34,91 +39,38 @@ class HomePage extends StatelessWidget {
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      MockData.user.firstName,
+                      userAsync.maybeWhen(
+                        data: (u) => u.firstName,
+                        orElse: () => '...',
+                      ),
                       style: context.typography.headline,
                     ),
                   ],
                 ),
               ),
               const SizedBox(height: 24),
-              // Total Balance Hero
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 24),
-                child: BalanceCard(
-                  label: 'TOTAL SAVINGS',
-                  amount: CurrencyFormatter.ngn(summary.totalNgnEquivalent),
-                  subtitle: '≈ ${CurrencyFormatter.usdt(summary.totalUsdtEquivalent)}',
-                  isHero: true,
-                  trailing: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: AppColors.successMuted,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Text(
-                      '+4.2%',
-                      style: context.typography.labelSmall.copyWith(
-                        color: AppColors.success,
-                      ),
-                    ),
+              // Balance hero / loading / error
+              summaryAsync.when(
+                loading: () => const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 24),
+                  child: _BalanceSkeleton(),
+                ),
+                error: (e, _) => Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 24),
+                  child: BalanceCard(
+                    label: 'TOTAL SAVINGS',
+                    amount: '₦0.00',
+                    subtitle: 'Unable to load balance',
+                    isHero: true,
                   ),
                 ),
+                data: (summary) => _BalanceSection(summary: summary),
               ),
               const SizedBox(height: 16),
               // Available Balance
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 24),
-                child: Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: AppColors.surface,
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(color: AppColors.border, width: 1),
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Available Balance',
-                            style: context.typography.labelMedium,
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            CurrencyFormatter.ngn(summary.available.balance),
-                            style: context.typography.amountMedium,
-                          ),
-                        ],
-                      ),
-                      Container(
-                        width: 4,
-                        height: 32,
-                        decoration: BoxDecoration(
-                          color: AppColors.border,
-                          borderRadius: BorderRadius.circular(2),
-                        ),
-                      ),
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Exchange Rate',
-                            style: context.typography.labelMedium,
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            '₦${summary.currentRate.toStringAsFixed(2)}',
-                            style: context.typography.amountMedium.copyWith(
-                              color: AppColors.primary,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
+                child: _AvailableBalanceCard(summaryAsync: summaryAsync),
               ),
               const SizedBox(height: 24),
               // Quick Actions
@@ -128,9 +80,9 @@ class HomePage extends StatelessWidget {
               ),
               const SizedBox(height: 24),
               // Savings Summary
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 24),
-                child: SavingsSummaryCard(),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: SavingsSummaryCard(summaryAsync: summaryAsync),
               ),
               const SizedBox(height: 24),
               // Recent Transactions
@@ -142,6 +94,112 @@ class HomePage extends StatelessWidget {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _BalanceSection extends StatelessWidget {
+  const _BalanceSection({required this.summary});
+  final AccountSummary summary;
+
+  @override
+  Widget build(BuildContext context) {
+    return BalanceCard(
+      label: 'TOTAL SAVINGS',
+      amount: CurrencyFormatter.ngn(summary.totalNgnEquivalent),
+      subtitle: '≈ ${CurrencyFormatter.usdt(summary.totalUsdtEquivalent)}',
+      isHero: true,
+      trailing: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: AppColors.successMuted,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Text(
+          '+4.2%',
+          style: context.typography.labelSmall.copyWith(
+            color: AppColors.success,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AvailableBalanceCard extends StatelessWidget {
+  const _AvailableBalanceCard({required this.summaryAsync});
+  final AsyncValue<AccountSummary> summaryAsync;
+
+  @override
+  Widget build(BuildContext context) {
+    final summary = summaryAsync.valueOrNull;
+    final available = summary?.available;
+    final currentRate = summary?.currentRate ?? 0;
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.border, width: 1),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Available Balance', style: context.typography.labelMedium),
+              const SizedBox(height: 4),
+              Text(
+                CurrencyFormatter.ngn(available?.balance ?? 0),
+                style: context.typography.amountMedium,
+              ),
+            ],
+          ),
+          Container(
+            width: 4,
+            height: 32,
+            decoration: BoxDecoration(
+              color: AppColors.border,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Exchange Rate', style: context.typography.labelMedium),
+              const SizedBox(height: 4),
+              Text(
+                '₦${currentRate.toStringAsFixed(2)}',
+                style: context.typography.amountMedium.copyWith(
+                  color: AppColors.primary,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _BalanceSkeleton extends StatelessWidget {
+  const _BalanceSkeleton();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      height: 140,
+      decoration: BoxDecoration(
+        color: AppColors.surfaceElevated,
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: AppColors.border, width: 1),
+      ),
+      child: const Center(
+        child: CircularProgressIndicator(color: AppColors.primary),
       ),
     );
   }

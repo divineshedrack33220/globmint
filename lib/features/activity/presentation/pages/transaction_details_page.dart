@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../../../app/providers.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/utils/formatters.dart';
@@ -6,32 +8,62 @@ import '../../../../core/enums/transaction_type.dart';
 import '../../../../core/enums/transaction_status.dart';
 import '../../../../core/widgets/status_badge.dart';
 import '../../../../shared/models/transaction.dart';
-import '../../../../shared/services/mock_data.dart';
 
-class TransactionDetailsPage extends StatelessWidget {
+class TransactionDetailsPage extends ConsumerWidget {
   const TransactionDetailsPage({super.key, this.transactionId});
 
   final String? transactionId;
 
-  @override
-  Widget build(BuildContext context) {
-    final txn = MockData.transactions.firstWhere(
-      (t) => t.id == transactionId,
-      orElse: () => MockData.transactions.isNotEmpty ? MockData.transactions.first : Transaction(
-        id: 'none', type: TransactionType.transfer, amount: 0, currency: 'NGN',
-        status: TransactionStatus.failed, date: DateTime.now(),
-      ),
-    );
+  Transaction _fallback() => Transaction(
+        id: transactionId ?? 'none',
+        type: TransactionType.transfer,
+        amount: 0,
+        currency: 'NGN',
+        status: TransactionStatus.failed,
+        date: DateTime.now(),
+      );
 
-    final isPositive = txn.isPositive;
-    final amountStyle = isPositive ? Icons.arrow_downward : Icons.arrow_upward;
-    final amountColor = isPositive ? AppColors.success : AppColors.destructive;
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final txnAsync = ref.watch(transactionsProvider);
 
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(title: const Text('Transaction Details')),
       body: SafeArea(
-        child: SingleChildScrollView(
+        child: txnAsync.when(
+          loading: () => const Center(
+            child: CircularProgressIndicator(color: AppColors.primary),
+          ),
+          error: (e, _) => Center(child: Text('Unable to load transaction')),
+          data: (all) {
+            Transaction txn = _fallback();
+            for (final t in all) {
+              if (t.id == transactionId) {
+                txn = t;
+                break;
+              }
+            }
+            return _DetailsBody(txn: txn);
+          },
+        ),
+      ),
+    );
+  }
+}
+
+class _DetailsBody extends StatelessWidget {
+  const _DetailsBody({required this.txn});
+
+  final Transaction txn;
+
+  @override
+  Widget build(BuildContext context) {
+    final isPositive = txn.isPositive;
+    final amountStyle = isPositive ? Icons.arrow_downward : Icons.arrow_upward;
+    final amountColor = isPositive ? AppColors.success : AppColors.destructive;
+
+    return SingleChildScrollView(
           padding: const EdgeInsets.all(20),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -149,8 +181,6 @@ class TransactionDetailsPage extends StatelessWidget {
               const SizedBox(height: 24),
             ],
           ),
-        ),
-      ),
     );
   }
 }

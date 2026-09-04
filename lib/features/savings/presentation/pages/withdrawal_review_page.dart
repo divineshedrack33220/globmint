@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import '../../../../app/providers.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/utils/formatters.dart';
@@ -7,20 +9,81 @@ import '../../../../core/widgets/app_button.dart';
 import '../../../../core/widgets/app_confirmation_modal.dart';
 import '../../../../core/widgets/success_dialog.dart';
 import '../../../../shared/models/bank_account.dart';
-import '../../../../shared/services/mock_data.dart';
 
-class WithdrawalReviewPage extends StatelessWidget {
+class WithdrawalReviewPage extends ConsumerStatefulWidget {
   const WithdrawalReviewPage({super.key, this.amount, this.account});
 
   final double? amount;
   final BankAccount? account;
 
   @override
-  Widget build(BuildContext context) {
-    final a = amount ?? 0;
-    final acc = account;
-    final available = MockData.availableAccount;
+  ConsumerState<WithdrawalReviewPage> createState() => _WithdrawalReviewPageState();
+}
+
+class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
+  bool _isProcessing = false;
+
+  Future<void> _confirmWithdrawal() async {
+    final a = widget.amount ?? 0;
+    final acc = widget.account;
+    if (a <= 0 || acc == null) return;
+
     final fee = a * 0.01;
+
+    final confirmed = await ConfirmationModal.show(
+      context: context,
+      title: 'Finalize withdrawal?',
+      details: [
+        ConfirmationDetail(label: 'Amount', value: CurrencyFormatter.ngn(a), isHighlighted: true),
+        ConfirmationDetail(label: 'Fee', value: CurrencyFormatter.ngn(fee)),
+        ConfirmationDetail(label: 'To', value: acc.maskedNumber),
+        ConfirmationDetail(label: 'Receive', value: CurrencyFormatter.ngn(a - fee)),
+      ],
+      confirmText: 'Confirm',
+      isDestructive: true,
+    );
+
+    if (confirmed == true && mounted) {
+      setState(() => _isProcessing = true);
+      try {
+        await ref.read(transferServiceProvider).withdraw(
+              amount: a,
+              currency: 'NGN',
+              bankId: acc.id,
+            );
+        if (mounted) {
+          ref.invalidate(accountSummaryProvider);
+          ref.invalidate(transactionsProvider);
+          setState(() => _isProcessing = false);
+          SuccessDialog.show(
+            context: context,
+            type: SuccessDialogType.success,
+            title: 'Withdrawal Initiated',
+            amount: CurrencyFormatter.ngn(a - fee),
+            subtitle: 'Funds will arrive within 5 minutes',
+            onPressed: () => context.go('/savings'),
+          );
+        }
+      } catch (e) {
+        if (mounted) {
+          setState(() => _isProcessing = false);
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Withdrawal failed: $e')),
+          );
+        }
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final a = widget.amount ?? 0;
+    final acc = widget.account;
+    final fee = a * 0.01;
+
+    final availableAfter = ref.watch(accountSummaryProvider).whenOrNull(
+          data: (s) => s.available.balance - a,
+        );
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -65,7 +128,9 @@ class WithdrawalReviewPage extends StatelessWidget {
               const SizedBox(height: 8),
               _ReviewRow(
                 label: 'Available after',
-                value: CurrencyFormatter.ngn(available.balance - a),
+                value: availableAfter != null
+                    ? CurrencyFormatter.ngn(availableAfter)
+                    : '—',
               ),
               const SizedBox(height: 8),
               _ReviewRow(
@@ -76,30 +141,8 @@ class WithdrawalReviewPage extends StatelessWidget {
               AppButton(
                 text: 'Confirm Withdrawal',
                 isExpanded: true,
-                onPressed: () async {
-                  final confirmed = await ConfirmationModal.show(
-                    context: context,
-                    title: 'Finalize withdrawal?',
-                    details: [
-                      ConfirmationDetail(label: 'Amount', value: CurrencyFormatter.ngn(a), isHighlighted: true),
-                      ConfirmationDetail(label: 'Fee', value: CurrencyFormatter.ngn(fee)),
-                      ConfirmationDetail(label: 'To', value: acc?.maskedNumber ?? '—'),
-                      ConfirmationDetail(label: 'Receive', value: CurrencyFormatter.ngn(a - fee)),
-                    ],
-                    confirmText: 'Confirm',
-                    isDestructive: true,
-                  );
-                  if (confirmed == true && context.mounted) {
-                    SuccessDialog.show(
-                      context: context,
-                      type: SuccessDialogType.success,
-                      title: 'Withdrawal Initiated',
-                      amount: CurrencyFormatter.ngn(a - fee),
-                      subtitle: 'Funds will arrive within 5 minutes',
-                      onPressed: () => context.go('/savings'),
-                    );
-                  }
-                },
+                isLoading: _isProcessing,
+                onPressed: _confirmWithdrawal,
               ),
             ],
           ),

@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import '../../../../app/providers.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/utils/formatters.dart';
@@ -7,20 +9,19 @@ import '../../../../core/widgets/app_button.dart';
 import '../../../../core/widgets/app_text_field.dart';
 import '../../../../core/widgets/app_confirmation_modal.dart';
 import '../../../../core/widgets/success_dialog.dart';
-import '../../../../shared/services/mock_data.dart';
+import '../../../../shared/models/exchange_rate.dart';
 
-class ConversionPage extends StatefulWidget {
+class ConversionPage extends ConsumerStatefulWidget {
   const ConversionPage({super.key});
 
   @override
-  State<ConversionPage> createState() => _ConversionPageState();
+  ConsumerState<ConversionPage> createState() => _ConversionPageState();
 }
 
-class _ConversionPageState extends State<ConversionPage> {
+class _ConversionPageState extends ConsumerState<ConversionPage> {
   final _amountController = TextEditingController();
-  final _rate = MockData.exchangeRate;
   bool _isLoading = false;
-  double? _quoteAmount;
+  ConversionQuote? _quote;
 
   @override
   void dispose() {
@@ -28,41 +29,68 @@ class _ConversionPageState extends State<ConversionPage> {
     super.dispose();
   }
 
-  void _calculateQuote(String value) {
+  Future<void> _calculateQuote(String value) async {
     final parsed = double.tryParse(value.replaceAll(',', ''));
-    setState(() {
-      _quoteAmount = parsed == null || parsed <= 0
-          ? null
-          : (parsed - (parsed * _rate.fee / 100)) / _rate.rate;
-    });
+    if (parsed == null || parsed <= 0) {
+      setState(() => _quote = null);
+      return;
+    }
+    try {
+      final q = await ref
+          .read(conversionServiceProvider)
+          .getQuote(amount: parsed, fromCurrency: 'NGN', toCurrency: 'USDT');
+      if (mounted) setState(() => _quote = q);
+    } catch (e) {
+      if (mounted) {
+        setState(() => _quote = null);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to fetch rate: $e')),
+        );
+      }
+    }
   }
 
   Future<void> _confirmConversion() async {
     final amount = double.tryParse(_amountController.text.replaceAll(',', ''));
-    if (amount == null || amount <= 0) return;
+    if (amount == null || amount <= 0 || _quote == null) return;
 
-    final feeAmount = amount * _rate.fee / 100;
-    final net = _quoteAmount ?? 0;
+    final q = _quote!;
+    final net = q.outputAmount;
 
     final confirmed = await ConfirmationModal.show(
       context: context,
       title: 'Confirm conversion?',
       details: [
         ConfirmationDetail(label: 'Converting', value: CurrencyFormatter.ngn(amount)),
-        ConfirmationDetail(label: 'Exchange Rate', value: '1 USDT = ₦${_rate.rate.toStringAsFixed(2)}'),
-        ConfirmationDetail(label: 'Fee (${_rate.fee}%)', value: CurrencyFormatter.ngn(feeAmount)),
+        ConfirmationDetail(label: 'Exchange Rate', value: '1 USDT = ₦${q.rate.toStringAsFixed(2)}'),
+        ConfirmationDetail(label: 'Fee', value: CurrencyFormatter.ngn(q.feeAmount)),
         ConfirmationDetail(label: 'You receive', value: CurrencyFormatter.usdt(net), isHighlighted: true),
-        ConfirmationDetail(label: 'Rate expires', value: DateFormatter.time(_rate.expiresAt)),
+        ConfirmationDetail(label: 'Rate expires', value: DateFormatter.time(q.expiresAt)),
       ],
       confirmText: 'Confirm Conversion',
     );
 
     if (confirmed == true) {
       setState(() => _isLoading = true);
-      await Future.delayed(const Duration(milliseconds: 1200));
-      if (mounted) {
-        setState(() => _isLoading = false);
-        _showSuccess(net);
+      try {
+        await ref.read(conversionServiceProvider).convert(
+              amount: amount,
+              fromCurrency: 'NGN',
+              toCurrency: 'USDT',
+            );
+        if (mounted) {
+          ref.invalidate(accountSummaryProvider);
+          ref.invalidate(transactionsProvider);
+          setState(() => _isLoading = false);
+          _showSuccess(net);
+        }
+      } catch (e) {
+        if (mounted) {
+          setState(() => _isLoading = false);
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Conversion failed: $e')),
+          );
+        }
       }
     }
   }
@@ -80,6 +108,8 @@ class _ConversionPageState extends State<ConversionPage> {
 
   @override
   Widget build(BuildContext context) {
+    final q = _quote;
+
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(title: const Text('Convert to USDT')),
@@ -114,9 +144,9 @@ class _ConversionPageState extends State<ConversionPage> {
                     Text('to', style: context.typography.bodySmall),
                     const SizedBox(height: 4),
                     Text(
-                      _quoteAmount == null
+                      q == null
                           ? '0.00 USDT'
-                          : CurrencyFormatter.usdt(_quoteAmount!),
+                          : CurrencyFormatter.usdt(q.outputAmount),
                       style: context.typography.amountLarge.copyWith(
                         color: AppColors.primary,
                       ),
@@ -144,21 +174,23 @@ class _ConversionPageState extends State<ConversionPage> {
                   children: [
                     _RateRow(
                       label: 'Exchange Rate',
-                      value: '1 USDT = ₦${_rate.rate.toStringAsFixed(2)}',
+                      value: q == null
+                          ? '—'
+                          : '1 USDT = ₦${q.rate.toStringAsFixed(2)}',
                     ),
                     const Divider(color: AppColors.divider, height: 20),
                     _RateRow(
-                      label: 'Fee (${_rate.fee}%)',
-                      value: CurrencyFormatter.ngn(
-                        _amountController.text.isEmpty
-                            ? 0
-                            : (double.tryParse(_amountController.text.replaceAll(',', '')) ?? 0) * _rate.fee / 100,
-                      ),
+                      label: 'Fee',
+                      value: q == null
+                          ? '—'
+                          : CurrencyFormatter.ngn(q.feeAmount),
                     ),
                     const Divider(color: AppColors.divider, height: 20),
                     _RateRow(
                       label: 'Rate expires',
-                      value: DateFormatter.time(_rate.expiresAt),
+                      value: q == null
+                          ? '—'
+                          : DateFormatter.time(q.expiresAt),
                     ),
                   ],
                 ),
