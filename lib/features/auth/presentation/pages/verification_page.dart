@@ -1,28 +1,29 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import '../../../../app/providers.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/widgets/app_button.dart';
 import '../../../../core/widgets/pin_input.dart';
-import '../../../../shared/services/mock_data.dart';
 
-class VerificationPage extends StatefulWidget {
+class VerificationPage extends ConsumerStatefulWidget {
   const VerificationPage({super.key, this.email});
 
   final String? email;
 
   @override
-  State<VerificationPage> createState() => _VerificationPageState();
+  ConsumerState<VerificationPage> createState() => _VerificationPageState();
 }
 
-class _VerificationPageState extends State<VerificationPage> {
+class _VerificationPageState extends ConsumerState<VerificationPage> {
   bool _isLoading = false;
   String? _error;
 
   String get _email {
     final raw = widget.email?.trim() ?? '';
-    if (raw.isEmpty) return MockData.user.email;
-    return raw;
+    if (raw.isNotEmpty) return raw;
+    return ref.read(authServiceProvider).currentUser?.email ?? '';
   }
 
   String get _maskedEmail {

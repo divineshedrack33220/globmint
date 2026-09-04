@@ -1,21 +1,31 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import '../../../../app/providers.dart';
+import '../../../../core/enums/transaction_type.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/utils/formatters.dart';
 import '../../../../core/widgets/status_badge.dart';
 import '../../../../core/widgets/animated_press.dart';
 import '../../../../shared/models/transaction.dart';
-import '../../../../shared/services/mock_data.dart';
 
-class SavingsPage extends StatelessWidget {
+class SavingsPage extends ConsumerWidget {
   const SavingsPage({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    final savings = MockData.savingsAccount;
-    final txns = List<Transaction>.from(MockData.transactions)
-        .where((t) => t.type.name == 'conversion' || t.type.name == 'savings')
+  Widget build(BuildContext context, WidgetRef ref) {
+    final summaryAsync = ref.watch(accountSummaryProvider);
+    final summary = summaryAsync.valueOrNull;
+    final savings = summary?.savings;
+    final savingsBalance = savings?.balance ?? 0;
+    final usdtBalance = savings?.balance ?? 0;
+    final rate = summary?.currentRate ?? 0;
+
+    final txnsAsync = ref.watch(transactionsProvider);
+    final allTxns = txnsAsync.valueOrNull ?? const <Transaction>[];
+    final txns = List<Transaction>.from(allTxns)
+        .where((t) => t.type == TransactionType.conversion || t.type == TransactionType.savings)
         .toList()
       ..sort((a, b) => b.date.compareTo(a.date));
 
@@ -49,12 +59,12 @@ class SavingsPage extends StatelessWidget {
                     ),
                     const SizedBox(height: 6),
                     Text(
-                      CurrencyFormatter.ngn(savings.balance),
+                      CurrencyFormatter.ngn(savingsBalance * (rate == 0 ? 1604.5 : rate)),
                       style: context.typography.amountHero,
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      '≈ ${CurrencyFormatter.usdt(savings.usdtEquivalent ?? 0)} @ ₦${(savings.exchangeRate ?? 0).toStringAsFixed(2)}',
+                      '≈ ${CurrencyFormatter.usdt(usdtBalance)}',
                       style: context.typography.bodySmall,
                     ),
                   ],

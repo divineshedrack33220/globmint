@@ -1,24 +1,37 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../../../app/providers.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/widgets/app_button.dart';
 import '../../../../core/widgets/app_text_field.dart';
-import '../../../../shared/services/mock_data.dart';
 
-class PersonalInfoPage extends StatefulWidget {
+class PersonalInfoPage extends ConsumerStatefulWidget {
   const PersonalInfoPage({super.key});
 
   @override
-  State<PersonalInfoPage> createState() => _PersonalInfoPageState();
+  ConsumerState<PersonalInfoPage> createState() => _PersonalInfoPageState();
 }
 
-class _PersonalInfoPageState extends State<PersonalInfoPage> {
+class _PersonalInfoPageState extends ConsumerState<PersonalInfoPage> {
   final _formKey = GlobalKey<FormState>();
-  final _firstNameController = TextEditingController(text: MockData.user.firstName);
-  final _lastNameController = TextEditingController(text: MockData.user.lastName);
-  final _emailController = TextEditingController(text: MockData.user.email);
-  final _phoneController = TextEditingController(text: MockData.user.phone);
+  final _firstNameController = TextEditingController();
+  final _lastNameController = TextEditingController();
+  final _emailController = TextEditingController();
+  final _phoneController = TextEditingController();
   bool _loading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final user = ref.read(authServiceProvider).currentUser ?? ref.read(currentUserProvider).valueOrNull;
+    if (user != null) {
+      _firstNameController.text = user.firstName;
+      _lastNameController.text = user.lastName;
+      _emailController.text = user.email;
+      _phoneController.text = user.phone;
+    }
+  }
 
   @override
   void dispose() {

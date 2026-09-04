@@ -1,17 +1,18 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import '../../../../app/providers.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/radius_tokens.dart';
 import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/utils/formatters.dart';
-import '../../../../shared/services/mock_data.dart';
 
-class PayPage extends StatelessWidget {
+class PayPage extends ConsumerWidget {
   const PayPage({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    final available = MockData.availableAccount;
+  Widget build(BuildContext context, WidgetRef ref) {
+    final available = ref.watch(accountSummaryProvider).valueOrNull?.available.balance ?? 0;
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -43,7 +44,7 @@ class PayPage extends StatelessWidget {
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      CurrencyFormatter.ngn(available.balance),
+                      CurrencyFormatter.ngn(available),
                       style: context.typography.amountHero,
                     ),
                   ],

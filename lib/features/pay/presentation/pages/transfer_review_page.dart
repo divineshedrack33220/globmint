@@ -7,7 +7,7 @@ import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/utils/formatters.dart';
 import '../../../../core/widgets/app_button.dart';
 import '../../../../core/widgets/app_confirmation_modal.dart';
-import '../../../../shared/services/mock_data.dart';
+import '../../../../shared/models/account.dart';
 
 class TransferReviewPage extends ConsumerStatefulWidget {
   const TransferReviewPage({
@@ -81,7 +81,8 @@ class _TransferReviewPageState extends ConsumerState<TransferReviewPage> {
   Widget build(BuildContext context) {
     final a = widget.amount ?? 0;
     final fee = a * 0.005;
-    final available = MockData.availableAccount;
+    final available = ref.watch(accountSummaryProvider).valueOrNull?.available ??
+        const Account(id: '', currency: 'NGN', balance: 0);
 
     return Scaffold(
       backgroundColor: AppColors.background,
