@@ -65,84 +65,92 @@ class ConfirmationModal extends StatelessWidget {
         borderRadius: BorderRadius.circular(AppRadius.xl),
         side: const BorderSide(color: AppColors.border, width: 1),
       ),
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              title,
-              style: context.typography.headline,
-              textAlign: TextAlign.center,
-            ),
-            if (description != null) ...[
-              const SizedBox(height: 8),
+      child: ConstrainedBox(
+        // Keep the dialog within the screen so the action buttons never get
+        // clipped off-screen, and scroll long content instead of overflowing.
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.of(context).size.height * 0.85,
+        ),
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
               Text(
-                description!,
-                style: context.typography.bodyMedium,
+                title,
+                style: context.typography.headline,
                 textAlign: TextAlign.center,
               ),
-            ],
-            const SizedBox(height: 24),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: AppColors.surface,
-                borderRadius: BorderRadius.circular(AppRadius.md),
-                border: Border.all(color: AppColors.border, width: 1),
-              ),
-              child: Column(
-                children: details.map((detail) {
-                  return Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 6),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          detail.label,
-                          style: context.typography.bodyMedium.copyWith(
-                            color: AppColors.textSecondary,
-                          ),
-                        ),
-                        const SizedBox(width: 16),
-                        Flexible(
-                          child: Text(
-                            detail.value,
-                            style: context.typography.labelLarge.copyWith(
-                              color: detail.isHighlighted
-                                  ? AppColors.primary
-                                  : AppColors.textPrimary,
+              if (description != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  description!,
+                  style: context.typography.bodyMedium,
+                  textAlign: TextAlign.center,
+                ),
+              ],
+              const SizedBox(height: 24),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: AppColors.surface,
+                  borderRadius: BorderRadius.circular(AppRadius.md),
+                  border: Border.all(color: AppColors.border, width: 1),
+                ),
+                child: Column(
+                  children: details.map((detail) {
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 6),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            detail.label,
+                            style: context.typography.bodyMedium.copyWith(
+                              color: AppColors.textSecondary,
                             ),
-                            textAlign: TextAlign.end,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
                           ),
-                        ),
-                      ],
-                    ),
-                  );
-                }).toList(),
+                          const SizedBox(width: 16),
+                          Flexible(
+                            child: Text(
+                              detail.value,
+                              style: context.typography.labelLarge.copyWith(
+                                color: detail.isHighlighted
+                                    ? AppColors.primary
+                                    : AppColors.textPrimary,
+                              ),
+                              textAlign: TextAlign.end,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  }).toList(),
+                ),
               ),
-            ),
-            const SizedBox(height: 24),
-            AppButton(
-              text: confirmText,
-              onPressed: onConfirm,
-              variant: isDestructive
-                  ? AppButtonVariant.destructive
-                  : AppButtonVariant.primary,
-              isExpanded: true,
-              isLoading: isLoading,
-            ),
-            const SizedBox(height: 12),
-            AppButton(
-              text: cancelText,
-              onPressed: onCancel ?? () => Navigator.of(context).pop(false),
-              variant: AppButtonVariant.text,
-              isExpanded: true,
-            ),
-          ],
+              const SizedBox(height: 24),
+              AppButton(
+                text: confirmText,
+                onPressed: onConfirm,
+                variant: isDestructive
+                    ? AppButtonVariant.destructive
+                    : AppButtonVariant.primary,
+                isExpanded: true,
+                isLoading: isLoading,
+              ),
+              const SizedBox(height: 12),
+              AppButton(
+                text: cancelText,
+                onPressed: onCancel ?? () => Navigator.of(context).pop(false),
+                variant: AppButtonVariant.text,
+                isExpanded: true,
+              ),
+            ],
+          ),
         ),
       ),
     );
