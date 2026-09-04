@@ -2,7 +2,6 @@ package services
 
 import (
 	"context"
-	"errors"
 
 	"globmint/backend/internal/config"
 	"globmint/backend/internal/domain"
@@ -14,6 +13,7 @@ import (
 // GlobmintVault. It never contains private keys.
 type SavingsConfig struct {
 	VaultContract      string
+	VaultAddress       string // custodial deposit address users send to (signer)
 	StablecoinSymbol   string
 	StablecoinName     string
 	StablecoinDecimals int
@@ -37,7 +37,7 @@ func NewSavingsService(store storage.Store, cfg SavingsConfig) *SavingsService {
 }
 
 // DepositInfo is the non-secret data a client needs to fund a user's savings
-// balance. Address is empty until the user links a wallet.
+// balance. Address is the on-chain deposit address (vault) funds are sent to.
 type DepositInfo struct {
 	Address            string `json:"address"`
 	VaultContract      string `json:"vault_contract"`
@@ -50,10 +50,11 @@ type DepositInfo struct {
 	Mode               string `json:"mode"`
 }
 
-// GetDepositInfo returns the user's linked deposit address (if any) along with
-// the on-chain details needed to build a vault deposit transaction.
+// GetDepositInfo returns the on-chain deposit address (vault) along with the
+// stablecoin details needed to fund the user's savings.
 func (s *SavingsService) GetDepositInfo(ctx context.Context, userID string) (*DepositInfo, error) {
 	info := &DepositInfo{
+		Address:            s.cfg.VaultAddress,
 		VaultContract:      s.cfg.VaultContract,
 		StablecoinSymbol:   s.cfg.StablecoinSymbol,
 		StablecoinName:     s.cfg.StablecoinName,
@@ -62,13 +63,6 @@ func (s *SavingsService) GetDepositInfo(ctx context.Context, userID string) (*De
 		Network:            s.cfg.Network,
 		ChainID:            s.cfg.ChainID,
 		Mode:               s.cfg.Mode,
-	}
-	da, err := s.store.DepositAddressRepo().FindByUser(ctx, userID)
-	if err != nil && !errors.Is(err, domain.ErrNotFound) {
-		return nil, err
-	}
-	if da != nil {
-		info.Address = da.Address
 	}
 	return info, nil
 }
@@ -100,6 +94,7 @@ func (s *SavingsService) SetDepositAddress(ctx context.Context, userID, address 
 func FromConfig(cfg config.Config) SavingsConfig {
 	return SavingsConfig{
 		VaultContract:      cfg.Blockchain.VaultContract,
+		VaultAddress:       cfg.Blockchain.VaultAddress,
 		StablecoinSymbol:   cfg.Blockchain.Stablecoin,
 		StablecoinName:     cfg.Blockchain.StablecoinName,
 		StablecoinDecimals: cfg.Blockchain.StablecoinDecimals,

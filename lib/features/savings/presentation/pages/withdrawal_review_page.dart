@@ -8,36 +8,58 @@ import '../../../../core/utils/formatters.dart';
 import '../../../../core/widgets/app_button.dart';
 import '../../../../core/widgets/app_confirmation_modal.dart';
 import '../../../../core/widgets/success_dialog.dart';
-import '../../../../shared/models/bank_account.dart';
 
 class WithdrawalReviewPage extends ConsumerStatefulWidget {
-  const WithdrawalReviewPage({super.key, this.amount, this.account});
+  const WithdrawalReviewPage({super.key, this.amount, this.account, this.destination});
 
   final double? amount;
-  final BankAccount? account;
+  final dynamic account; // kept for compatibility; unused in the vault flow
+  final String? destination;
 
   @override
-  ConsumerState<WithdrawalReviewPage> createState() => _WithdrawalReviewPageState();
+  ConsumerState<WithdrawalReviewPage> createState() =>
+      _WithdrawalReviewPageState();
 }
 
 class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
   bool _isProcessing = false;
+  double? _usdcEstimate;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadQuote();
+  }
+
+  Future<void> _loadQuote() async {
+    final a = widget.amount ?? 0;
+    if (a <= 0) return;
+    try {
+      final q = await ref
+          .read(conversionServiceProvider)
+          .getQuote(amount: a, fromCurrency: 'NGN', toCurrency: 'USDC');
+      if (mounted) setState(() => _usdcEstimate = q.outputAmount);
+    } catch (_) {
+      // No inverse NGN->USDC rate available; omit the USDC line.
+    }
+  }
 
   Future<void> _confirmWithdrawal() async {
     final a = widget.amount ?? 0;
-    final acc = widget.account;
-    if (a <= 0 || acc == null) return;
-
-    final fee = a * 0.01;
+    final destination = widget.destination?.trim() ?? '';
+    if (a <= 0 || destination.isEmpty) return;
 
     final confirmed = await ConfirmationModal.show(
       context: context,
       title: 'Finalize withdrawal?',
       details: [
-        ConfirmationDetail(label: 'Amount', value: CurrencyFormatter.ngn(a), isHighlighted: true),
-        ConfirmationDetail(label: 'Fee', value: CurrencyFormatter.ngn(fee)),
-        ConfirmationDetail(label: 'To', value: acc.maskedNumber),
-        ConfirmationDetail(label: 'Receive', value: CurrencyFormatter.ngn(a - fee)),
+        ConfirmationDetail(
+            label: 'Amount', value: CurrencyFormatter.ngn(a), isHighlighted: true),
+        if (_usdcEstimate != null)
+          ConfirmationDetail(
+              label: 'Send', value: '≈ ${_usdcEstimate!.toStringAsFixed(2)} USDC'),
+        ConfirmationDetail(label: 'To', value: destination),
+        ConfirmationDetail(label: 'Fee', value: '₦0.00'),
       ],
       confirmText: 'Confirm',
       isDestructive: true,
@@ -46,23 +68,15 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
     if (confirmed == true && mounted) {
       setState(() => _isProcessing = true);
       try {
-        await ref.read(transferServiceProvider).withdraw(
-              amount: a,
-              currency: 'NGN',
-              bankId: acc.id,
+        final txHash = await ref.read(savingsClientProvider).withdrawToAddress(
+              amount: a.toStringAsFixed(2),
+              destination: destination,
             );
         if (mounted) {
           ref.invalidate(accountSummaryProvider);
           ref.invalidate(transactionsProvider);
           setState(() => _isProcessing = false);
-          SuccessDialog.show(
-            context: context,
-            type: SuccessDialogType.success,
-            title: 'Withdrawal Initiated',
-            amount: CurrencyFormatter.ngn(a - fee),
-            subtitle: 'Funds will arrive within 5 minutes',
-            onPressed: () => context.go('/savings'),
-          );
+          _showSuccess(a, txHash);
         }
       } catch (e) {
         if (mounted) {
@@ -75,11 +89,21 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
     }
   }
 
+  void _showSuccess(double amount, String txHash) {
+    SuccessDialog.show(
+      context: context,
+      type: SuccessDialogType.success,
+      title: 'Withdrawal Sent',
+      amount: CurrencyFormatter.ngn(amount),
+      subtitle: 'USDC sent on-chain. Transaction: $txHash',
+      onPressed: () => context.go('/savings'),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final a = widget.amount ?? 0;
-    final acc = widget.account;
-    final fee = a * 0.01;
+    final destination = widget.destination?.trim() ?? '';
 
     final availableAfter = ref.watch(accountSummaryProvider).whenOrNull(
           data: (s) => s.available.balance - a,
@@ -94,7 +118,6 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Amount summary
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.all(20),
@@ -105,37 +128,36 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
                 ),
                 child: Column(
                   children: [
-                    Text('You pay (withdrawal)', style: context.typography.labelMedium),
+                    Text('You withdraw', style: context.typography.labelMedium),
                     const SizedBox(height: 4),
-                    Text(CurrencyFormatter.ngn(a), style: context.typography.amountHero),
-                    const SizedBox(height: 4),
-                    if (acc != null) Text(acc.maskedNumber, style: context.typography.bodySmall),
+                    Text(CurrencyFormatter.ngn(a),
+                        style: context.typography.amountHero),
+                    if (_usdcEstimate != null) ...[
+                      const SizedBox(height: 4),
+                      Text('≈ ${_usdcEstimate!.toStringAsFixed(2)} USDC',
+                          style: context.typography.bodySmall),
+                    ],
                   ],
                 ),
               ),
               const SizedBox(height: 20),
+              _ReviewRow(label: 'Fee', value: '₦0.00'),
               _ReviewRow(
-                label: 'Fee (1%)',
-                value: CurrencyFormatter.ngn(fee),
-              ),
-              _ReviewRow(
-                label: 'You receive',
-                value: CurrencyFormatter.ngn(a - fee),
-                highlight: true,
+                label: 'Destination',
+                value: destination,
               ),
               const SizedBox(height: 8),
               const Divider(color: AppColors.divider),
               const SizedBox(height: 8),
               _ReviewRow(
                 label: 'Available after',
-                value: availableAfter != null
-                    ? CurrencyFormatter.ngn(availableAfter)
-                    : '—',
+                value:
+                    availableAfter != null ? CurrencyFormatter.ngn(availableAfter) : '—',
               ),
               const SizedBox(height: 8),
               _ReviewRow(
-                label: 'Processing time',
-                value: 'Up to 5 min',
+                label: 'Sent on',
+                value: 'local hardhat network',
               ),
               const SizedBox(height: 32),
               AppButton(
@@ -156,12 +178,10 @@ class _ReviewRow extends StatelessWidget {
   const _ReviewRow({
     required this.label,
     required this.value,
-    this.highlight = false,
   });
 
   final String label;
   final String value;
-  final bool highlight;
 
   @override
   Widget build(BuildContext context) {
@@ -171,12 +191,12 @@ class _ReviewRow extends StatelessWidget {
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
           Text(label, style: context.typography.bodyMedium),
-          Text(
-            value,
-            style: (highlight
-                    ? context.typography.amountMedium
-                    : context.typography.labelLarge)
-                .copyWith(color: highlight ? AppColors.primary : null),
+          Expanded(
+            child: Text(
+              value,
+              textAlign: TextAlign.end,
+              style: context.typography.labelLarge,
+            ),
           ),
         ],
       ),

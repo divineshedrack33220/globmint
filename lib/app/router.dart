@@ -135,6 +135,7 @@ final GoRouter appRouter = GoRouter(
           WithdrawalReviewPage(
             amount: (extra['amount'] as num?)?.toDouble(),
             account: extra['account'] as dynamic,
+            destination: extra['destination'] as String?,
           ),
           isFullScreenDialog: true,
         );

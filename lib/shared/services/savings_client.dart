@@ -4,6 +4,8 @@ import 'api_client.dart';
 /// Deposit information returned by `GET /savings/deposit-info`. Describes the
 /// non-custodial vault contract plus the user's linked on-chain address.
 class DepositInfo {
+  static const String zeroAddress = '0x0000000000000000000000000000000000000000';
+
   const DepositInfo({
     required this.address,
     required this.vaultContract,
@@ -60,5 +62,20 @@ class SavingsClient {
     );
     if (data == null) throw ApiException(0, 'Empty response from server');
     return DepositInfo.fromJson(data);
+  }
+
+  /// Converts NGN to USDC and sends it on-chain from the user's vault to the
+  /// destination crypto address. Returns the on-chain transaction hash.
+  Future<String> withdrawToAddress({
+    required String amount,
+    required String destination,
+  }) async {
+    final data = await _api.post(
+      '${AppConstants.apiV1Prefix}/savings/withdraw',
+      idempotent: true,
+      body: {'amount': amount, 'destination': destination},
+    );
+    if (data == null) throw ApiException(0, 'Empty response from server');
+    return data['tx_hash'] as String? ?? '';
   }
 }

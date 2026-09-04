@@ -76,6 +76,12 @@ func NewHandler(deps *Deps, auth middleware.Authenticator) http.Handler {
 	// Savings (non-custodial on-chain vault)
 	mux.Handle("GET "+api+"/savings/deposit-info", middleware.Auth(auth, http.HandlerFunc(deps.handleGetDepositInfo)))
 	mux.Handle("PUT "+api+"/savings/deposit-address", middleware.Auth(auth, http.HandlerFunc(deps.handleSetDepositAddress)))
+	mux.Handle("POST "+api+"/savings/withdraw", middleware.RateLimiter(
+		middleware.Auth(auth, middleware.Idempotency(http.HandlerFunc(deps.handleVaultWithdraw))),
+		time.Second,
+		20,
+		func(r *http.Request) string { return strings.TrimSpace(r.RemoteAddr) },
+	))
 
 	// Devices (active sessions)
 	mux.Handle("GET "+api+"/devices", middleware.Auth(auth, http.HandlerFunc(deps.handleListDevices)))

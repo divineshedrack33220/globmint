@@ -80,7 +80,7 @@ class _TransferReviewPageState extends ConsumerState<TransferReviewPage> {
   @override
   Widget build(BuildContext context) {
     final a = widget.amount ?? 0;
-    final fee = a * 0.005;
+    final fee = 0.0;
     final available = ref.watch(accountSummaryProvider).valueOrNull?.available ??
         const Account(id: '', currency: 'NGN', balance: 0);
 
@@ -163,9 +163,6 @@ class _TransferReviewPageState extends ConsumerState<TransferReviewPage> {
                 onPressed: () => _confirmTransfer(amount: a, fee: fee),
               ),
               const SizedBox(height: 16),
-              Center(
-                child: Text('Prototype — no real money is sent', style: context.typography.bodySmall),
-              ),
             ],
           ),
         ),

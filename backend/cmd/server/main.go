@@ -41,8 +41,6 @@ func main() {
 	balanceSvc := services.NewBalanceService(store)
 	ledgerSvc := services.NewLedgerService(store)
 	moneySvc := services.NewMoneyService(store)
-	savingsSvc := services.NewSavingsService(store, services.FromConfig(cfg))
-	securitySvc := services.NewSecurityService(store)
 
 	// Blockchain settlement layer. Uses the mock service unless the configured
 	// mode is "real" and a valid RPC URL is present.
@@ -60,6 +58,30 @@ func main() {
 	defer closeChain()
 	log.Printf("blockchain service mode=%s network=%s", cfg.Blockchain.Mode, cfg.Blockchain.Network)
 
+	// The on-chain deposit address is the backend signer (vault) when real mode.
+	vaultAddress := cfg.Blockchain.VaultAddress
+	if vaultAddress == "" {
+		vaultAddress = chainSvc.VaultAddress()
+	}
+	savingsCfg := services.FromConfig(cfg)
+	savingsCfg.VaultAddress = vaultAddress
+	savingsSvc := services.NewSavingsService(store, savingsCfg)
+	securitySvc := services.NewSecurityService(store)
+
+	// NGN-per-USDC rate from the seeded rate book (kobo per USDC).
+	rateMinor := int64(160450)
+	if er, rerr := store.ExchangeRateRepo().FindByPair(ctx, "USDT", "NGN"); rerr == nil {
+		rateMinor = er.Rate
+	}
+	vaultSvc := services.NewVaultService(store, chainSvc, moneySvc, services.VaultConfig{
+		VaultAddress:       vaultAddress,
+		StablecoinSymbol:   cfg.Blockchain.Stablecoin,
+		StablecoinDecimals: cfg.Blockchain.StablecoinDecimals,
+		Mode:               cfg.Blockchain.Mode,
+		PollInterval:       8 * time.Second,
+		StartBlock:         uint64(0),
+	}, rateMinor)
+
 	deps := &httpapi.Deps{
 		Auth:       authSvc,
 		Balance:    balanceSvc,
@@ -68,8 +90,11 @@ func main() {
 		Savings:    savingsSvc,
 		Security:   securitySvc,
 		Blockchain: chainSvc,
+		Vault:      vaultSvc,
 	}
 	handler := httpapi.NewHandler(deps, authSvc)
+
+	go vaultSvc.RunIndexer(ctx)
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,

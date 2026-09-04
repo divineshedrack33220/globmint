@@ -262,12 +262,6 @@ class _SendToBeneficiaryPageState extends ConsumerState<SendToBeneficiaryPage> {
                   isLoading: _loading,
                 ),
                 const SizedBox(height: 16),
-                Center(
-                  child: Text(
-                    'Prototype — no real money moves',
-                    style: context.typography.bodySmall,
-                  ),
-                ),
               ],
             ),
           ),

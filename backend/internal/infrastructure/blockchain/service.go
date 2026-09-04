@@ -15,6 +15,15 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 )
 
+// TokenTransfer is a decoded stablecoin Transfer event.
+type TokenTransfer struct {
+	From        string
+	To          string
+	Value       *big.Int // raw base units (e.g. 6 decimals)
+	TxHash      string
+	BlockNumber uint64
+}
+
 // BlockchainService defines the interface for blockchain operations.
 type BlockchainService interface {
 	GetBalance(ctx context.Context, address string) (string, error)
@@ -22,6 +31,15 @@ type BlockchainService interface {
 	GetTransaction(ctx context.Context, txHash string) (string, error)
 	WaitForConfirmation(ctx context.Context, txHash string, confirmations int) (string, error)
 	TransferToken(ctx context.Context, recipient string, amount string) (string, error)
+	// VaultAddress returns the on-chain address users send deposits to. Empty in
+	// mock mode (no signer configured).
+	VaultAddress() string
+	// FilterTokenTransfers returns decoded stablecoin Transfer events from
+	// `fromBlock`..`toBlock` (inclusive) where `to` equals `address` (or all
+	// addresses when `address` is empty).
+	FilterTokenTransfers(ctx context.Context, fromBlock, toBlock uint64, address string) ([]TokenTransfer, error)
+	// LatestBlock returns the current head block number.
+	LatestBlock(ctx context.Context) (uint64, error)
 }
 
 // ---------- Mock ----------
@@ -29,7 +47,10 @@ type BlockchainService interface {
 // MockBlockchainService is a mock implementation for development/testing.
 type MockBlockchainService struct {
 	balances map[string]string
+	transfers []TokenTransfer
 }
+
+// ---------- Mock ----------
 
 // NewMockBlockchainService creates a new mock blockchain service.
 func NewMockBlockchainService() *MockBlockchainService {
@@ -69,6 +90,30 @@ func (m *MockBlockchainService) TransferToken(ctx context.Context, recipient str
 	txHash := "0x" + fmt.Sprintf("%064x", time.Now().UnixNano())
 	return txHash, nil
 }
+
+// VaultAddress returns empty in mock mode (no signer configured).
+func (m *MockBlockchainService) VaultAddress() string { return "" }
+
+// FilterTokenTransfers returns any transfers seeded via AddTransfer for tests.
+func (m *MockBlockchainService) FilterTokenTransfers(ctx context.Context, fromBlock, toBlock uint64, address string) ([]TokenTransfer, error) {
+	var out []TokenTransfer
+	for _, t := range m.transfers {
+		if t.BlockNumber >= fromBlock && t.BlockNumber <= toBlock {
+			if address == "" || t.To == address {
+				out = append(out, t)
+			}
+		}
+	}
+	return out, nil
+}
+
+// AddTransfer seeds a synthetic Transfer event (mock-only, for tests).
+func (m *MockBlockchainService) AddTransfer(t TokenTransfer) {
+	m.transfers = append(m.transfers, t)
+}
+
+// LatestBlock returns a synthetic head block number for mock mode.
+func (m *MockBlockchainService) LatestBlock(ctx context.Context) (uint64, error) { return 0, nil }
 
 // ---------- Real (Ethereum RPC) ----------
 
@@ -237,13 +282,11 @@ func (s *EthereumService) TransferToken(ctx context.Context, recipient string, a
 	if !common.IsHexAddress(recipient) {
 		return "", fmt.Errorf("invalid recipient address %q", recipient)
 	}
-	scaled, ok := new(big.Int).SetString(strings.ReplaceAll(amount, ",", ""), 10)
-	if !ok {
-		return "", fmt.Errorf("invalid amount %q", amount)
+	scaled, err := parseMajorToBase(strings.TrimSpace(amount), s.tokenDecimals)
+	if err != nil {
+		return "", err
 	}
-	// Scale human units to base units (e.g. 6 decimals -> *1e6).
-	multiplier := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(s.tokenDecimals)), nil)
-	value := new(big.Int).Mul(scaled, multiplier)
+	value := scaled
 
 	to := common.HexToAddress(recipient)
 
@@ -309,6 +352,97 @@ func formatToken(v *big.Int, decimals int) string {
 	divisor := new(big.Float).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil))
 	quoted := new(big.Float).Quo(f, divisor)
 	return quoted.Text('f', 6)
+}
+
+// VaultAddress returns the signer's address, which serves as the on-chain
+// address users send deposits to. Empty when no signer key is configured.
+func (s *EthereumService) VaultAddress() string {
+	if s.signerKey == nil {
+		return ""
+	}
+	return s.from.Hex()
+}
+
+// LatestBlock returns the current head block number.
+func (s *EthereumService) LatestBlock(ctx context.Context) (uint64, error) {
+	n, err := s.client.BlockNumber(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("get latest block: %w", err)
+	}
+	return n, nil
+}
+
+// FilterTokenTransfers returns decoded stablecoin Transfer events from
+// `fromBlock`..`toBlock` (inclusive) where the recipient matches `address`
+// (or all recipients when `address` is empty).
+func (s *EthereumService) FilterTokenTransfers(ctx context.Context, fromBlock, toBlock uint64, address string) ([]TokenTransfer, error) {
+	// Transfer(address,address,uint256) topic0
+	topic0 := common.HexToHash("0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef")
+	query := ethereum.FilterQuery{
+		FromBlock: new(big.Int).SetUint64(fromBlock),
+		ToBlock:   new(big.Int).SetUint64(toBlock),
+		Addresses: []common.Address{s.token},
+		Topics:    [][]common.Hash{{topic0}},
+	}
+	logs, err := s.client.FilterLogs(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("filter token transfers: %w", err)
+	}
+	out := make([]TokenTransfer, 0, len(logs))
+	for _, l := range logs {
+		if len(l.Topics) < 3 || len(l.Data) < 32 {
+			continue
+		}
+		tsf := TokenTransfer{
+			From:   common.HexToAddress(l.Topics[1].Hex()).Hex(),
+			To:     common.HexToAddress(l.Topics[2].Hex()).Hex(),
+			Value:  new(big.Int).SetBytes(l.Data[:32]),
+			TxHash: l.TxHash.Hex(),
+			BlockNumber: l.BlockNumber,
+		}
+		if address == "" || strings.EqualFold(tsf.To, address) {
+			out = append(out, tsf)
+		}
+	}
+	return out, nil
+}
+
+// parseMajorToBase parses a decimal major-unit string (e.g. "1.50") into base
+// units given the token's decimals (e.g. 1.50 USDC * 1e6 = 1500000).
+func parseMajorToBase(s string, decimals int) (*big.Int, error) {
+	if s == "" {
+		return nil, fmt.Errorf("empty amount")
+	}
+	neg := false
+	if s[0] == '-' {
+		neg = true
+		s = s[1:]
+	}
+	parts := strings.SplitN(s, ".", 2)
+	whole := parts[0]
+	frac := ""
+	if len(parts) == 2 {
+		frac = parts[1]
+	}
+	if whole == "" {
+		whole = "0"
+	}
+	// Reject an overly precise fraction instead of silently truncating.
+	if len(frac) > decimals {
+		return nil, fmt.Errorf("amount %q has too many decimal places", s)
+	}
+	for len(frac) < decimals {
+		frac += "0"
+	}
+	combined := whole + frac
+	val, ok := new(big.Int).SetString(combined, 10)
+	if !ok {
+		return nil, fmt.Errorf("invalid amount %q", s)
+	}
+	if neg {
+		return nil, fmt.Errorf("negative amount")
+	}
+	return val, nil
 }
 
 // ---------- Factory ----------

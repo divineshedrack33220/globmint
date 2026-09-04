@@ -36,6 +36,9 @@ type BlockchainConfig struct {
 	// referenced by the savings/deposit-info endpoint so clients can build the
 	// approve + deposit calls. Empty when the vault is not yet deployed.
 	VaultContract string
+	// VaultAddress is the custodial deposit address (the backend signer) that
+	// users send USD deposits to. Empty in mock mode.
+	VaultAddress string
 	Mode          string // "mock" or "real"
 	// PrivateKeyHex is the signer private key for on-chain transfers. It is
 	// read from the environment and must never be logged or committed.
@@ -62,6 +65,7 @@ func Load() Config {
 			StablecoinEnabled: boolEnv("GLOBMINT_STABLECOIN_ENABLED", true),
 			StablecoinContract: envOr("GLOBMINT_STABLECOIN_CONTRACT_ADDRESS", "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238"),
 			VaultContract:      envOr("GLOBMINT_VAULT_CONTRACT_ADDRESS", ""),
+			VaultAddress:       envOr("GLOBMINT_VAULT_ADDRESS", ""),
 			Mode:               envOr("GLOBMINT_BLOCKCHAIN_MODE", "mock"),
 			PrivateKeyHex:   os.Getenv("GLOBMINT_STABLECOIN_PRIVATE_KEY"),
 		},

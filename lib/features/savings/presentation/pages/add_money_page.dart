@@ -1,16 +1,18 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 import '../../../../app/providers.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/widgets/app_button.dart';
-import '../../../../core/widgets/app_text_field.dart';
-import '../../../../core/widgets/app_confirmation_modal.dart';
-import '../../../../core/widgets/success_dialog.dart';
 import '../../../../core/utils/formatters.dart';
 import '../../../../shared/services/savings_client.dart';
 
+/// Personal savings vault. You top it up by sending USDC on-chain to the
+/// deposit address shown here. The app watches that address and auto-credits
+/// your NGN balance when funds arrive — you never type an amount.
 class AddMoneyPage extends ConsumerStatefulWidget {
   const AddMoneyPage({super.key});
 
@@ -19,18 +21,28 @@ class AddMoneyPage extends ConsumerStatefulWidget {
 }
 
 class _AddMoneyPageState extends ConsumerState<AddMoneyPage> {
-  final _formKey = GlobalKey<FormState>();
-  final _amountController = TextEditingController();
   final _addressController = TextEditingController();
-  String _currency = 'NGN';
-  bool _isLoading = false;
   DepositInfo? _deposit;
   bool _depositError = false;
+  bool _linking = false;
+  bool _copied = false;
+  Timer? _poll;
 
   @override
   void initState() {
     super.initState();
     _loadDeposit();
+    _poll = Timer.periodic(const Duration(seconds: 6), (_) {
+      if (!mounted) return;
+      ref.invalidate(accountSummaryProvider);
+    });
+  }
+
+  @override
+  void dispose() {
+    _poll?.cancel();
+    _addressController.dispose();
+    super.dispose();
   }
 
   Future<void> _loadDeposit() async {
@@ -40,75 +52,14 @@ class _AddMoneyPageState extends ConsumerState<AddMoneyPage> {
         setState(() {
           _deposit = info;
           _depositError = false;
-          _addressController.text = info.hasAddress ? info.address : '';
+          _addressController.text =
+              info.address.isEmpty || info.address == DepositInfo.zeroAddress
+                  ? ''
+                  : info.address;
         });
       }
     } catch (_) {
       if (mounted) setState(() => _depositError = true);
-    }
-  }
-
-  @override
-  void dispose() {
-    _amountController.dispose();
-    _addressController.dispose();
-    super.dispose();
-  }
-
-  bool get _isCrypto => _currency != 'NGN';
-
-  Future<void> _confirmDeposit() async {
-    if (!_formKey.currentState!.validate()) return;
-    final amount = double.parse(_amountController.text.replaceAll(',', ''));
-
-    if (_isCrypto && ( _deposit == null || !_deposit!.hasAddress)) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text('Link your wallet address to receive on-chain deposits first.')),
-      );
-      return;
-    }
-
-    final confirmed = await ConfirmationModal.show(
-      context: context,
-      title: 'Confirm deposit?',
-      details: [
-        ConfirmationDetail(label: 'Amount', value: CurrencyFormatter.ngn(amount), isHighlighted: true),
-        ConfirmationDetail(label: 'Currency', value: _currency),
-        ConfirmationDetail(
-          label: 'Destination',
-          value: _isCrypto ? 'Vault contract' : 'Globmint Savings',
-        ),
-        ConfirmationDetail(label: 'Fee', value: '₦0.00'),
-      ],
-      confirmText: 'Confirm Deposit',
-    );
-
-    if (confirmed == true) {
-      await _submitDeposit(amount);
-    }
-  }
-
-  Future<void> _submitDeposit(double amount) async {
-    setState(() => _isLoading = true);
-    try {
-      await ref.read(transferServiceProvider).deposit(
-            amount: amount,
-            currency: _currency,
-          );
-      if (mounted) {
-        ref.invalidate(accountSummaryProvider);
-        ref.invalidate(transactionsProvider);
-        setState(() => _isLoading = false);
-        _showSuccess(amount);
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() => _isLoading = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Deposit failed: $e')),
-        );
-      }
     }
   }
 
@@ -120,16 +71,11 @@ class _AddMoneyPageState extends ConsumerState<AddMoneyPage> {
       );
       return;
     }
-    setState(() => _isLoading = true);
+    setState(() => _linking = true);
     try {
-      final info = await ref
-          .read(savingsClientProvider)
-          .setDepositAddress(address);
+      await ref.read(savingsClientProvider).setDepositAddress(address);
       if (mounted) {
-        setState(() {
-          _deposit = info;
-          _isLoading = false;
-        });
+        setState(() => _linking = false);
         ref.invalidate(depositInfoProvider);
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Wallet linked successfully')),
@@ -137,7 +83,7 @@ class _AddMoneyPageState extends ConsumerState<AddMoneyPage> {
       }
     } catch (e) {
       if (mounted) {
-        setState(() => _isLoading = false);
+        setState(() => _linking = false);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Could not link wallet: $e')),
         );
@@ -145,15 +91,14 @@ class _AddMoneyPageState extends ConsumerState<AddMoneyPage> {
     }
   }
 
-  void _showSuccess(double amount) {
-    SuccessDialog.show(
-      context: context,
-      type: SuccessDialogType.success,
-      title: 'Deposit Successful',
-      amount: CurrencyFormatter.ngn(amount),
-      subtitle: 'Added to your available balance',
-      onPressed: () => context.go('/home'),
-    );
+  void _copyAddress() {
+    final addr = _deposit?.address ?? '';
+    if (addr.isEmpty) return;
+    Clipboard.setData(ClipboardData(text: addr));
+    setState(() => _copied = true);
+    Timer(const Duration(seconds: 2), () {
+      if (mounted) setState(() => _copied = false);
+    });
   }
 
   @override
@@ -161,283 +106,197 @@ class _AddMoneyPageState extends ConsumerState<AddMoneyPage> {
     final summaryAsync = ref.watch(accountSummaryProvider);
     final availableBalance = summaryAsync.valueOrNull?.available.balance ?? 0;
 
+    final deposit = _deposit;
+
     return Scaffold(
       backgroundColor: AppColors.background,
-      appBar: AppBar(title: const Text('Add Money')),
+      appBar: AppBar(title: const Text('Top up your vault')),
       body: SafeArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(20),
-          child: Form(
-            key: _formKey,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // Available balance
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: AppColors.surface,
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(color: AppColors.border, width: 1),
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(
-                        'Available Balance',
-                        style: context.typography.bodyMedium,
-                      ),
-                      Text(
-                        CurrencyFormatter.ngn(availableBalance),
-                        style: context.typography.amountMedium,
-                      ),
-                    ],
-                  ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Available balance (auto-refreshes as deposits arrive).
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: AppColors.surface,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: AppColors.border, width: 1),
                 ),
-                const SizedBox(height: 24),
-                Text('Amount', style: context.typography.title),
-                const SizedBox(height: 12),
-                AmountTextField(
-                  controller: _amountController,
-                  label: null,
-                  hint: '0.00',
-                  prefixText: _currency == 'NGN' ? '₦' : '',
-                  validator: (v) {
-                    if (v == null || v.isEmpty) return 'Enter an amount';
-                    final parsed = double.tryParse(v.replaceAll(',', ''));
-                    if (parsed == null || parsed <= 0) return 'Enter a valid amount';
-                    if (_currency == 'NGN' && parsed < 1000) return 'Minimum is ₦1,000';
-                    return null;
-                  },
-                ),
-                const SizedBox(height: 20),
-                Text('Currency', style: context.typography.title),
-                const SizedBox(height: 12),
-                Row(
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    _CurrencyChip(
-                      label: 'NGN',
-                      isSelected: _currency == 'NGN',
-                      onTap: () => setState(() => _currency = 'NGN'),
-                    ),
-                    const SizedBox(width: 12),
-                    _CurrencyChip(
-                      label: 'USDT',
-                      isSelected: _currency == 'USDT',
-                      onTap: () => setState(() => _currency = 'USDT'),
+                    Text('Available Balance', style: context.typography.bodyMedium),
+                    Text(
+                      CurrencyFormatter.ngn(availableBalance),
+                      style: context.typography.amountMedium,
                     ),
                   ],
                 ),
-                const SizedBox(height: 20),
-                if (_isCrypto) ...[
-                  Text('Crypto Deposit Address', style: context.typography.title),
-                  const SizedBox(height: 12),
-                  _depositInfoSection(context),
-                  const SizedBox(height: 20),
-                ],
-                Text('Destination', style: context.typography.title),
-                const SizedBox(height: 12),
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: AppColors.surface,
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(color: AppColors.border, width: 1),
-                  ),
-                  child: Row(
-                    children: [
-                      const Icon(Icons.account_balance_wallet,
-                          color: AppColors.primary, size: 22),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              _isCrypto ? 'Globmint Vault' : 'Globmint Savings',
-                              style: context.typography.labelLarge,
-                            ),
-                            Text(
-                              _isCrypto
-                                  ? 'Sent to the vault contract on-chain'
-                                  : 'Funds will be held securely',
-                              style: context.typography.bodySmall,
-                            ),
-                          ],
+              ),
+              const SizedBox(height: 24),
+              // Deposit address card
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  color: AppColors.surface,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: AppColors.primary, width: 1.2),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(Icons.account_balance_wallet,
+                            color: AppColors.primary, size: 24),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text('Send USDC to your vault',
+                              style: context.typography.title),
                         ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Funds arriving here are detected and added to your NGN balance automatically. No amount needed.',
+                      style: context.typography.bodySmall,
+                    ),
+                    const SizedBox(height: 16),
+                    if (deposit == null && _depositError)
+                      Text('Deposit details are unavailable right now.',
+                          style: context.typography.bodySmall)
+                    else if (deposit == null)
+                      const Center(
+                          child: Padding(
+                              padding: EdgeInsets.all(12),
+                              child: CircularProgressIndicator(
+                                  color: AppColors.primary)))
+                    else ...[
+                      _label(context, 'Deposit address'),
+                      const SizedBox(height: 6),
+                      _addressBox(context, deposit.address, onCopy: _copyAddress),
+                      const SizedBox(height: 12),
+                      Wrap(
+                        spacing: 16,
+                        runSpacing: 8,
+                        children: [
+                          _chip(context, 'Network', deposit.network),
+                          _chip(context, 'Chain', '${deposit.chainId}'),
+                          _chip(
+                            context,
+                            'Asset',
+                            '${deposit.stablecoinSymbol} · ${deposit.stablecoinName}',
+                          ),
+                        ],
                       ),
+                      if (deposit.vaultContract.isNotEmpty) ...[
+                        const SizedBox(height: 12),
+                        _label(context, 'Vault contract'),
+                        const SizedBox(height: 6),
+                        SelectableText(
+                          deposit.vaultContract,
+                          style: context.typography.bodySmall.copyWith(
+                              color: AppColors.textSecondary),
+                        ),
+                      ],
                     ],
-                  ),
+                  ],
                 ),
-                const SizedBox(height: 32),
-                AppButton(
-                  text: 'Continue',
-                  onPressed: _confirmDeposit,
-                  isExpanded: true,
-                  isLoading: _isLoading,
+              ),
+              const SizedBox(height: 24),
+              // Link your source wallet so deposits are credited to you.
+              Text('Link your wallet', style: context.typography.title),
+              const SizedBox(height: 6),
+              Text(
+                'Deposits sent to your vault are credited to the linked wallet below. Keep it set to your own address.',
+                style: context.typography.bodySmall,
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _addressController,
+                enabled: !_linking,
+                style: context.typography.bodyMedium,
+                decoration: InputDecoration(
+                  hintText: '0x…',
+                  border:
+                      OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                  filled: true,
+                  fillColor: AppColors.surface,
                 ),
-                const SizedBox(height: 16),
-                Center(
-                  child: Text(
-                    'Test network — no real money is moved',
-                    style: context.typography.bodySmall,
-                  ),
+              ),
+              const SizedBox(height: 12),
+              AppButton(
+                text: 'Save linked wallet',
+                onPressed: _linkAddress,
+                variant: AppButtonVariant.secondary,
+                isExpanded: true,
+                isLoading: _linking,
+              ),
+              const SizedBox(height: 20),
+              Center(
+                child: Text(
+                  'Using the local hardhat network — test USDC only',
+                  style: context.typography.bodySmall,
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
       ),
     );
   }
 
-  Widget _depositInfoSection(BuildContext context) {
-    if (_deposit == null && _depositError) {
-      return Container(
-        width: double.infinity,
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: AppColors.surface,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: AppColors.border, width: 1),
-        ),
-        child: Text(
-          'Deposit details are unavailable right now.',
-          style: context.typography.bodyMedium,
-        ),
-      );
-    }
+  Widget _label(BuildContext context, String text) =>
+      Text(text, style: context.typography.bodySmall);
 
-    final deposit = _deposit;
-    if (deposit == null) {
-      return Container(
-        width: double.infinity,
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: AppColors.surface,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: AppColors.border, width: 1),
-        ),
-        child: const Center(child: CircularProgressIndicator()),
-      );
-    }
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Container(
-          width: double.infinity,
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: AppColors.surface,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: AppColors.border, width: 1),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _infoRow(context, 'Network', deposit.network),
-              _infoRow(context, 'Chain', '${deposit.chainId}'),
-              _infoRow(context, 'Asset',
-                  '${deposit.stablecoinSymbol} · ${deposit.stablecoinName}'),
-              const Divider(height: 16, color: AppColors.border),
-              if (deposit.vaultContract.isNotEmpty)
-                _infoRow(context, 'Vault contract (send asset here)',
-                    deposit.vaultContract, highlight: true)
-              else
-                _infoRow(
-                  context,
-                  'Deposit',
-                  'USDC test token on Sepolia — link your wallet below to fund your savings.',
-                ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 12),
-        Text('Your wallet address', style: context.typography.bodyMedium),
-        const SizedBox(height: 8),
-        TextField(
-          controller: _addressController,
-          enabled: !_isLoading,
-          style: context.typography.bodyMedium,
-          decoration: InputDecoration(
-            hintText: '0x…',
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-            filled: true,
-            fillColor: AppColors.surface,
-          ),
-        ),
-        const SizedBox(height: 8),
-        AppButton(
-          text: deposit.hasAddress ? 'Update linked wallet' : 'Link wallet',
-          onPressed: _linkAddress,
-          variant: AppButtonVariant.secondary,
-          isExpanded: true,
-          isLoading: _isLoading,
-        ),
-      ],
-    );
-  }
-
-  Widget _infoRow(BuildContext context, String label, String value,
-      {bool highlight = false}) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+  Widget _chip(BuildContext context, String label, String value) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceHighlight,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
           Text(label, style: context.typography.bodySmall),
-          const SizedBox(height: 2),
-          SelectableText(
-            value,
-            style: context.typography.labelLarge.copyWith(
-              color: highlight
-                  ? AppColors.primary
-                  : (value.isEmpty ? AppColors.textTertiary : AppColors.textPrimary),
-            ),
-          ),
+          const SizedBox(width: 4),
+          Text(value, style: context.typography.labelLarge),
         ],
       ),
     );
   }
-}
 
-class _CurrencyChip extends StatelessWidget {
-  const _CurrencyChip({
-    required this.label,
-    required this.isSelected,
-    required this.onTap,
-  });
-
-  final String label;
-  final bool isSelected;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Expanded(
-      child: GestureDetector(
-        onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 14),
-          decoration: BoxDecoration(
-            color: isSelected ? AppColors.primaryMuted : AppColors.surface,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(
-              color: isSelected ? AppColors.primary : AppColors.border,
-              width: 1.5,
-            ),
+  Widget _addressBox(BuildContext context, String address,
+      {VoidCallback? onCopy}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceHighlight,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: SelectableText(address, style: context.typography.labelLarge),
           ),
-          child: Center(
-            child: Text(
-              label,
-              style: context.typography.labelLarge.copyWith(
-                color: isSelected ? AppColors.primary : AppColors.textSecondary,
-              ),
+          const SizedBox(width: 8),
+          IconButton(
+            onPressed: onCopy,
+            icon: Icon(
+              _copied ? Icons.check : Icons.copy,
+              color: AppColors.primary,
+              size: 18,
             ),
+            tooltip: _copied ? 'Copied' : 'Copy address',
+            visualDensity: VisualDensity.compact,
           ),
-        ),
+        ],
       ),
     );
   }

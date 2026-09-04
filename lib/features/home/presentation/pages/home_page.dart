@@ -110,19 +110,6 @@ class _BalanceSection extends StatelessWidget {
       amount: CurrencyFormatter.ngn(summary.totalNgnEquivalent),
       subtitle: '≈ ${CurrencyFormatter.usdt(summary.totalUsdtEquivalent)}',
       isHero: true,
-      trailing: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-        decoration: BoxDecoration(
-          color: AppColors.successMuted,
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Text(
-          '+4.2%',
-          style: context.typography.labelSmall.copyWith(
-            color: AppColors.success,
-          ),
-        ),
-      ),
     );
   }
 }
