@@ -26,6 +26,9 @@ type WithdrawalElevation struct {
 	UserID          string
 	Destination     string
 	AmountNgnMinor  int64
+	// FeeMinor is the withdrawal fee (kobo) computed at request time. It is
+	// only debited when the sweeper broadcasts; cancellations never charge it.
+	FeeMinor        int64
 	Status          WithdrawalElevationStatus
 	RequestedAt     time.Time
 	ReleaseAfter    time.Time

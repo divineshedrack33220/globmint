@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"globmint/backend/internal/domain"
+	"globmint/backend/internal/domain/fees"
 	"globmint/backend/internal/events"
 	"globmint/backend/internal/infrastructure/blockchain"
 	"globmint/backend/internal/observability"
@@ -49,6 +50,13 @@ type VaultConfig struct {
 	// WithdrawElevationDelay is how long an elevated withdrawal must wait before
 	// the signer broadcasts it (default 24h).
 	WithdrawElevationDelay time.Duration
+	// WithdrawFeeBPS / WithdrawFeeMinMinor / WithdrawFeeCapMinor price the
+	// withdrawal fee (kobo): fee = max(min(amount*bps/10000, cap), min).
+	// bps = 0 disables fees. The fee is charged on top of the principal and
+	// never counts toward the daily cap.
+	WithdrawFeeBPS      int
+	WithdrawFeeMinMinor int64
+	WithdrawFeeCapMinor int64
 }
 
 // indexerLeaderKey is the Postgres advisory-lock key that gates single-leader
@@ -399,13 +407,21 @@ func (v *VaultService) senderUserID(ctx context.Context, from string) (string, e
 
 // -------- Withdraw --------
 
+// withdrawalFee prices the withdrawal fee for a principal of amountNgnMinor
+// kobo using the configured schedule (0 when fees are disabled).
+func (v *VaultService) withdrawalFee(amountNgnMinor int64) int64 {
+	return fees.ComputeWithdrawalFee(amountNgnMinor, int64(v.cfg.WithdrawFeeBPS), v.cfg.WithdrawFeeMinMinor, v.cfg.WithdrawFeeCapMinor)
+}
+
 // WithdrawToAddress converts `amountNgnMinor` kobo to USDC at the vault rate,
-// debits the user's NGN available balance, and sends the USDC on-chain from the
-// vault to `destination`. The on-chain tx hash is stored as the provider ref.
+// debits the user's NGN available balance (principal + fee), and sends the
+// USDC on-chain from the vault to `destination`. The on-chain tx hash is
+// stored as the provider ref.
 //
 // Withdrawals above WithdrawElevationThresholdMinor are time-locked instead:
 // the call returns a pending elevation and nothing leaves the vault until the
-// delay has passed (see RunElevationSweeper). The user can cancel meanwhile.
+// delay has passed (see RunElevationSweeper). The user can cancel meanwhile,
+// in which case no fee is ever charged.
 func (v *VaultService) WithdrawToAddress(ctx context.Context, userID, destination string, amountNgnMinor int64, key string) (*WithdrawalResult, error) {
 	if v.cfg.Mode == "mock" || v.cfg.VaultAddress == "" {
 		return nil, errors.New("on-chain vault is not enabled")
@@ -428,17 +444,21 @@ func (v *VaultService) WithdrawToAddress(ctx context.Context, userID, destinatio
 		if err != nil {
 			return nil, err
 		}
+		// The cap counts the principal only: SumWithdrawalsSince sums
+		// amount_minor, and the fee lives separately in fee_minor.
 		if used+amountNgnMinor > v.cfg.WithdrawDailyCapMinor {
 			return nil, domain.ErrLimitExceeded
 		}
 	}
 
+	fee := v.withdrawalFee(amountNgnMinor)
+
 	// High-value withdrawals wait out the time-lock before broadcasting.
 	if v.cfg.WithdrawElevationThresholdMinor > 0 && amountNgnMinor > v.cfg.WithdrawElevationThresholdMinor {
-		return v.requestElevation(ctx, userID, destination, amountNgnMinor, key)
+		return v.requestElevation(ctx, userID, destination, amountNgnMinor, fee, key)
 	}
 
-	txn, err := v.executeWithdrawal(ctx, userID, destination, amountNgnMinor, key)
+	txn, err := v.executeWithdrawal(ctx, userID, destination, amountNgnMinor, fee, key)
 	if err != nil {
 		return nil, err
 	}
@@ -447,16 +467,27 @@ func (v *VaultService) WithdrawToAddress(ctx context.Context, userID, destinatio
 
 // requestElevation creates (or returns) the pending time-locked withdrawal for
 // this user/destination/amount. Idempotent: an identical pending elevation is
-// returned instead of duplicated.
-func (v *VaultService) requestElevation(ctx context.Context, userID, destination string, amountNgnMinor int64, key string) (*WithdrawalResult, error) {
+// returned instead of duplicated. No funds move here — the fee is stored on
+// the row and only debited when the sweeper broadcasts.
+func (v *VaultService) requestElevation(ctx context.Context, userID, destination string, amountNgnMinor, feeMinor int64, key string) (*WithdrawalResult, error) {
 	if existing, err := v.store.ElevationRepo().FindPendingByContent(ctx, userID, destination, amountNgnMinor); err == nil && existing != nil {
 		return &WithdrawalResult{Elevation: existing}, nil
+	}
+	// Reject doomed time-locks upfront: the sweep will debit principal + fee,
+	// so there is no point holding a withdrawal the user cannot cover.
+	suff, err := v.hasSufficientNGN(ctx, userID, amountNgnMinor+feeMinor)
+	if err != nil {
+		return nil, err
+	}
+	if !suff {
+		return nil, domain.ErrInsufficientBalance
 	}
 	now := time.Now().UTC()
 	e := &domain.WithdrawalElevation{
 		UserID:         userID,
 		Destination:    destination,
 		AmountNgnMinor: amountNgnMinor,
+		FeeMinor:       feeMinor,
 		Status:         domain.ElevationPending,
 		RequestedAt:    now,
 		ReleaseAfter:   now.Add(v.cfg.WithdrawElevationDelay),
@@ -482,9 +513,11 @@ func (v *VaultService) requestElevation(ctx context.Context, userID, destination
 }
 
 // executeWithdrawal runs the immutable broadcast-then-debit sequence shared by
-// immediate withdrawals and by the elevation sweeper. The NGN balance is
+// immediate withdrawals and by the elevation sweeper. The user pays principal
+// + fee (debited atomically, fee settled to the platform account); only the
+// principal is converted to USDC and broadcast. The NGN balance is
 // pre-checked (inside the ledger transaction too) before any gas is spent.
-func (v *VaultService) executeWithdrawal(ctx context.Context, userID, destination string, amountNgnMinor int64, key string) (*domain.Transaction, error) {
+func (v *VaultService) executeWithdrawal(ctx context.Context, userID, destination string, amountNgnMinor, feeMinor int64, key string) (*domain.Transaction, error) {
 	// Replay protection: if this idempotency key already produced a
 	// withdrawal, return the recorded transaction without touching the chain.
 	if key != "" {
@@ -493,8 +526,9 @@ func (v *VaultService) executeWithdrawal(ctx context.Context, userID, destinatio
 		}
 	}
 
-	// Pre-check sufficiency before spending gas on the chain broadcast.
-	suff, err := v.hasSufficientNGN(ctx, userID, amountNgnMinor)
+	// Pre-check sufficiency (principal + fee) before spending gas on the
+	// chain broadcast.
+	suff, err := v.hasSufficientNGN(ctx, userID, amountNgnMinor+feeMinor)
 	if err != nil {
 		return nil, err
 	}
@@ -515,13 +549,15 @@ func (v *VaultService) executeWithdrawal(ctx context.Context, userID, destinatio
 		return nil, fmt.Errorf("on-chain send failed: %w", err)
 	}
 
-	// Debit NGN after the chain send succeeds.
-	txn, err := v.money.Withdraw(ctx, LedgerMoveRequest{
+	// Debit NGN after the chain send succeeds: principal + fee, with the fee
+	// settled to the platform account in the same atomic transaction.
+	txn, err := v.money.WithdrawExternal(ctx, LedgerMoveRequest{
 		UserID:         userID,
 		AccountKind:    domain.AccountKindAvailable,
 		Currency:       "NGN",
 		Type:           domain.TransactionTypeWithdrawal,
 		AmountMinor:    amountNgnMinor,
+		FeeMinor:       feeMinor,
 		ProviderRef:    txHash,
 		IdempotencyKey: key,
 		Metadata: map[string]any{
@@ -545,8 +581,8 @@ func (v *VaultService) executeWithdrawal(ctx context.Context, userID, destinatio
 	return txn, nil
 }
 
-// hasSufficientNGN reports whether the user's available NGN balance covers the
-// withdrawal amount.
+// hasSufficientNGN reports whether the user's available NGN balance covers a
+// total debit of totalMinor kobo (principal + fee for withdrawals).
 func (v *VaultService) hasSufficientNGN(ctx context.Context, userID string, amountNgnMinor int64) (bool, error) {
 	acc, err := v.store.AccountRepo().FindByUserAndKind(ctx, userID, domain.AccountKindAvailable, "NGN")
 	if err != nil {
@@ -617,7 +653,7 @@ func (v *VaultService) sweepDueElevations(ctx context.Context) error {
 		if !claimed {
 			continue // another instance won the claim
 		}
-		txn, err := v.executeWithdrawal(ctx, e.UserID, e.Destination, e.AmountNgnMinor, e.IdempotencyKey)
+		txn, err := v.executeWithdrawal(ctx, e.UserID, e.Destination, e.AmountNgnMinor, e.FeeMinor, e.IdempotencyKey)
 		if err != nil {
 			log.Printf("elevation sweeper: release %s failed: %v", e.ID, err)
 			observability.Default.WithdrawalFailure("elevation")

@@ -37,6 +37,12 @@ type Config struct {
 	// before the signer broadcasts it (default 24h).
 	VaultWithdrawElevationDelay time.Duration
 
+	// WithdrawFee* prices the nearly-free withdrawal fee (kobo). The fee is
+	// fee = max(min(amount*bps/10000, cap), min); bps = 0 disables it.
+	WithdrawFeeBPS      int
+	WithdrawFeeMinMinor int64
+	WithdrawFeeCapMinor int64
+
 	// VaultMinConfirmations: number of block confirmations a deposit must
 	// reach before the indexer credits the ledger (protects against reorgs).
 	VaultMinConfirmations uint64
@@ -98,6 +104,9 @@ func Load() Config {
 		VaultWithdrawDailyCapMinor: int64Env("GLOBMINT_VAULT_WITHDRAW_DAILY_CAP_MINOR", 0),
 		VaultWithdrawElevationThresholdMinor: int64Env("GLOBMINT_VAULT_WITHDRAW_ELEVATION_THRESHOLD_MINOR", 0),
 		VaultWithdrawElevationDelay:           durationEnv("GLOBMINT_VAULT_WITHDRAW_ELEVATION_DELAY", 24*time.Hour),
+		WithdrawFeeBPS:      intEnv("GLOBMINT_WITHDRAW_FEE_BPS", 20),
+		WithdrawFeeMinMinor: int64Env("GLOBMINT_WITHDRAW_FEE_MIN_MINOR", 1000),
+		WithdrawFeeCapMinor: int64Env("GLOBMINT_WITHDRAW_FEE_CAP_MINOR", 10000),
 		VaultMinConfirmations:      uint64Env("GLOBMINT_VAULT_MIN_CONFIRMATIONS", 0),
 		RateLimitAuthBurst:         intEnv("GLOBMINT_RATE_LIMIT_AUTH_BURST", 5),
 		RateLimitMoneyBurst:        intEnv("GLOBMINT_RATE_LIMIT_MONEY_BURST", 20),

@@ -146,11 +146,13 @@ sequenceDiagram
 ```
 
 Safety checks before any chain call: valid address (`ValidateDepositAddress`), PIN verify
-(throttled), amount within `MIN/MAX` and the UTC daily cap (`SumWithdrawalsSince`),
-idempotency key replay protection, `WithdrawEnabled` flag, and a sufficiency pre-check
-against the vault's on-chain USDC balance. Every rejection happens without spending gas
-or touching the chain. Amounts above the elevation threshold never broadcast immediately —
-they wait out the time-lock in §9.3.1 instead.
+(throttled), amount within `MIN/MAX` and the UTC daily cap (`SumWithdrawalsSince`,
+principal only — fees never consume the cap), idempotency key replay protection,
+`WithdrawEnabled` flag, a user-sufficiency check covering principal + fee, and a
+chain-sufficiency pre-check against the vault's on-chain USDC balance. Every rejection
+happens without spending gas or touching the chain. Amounts above the elevation
+threshold never broadcast immediately — they wait out the time-lock in §9.3.1 instead,
+with the fee stored on the row and debited only at sweep time.
 
 ---
 
@@ -496,6 +498,25 @@ flowchart LR
 Insufflate checks, fees (`fee_minor`), and conversion outputs are all computed from the
 same `Money` type to avoid float drift.
 
+### 8.1.1 Withdrawal fee
+
+Withdrawals — and only withdrawals — carry a nearly-free platform fee:
+
+```
+fee = max(min(amount × bps / 10000, cap), min)   (integer kobo, no floats)
+```
+
+Defaults (`GLOBMINT_WITHDRAW_FEE_{BPS,MIN_MINOR,CAP_MINOR}` = `20`, `1000`, `10000`):
+0.2%, minimum ₦10, maximum ₦100. Set `GLOBMINT_WITHDRAW_FEE_BPS=0` to disable fees
+entirely. Deposits, internal transfers, conversions (which keep their own 0.5% quote
+fee), and elevation cancellations are unaffected.
+
+Settlement is atomic: the user is debited principal + fee in one ledger transaction
+(principal in `amount_minor`, fee in `fee_minor`), and the fee is credited to the
+platform fee account owned by the seeded platform pseudo-user — never to any user
+account, so fee revenue can never inflate a balance. The daily withdrawal cap sums
+`amount_minor` only, so fees never consume a user's daily limit.
+
 ### 8.2 Idempotency
 
 Money endpoints accept `X-Idempotency-Key`. On replay the service returns the already
@@ -597,26 +618,35 @@ flowchart TB
   the vault's on-chain USDC balance before anything is broadcast** (an underfunded
   vault errors with `ErrInsufficientBalance` and never spends gas —
   `TestWithdrawRejectsInsufficientBeforeBroadcast`).
-- It converts to USDC, broadcasts the signer's `transfer(destination, usdc)` to the
-  stablecoin, and records the transaction with `provider_ref = tx_hash`.
-- Env knobs: `GLOBMINT_VAULT_WITHDRAW_{ENABLED,MIN_MINOR,MAX_MINOR,DAILY_CAP_MINOR}`.
+- It converts the principal to USDC, broadcasts the signer's `transfer(destination, usdc)`
+  to the stablecoin, and records the transaction with `provider_ref = tx_hash`.
+- **Fee.** The user pays principal + the §8.1.1 withdrawal fee (0.2%, min ₦10, cap ₦100
+  by default), debited atomically with the fee settled to the platform account; the
+  transaction carries `fee_minor` (`TestWithdraw_Instant_FeeDeducted`). The daily cap
+  counts principals only (`TestWithdrawalDailyCap_ExcludesFee`).
+- Env knobs: `GLOBMINT_VAULT_WITHDRAW_{ENABLED,MIN_MINOR,MAX_MINOR,DAILY_CAP_MINOR}`,
+  `GLOBMINT_WITHDRAW_FEE_{BPS,MIN_MINOR,CAP_MINOR}`.
 
 #### 9.3.1 Elevated (time-locked) withdrawals — anti-theft throttle
 
 Requests above `GLOBMINT_VAULT_WITHDRAW_ELEVATION_THRESHOLD_MINOR` are **elevated**: no
-USDC leaves the vault, and a `pending` row is created instead.
+USDC leaves the vault, and a `pending` row is created instead. The fee is computed at
+request time and stored on the row, but nothing is debited until release.
 
 - **Lifecycle.** `pending` (created by `POST /savings/withdraw`) → `broadcasting` (claimed
   atomically by the sweeper exactly once) → `broadcast` (with its tx hash) | `cancelled`.
 - **The sweeper** (`RunElevationSweeper`, also running under `-indexer-only`) periodically
   claims due rows with a `ClaimForBroadcast` guard (only one instance wins), broadcasts
-  via the signer, then debits NGN and `MarkBroadcast`s. A claimed-but-failed row is
-  released back to `pending` for a later retry, counting a `reason="elevation"` failure.
+  via the signer, then debits principal + the stored fee and `MarkBroadcast`s. A
+  claimed-but-failed row is released back to `pending` for a later retry (no fee charged),
+  counting a `reason="elevation"` failure (`TestWithdraw_Elevated_FeeStoredAndDeductedOnSweep`).
 - **Exactly once.** The `(user_id, destination, amount_ngn_minor) WHERE status='pending'`
   unique index makes duplicate requests idempotent, and the claim-guard stops double
   broadcasts (`TestElevationSweepBroadcastsExactlyOnce`).
 - **User controls.** `GET /savings/withdraw` lists pending elevations; cancel before
-  release with `POST /savings/withdraw/{id}/cancel` (`TestElevationRequiresTimeLockThenCancel`).
+  release with `POST /savings/withdraw/{id}/cancel` — cancellations move no funds and
+  charge no fee (`TestElevationRequiresTimeLockThenCancel`,
+  `TestWithdraw_Elevated_Cancel_NoFee`).
 - Env knobs: `GLOBMINT_VAULT_WITHDRAW_ELEVATION_THRESHOLD_MINOR` (kobo; `0` disables) and
   `GLOBMINT_VAULT_WITHDRAW_ELEVATION_DELAY` (default `24h`).
 
@@ -635,6 +665,9 @@ USDC leaves the vault, and a `pending` row is created instead.
 | `GLOBMINT_STABLECOIN_PRIVATE_KEY` | signer key (never committed) |
 | `GLOBMINT_VAULT_WITHDRAW_ELEVATION_THRESHOLD_MINOR` | kobo above which withdrawals time-lock (`0` = disabled) |
 | `GLOBMINT_VAULT_WITHDRAW_ELEVATION_DELAY` | how long an elevation waits before broadcast (default `24h`) |
+| `GLOBMINT_WITHDRAW_FEE_BPS` | withdrawal fee rate in basis points (default `20` = 0.2%; `0` disables fees) |
+| `GLOBMINT_WITHDRAW_FEE_MIN_MINOR` | minimum withdrawal fee in kobo (default `1000` = ₦10) |
+| `GLOBMINT_WITHDRAW_FEE_CAP_MINOR` | maximum withdrawal fee in kobo (default `10000` = ₦100) |
 
 > ⚠️ The canonical mainnet USDC is `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48` (note the
 > trailing `8`). A one-character error here would route production deposits to a non-token.
@@ -688,7 +721,7 @@ flowchart LR
 | auth | welcome, login (Password → 2FA step), register, PIN creation, verification |
 | home | dashboard, balance card (NGN available/savings), quick actions, recent activity |
 | pay | transfers, send-to-beneficiary, OTC/withdraw-to-address |
-| savings | add money (**uses `deposit-info` to show the vault + USDC details**), withdraw + review, vault status |
+| savings | add money (**uses `deposit-info` to show the vault + USDC details**), withdraw + review (fee preview: amount, 0.2% fee, total charged, USDC received), vault status |
 | activity | full transaction list with status/type badges and destination rendering |
 | profile | security center (**2FA enable/disable**, biometric, alerts), change PIN / password, beneficiaries |
 
@@ -739,6 +772,7 @@ served by the same TLS terminating proxy as the API (CORS-origin-matched).
 | `0009_pin_hash` | user PIN hashes |
 | `0010_totp` | TOTP secret + enabled flag |
 | `0011_indexer_events_and_elevations` | `indexer_events` replay log `(tx_hash, log_index)` PK + `withdrawal_elevations` time-lock table with the one-pending-per-content unique index |
+| `0012_withdrawal_fees` | `withdrawal_elevations.fee_minor` + seeded platform fee owner/account |
 
 Key tables: `users`, `sessions`, `accounts`, `transactions`, `balance_ledger`,
 `exchange_rates`, `deposit_addresses`, `indexer_state`, `indexer_events`,
@@ -747,6 +781,12 @@ Key tables: `users`, `sessions`, `accounts`, `transactions`, `balance_ledger`,
 
 Migrations auto-apply on server boot (idempotent, tracked in a schema_migrations-style
 table). The backup script archives the whole schema + data for point-in-time restores.
+
+> Operator note: migration `0012` seeds a `platform-fees@globmint.local` user row that
+> owns only the `platform_fees` account. It has an unusable password hash and
+> `system` status, so it can never authenticate — it exists solely to satisfy the
+> ledger's foreign keys for fee revenue. Do not delete it, and do not attach
+> user-facing accounts to it.
 
 ---
 
@@ -822,6 +862,10 @@ when host `pg_dump` is missing.
     highest severity, see the runbook; `elevation` = a due time-lock's sweep broadcast
     failed (the row returns to `pending` and retries automatically). Counters increment
     only on real failures, so any non-zero rate is alert-worthy.
+- **Fee revenue** — no metric needed: `SELECT COALESCE(SUM(fee_minor), 0) FROM transactions
+  WHERE type = 'withdrawal'` is total fees collected (kobo), and the platform fee
+  account balance is the settled, auditable figure. Both derive from the same immutable
+  rows, so they always agree.
 - **`GET /health`** and **`GET /live`** — liveness probes for orchestrators.
 - **Request IDs** — every response carries `request_id` for cross-referencing logs with
   support cases.
@@ -840,8 +884,8 @@ when host `pg_dump` is missing.
 
 | Suite | Command | Coverage |
 |---|---|---|
-| Go unit | `go test ./internal/domain/...` | money arithmetic, rounding, negatives |
-| Go integration | `go test ./internal/services/...` | real Postgres (docker on :5434): credits/debits, idempotency (incl. concurrent), transfers, conversion, beneficiary CRUD, indexer resumability (restart, crash-safe cursor, RPC faults, confirmation window), parallel crediting, leader election, and the elevation lifecycle (time-lock, cancel, exactly-once sweep, insufficient pre-check) |
+| Go unit | `go test ./internal/domain/...` | money arithmetic, rounding, negatives; withdrawal-fee schedule (min/cap/percentage/disabled, overflow-safe) |
+| Go integration | `go test ./internal/services/...` | real Postgres (docker on :5434): credits/debits, idempotency (incl. concurrent), transfers, conversion, beneficiary CRUD, indexer resumability (restart, crash-safe cursor, RPC faults, confirmation window), parallel crediting, leader election, the elevation lifecycle (time-lock, cancel, exactly-once sweep, insufficient pre-check), and withdrawal fees (instant debit + platform settlement, stored-then-swept elevated fee, cancel charges nothing, daily cap ignores fees) |
 | Load/chaos | `go run ./cmd/loadtest` + `scripts/chaos-test.sh` | end-to-end hot path against an in-process server (register → login→2FA → convert → transfer), plus injected-fault runs asserting graceful 503s/latency (see §15) |
 | Solidity | `npx hardhat test` | 9 tests: deposit, depositFor, withdraw, over-withdrawal revert, no-admin isolation, totalDeposits |
 | Flutter unit/widget | `flutter test` | formatters (incl. `vaultUsdc`), auth service (login + 2FA verify, token persistence), balance service mapping, login-page 2FA widget flow |

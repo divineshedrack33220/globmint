@@ -98,6 +98,9 @@ func main() {
 		WithdrawDailyCapMinor:            cfg.VaultWithdrawDailyCapMinor,
 		WithdrawElevationThresholdMinor:  cfg.VaultWithdrawElevationThresholdMinor,
 		WithdrawElevationDelay:           cfg.VaultWithdrawElevationDelay,
+		WithdrawFeeBPS:                   cfg.WithdrawFeeBPS,
+		WithdrawFeeMinMinor:              cfg.WithdrawFeeMinMinor,
+		WithdrawFeeCapMinor:              cfg.WithdrawFeeCapMinor,
 	}, rateMinor)
 
 	// Fan-out hub for SSE push; shared by the money handlers and the vault

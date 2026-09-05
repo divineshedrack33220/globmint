@@ -43,6 +43,119 @@ func (s *MoneyService) Withdraw(ctx context.Context, req LedgerMoveRequest, key 
 	return s.Ledger().Debit(ctx, req)
 }
 
+// WithdrawExternal debits the user's available account for an out-of-system
+// withdrawal and settles the fee to the platform fee account, atomically. The
+// user pays amount + fee; the single transaction row records the principal in
+// amount_minor and the fee in fee_minor (so daily caps summing amount_minor
+// stay fee-exclusive). A rollback on any error means a failed broadcast
+// settlement never charges the fee.
+func (s *MoneyService) WithdrawExternal(ctx context.Context, req LedgerMoveRequest, key string) (*domain.Transaction, error) {
+	if req.Currency == "" {
+		req.Currency = "NGN"
+	}
+	if req.AmountMinor <= 0 || req.FeeMinor < 0 {
+		return nil, domain.ErrInvalidAmount
+	}
+	total := req.AmountMinor + req.FeeMinor
+	req.IdempotencyKey = key
+
+	// Fast-path idempotency replay (the unique index is the authoritative guard).
+	if key != "" {
+		existing, err := s.store.LedgerRepo().FindTransactionByIDempotencyKey(ctx, key)
+		if err == nil {
+			return existing, nil
+		}
+		if !errors.Is(err, domain.ErrNotFound) {
+			return nil, err
+		}
+	}
+
+	var result *domain.Transaction
+	err := s.store.RunInTx(ctx, func(store storage.Store) error {
+		from, err := store.AccountRepo().FindByUserAndKind(ctx, req.UserID, req.AccountKind, req.Currency)
+		if err != nil {
+			return err
+		}
+		fromBalance, err := store.LedgerRepo().SumBalanceByAccount(ctx, from.ID)
+		if err != nil {
+			return err
+		}
+		// Checked inside the transaction to avoid race conditions.
+		if fromBalance < total {
+			return domain.ErrInsufficientBalance
+		}
+
+		reference := req.Reference
+		if reference == "" {
+			reference = string(req.Type) + "-" + newRandRef()
+		}
+
+		txn := &domain.Transaction{
+			UserID:         req.UserID,
+			Type:           req.Type,
+			Status:         domain.StatusCompleted,
+			Currency:       req.Currency,
+			AmountMinor:    req.AmountMinor,
+			FeeMinor:       req.FeeMinor,
+			ExchangeRate:   req.ExchangeRate,
+			Reference:      reference,
+			ProviderRef:    req.ProviderRef,
+			IdempotencyKey: req.IdempotencyKey,
+			Metadata:       defaultMetadata(req.Metadata),
+		}
+		if err := store.LedgerRepo().CreateTransaction(ctx, txn); err != nil {
+			return err
+		}
+
+		// Debit the user for principal + fee.
+		if err := store.LedgerRepo().InsertEntry(ctx, &domain.LedgerEntry{
+			TransactionID: txn.ID,
+			AccountID:     from.ID,
+			UserID:        req.UserID,
+			Movement:      domain.MovementDebit,
+			Currency:      req.Currency,
+			AmountMinor:   total,
+		}); err != nil {
+			return err
+		}
+		if err := store.AccountRepo().SetBalance(ctx, from.ID, fromBalance-total); err != nil {
+			return err
+		}
+
+		// Settle the fee to the platform account (never to any user account).
+		if req.FeeMinor > 0 {
+			feeAcct, err := store.AccountRepo().EnsureAccount(ctx, domain.PlatformUserID, domain.AccountKindPlatformFees, req.Currency)
+			if err != nil {
+				return err
+			}
+			feeBalance, err := store.LedgerRepo().SumBalanceByAccount(ctx, feeAcct.ID)
+			if err != nil {
+				return err
+			}
+			if err := store.LedgerRepo().InsertEntry(ctx, &domain.LedgerEntry{
+				TransactionID: txn.ID,
+				AccountID:     feeAcct.ID,
+				UserID:        domain.PlatformUserID,
+				Movement:      domain.MovementCredit,
+				Currency:      req.Currency,
+				AmountMinor:   req.FeeMinor,
+			}); err != nil {
+				return err
+			}
+			if err := store.AccountRepo().SetBalance(ctx, feeAcct.ID, feeBalance+req.FeeMinor); err != nil {
+				return err
+			}
+		}
+
+		result = txn
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // Ledger returns the underlying LedgerService (kept private to reduce surface).
 func (s *MoneyService) Ledger() *LedgerService {
 	return NewLedgerService(s.store)

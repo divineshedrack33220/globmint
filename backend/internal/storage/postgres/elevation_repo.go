@@ -21,14 +21,14 @@ func NewElevationRepo(q Querier) storage.ElevationRepository {
 	return &elevationRepo{q: q}
 }
 
-const elevationColumns = `id, user_id, destination, amount_ngn_minor, status,
+const elevationColumns = `id, user_id, destination, amount_ngn_minor, fee_minor, status,
 	requested_at, release_after,
 	COALESCE(broadcast_tx_hash, ''), broadcast_at, COALESCE(idempotency_key, '')`
 
 func scanElevation(row pgx.Row) (*domain.WithdrawalElevation, error) {
 	var e domain.WithdrawalElevation
 	var status string
-	err := row.Scan(&e.ID, &e.UserID, &e.Destination, &e.AmountNgnMinor, &status,
+	err := row.Scan(&e.ID, &e.UserID, &e.Destination, &e.AmountNgnMinor, &e.FeeMinor, &status,
 		&e.RequestedAt, &e.ReleaseAfter, &e.BroadcastTxHash, &e.BroadcastAt, &e.IdempotencyKey)
 	if err != nil {
 		return nil, err
@@ -42,10 +42,10 @@ func (r *elevationRepo) Create(ctx context.Context, e *domain.WithdrawalElevatio
 	// gen_random_uuid() is built-in on PG 13+; if the UUID is pre-set use it.
 	err := r.q.QueryRow(ctx,
 		`INSERT INTO withdrawal_elevations
-			(id, user_id, destination, amount_ngn_minor, status, release_after, idempotency_key)
-		 VALUES ((COALESCE(NULLIF($1, ''), gen_random_uuid()::text))::uuid, $2, $3, $4, $5, $6, $7)
+			(id, user_id, destination, amount_ngn_minor, fee_minor, status, release_after, idempotency_key)
+		 VALUES ((COALESCE(NULLIF($1, ''), gen_random_uuid()::text))::uuid, $2, $3, $4, $5, $6, $7, $8)
 		 RETURNING id`,
-		e.ID, e.UserID, e.Destination, e.AmountNgnMinor, string(e.Status), e.ReleaseAfter, e.IdempotencyKey,
+		e.ID, e.UserID, e.Destination, e.AmountNgnMinor, e.FeeMinor, string(e.Status), e.ReleaseAfter, e.IdempotencyKey,
 	).Scan(&id)
 	if err != nil {
 		return nil, err

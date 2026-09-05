@@ -33,6 +33,15 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
   bool _isProcessing = false;
   double? _usdcEstimate;
 
+  /// Client-side mirror of the server withdrawal fee (GLOBMINT_WITHDRAW_FEE_*
+  /// defaults: 20 bps = 0.2%, min ₦10, cap ₦100). Display-only: the server is
+  /// authoritative and computes the same schedule in kobo.
+  double _withdrawalFee(double amountNgn) {
+    if (amountNgn <= 0) return 0;
+    final raw = amountNgn * 20 / 10000;
+    return raw.clamp(10.0, 100.0);
+  }
+
   @override
   void initState() {
     super.initState();
@@ -56,6 +65,7 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
     final a = widget.amount ?? 0;
     final destination = widget.destination?.trim() ?? '';
     if (a <= 0 || destination.isEmpty) return;
+    final fee = _withdrawalFee(a);
 
     final confirmed = await ConfirmationModal.show(
       context: context,
@@ -63,11 +73,15 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
       details: [
         ConfirmationDetail(
             label: 'Amount', value: CurrencyFormatter.ngn(a), isHighlighted: true),
+        ConfirmationDetail(
+            label: 'Fee (0.2%)', value: CurrencyFormatter.ngn(fee)),
+        ConfirmationDetail(
+            label: 'Total charged', value: CurrencyFormatter.ngn(a + fee)),
         if (_usdcEstimate != null)
           ConfirmationDetail(
-              label: 'Send', value: '≈ ${_usdcEstimate!.toStringAsFixed(2)} USDC'),
+              label: 'You receive',
+              value: '≈ ${_usdcEstimate!.toStringAsFixed(2)} USDC'),
         ConfirmationDetail(label: 'To', value: destination),
-        ConfirmationDetail(label: 'Fee', value: '₦0.00'),
       ],
       confirmText: 'Confirm',
       isDestructive: true,
@@ -122,9 +136,10 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
   Widget build(BuildContext context) {
     final a = widget.amount ?? 0;
     final destination = widget.destination?.trim() ?? '';
+    final fee = _withdrawalFee(a);
 
     final availableAfter = ref.watch(accountSummaryProvider).whenOrNull(
-          data: (s) => s.available.balance - a,
+          data: (s) => s.available.balance - a - fee,
         );
 
     final network = widget.network?.isNotEmpty == true
@@ -169,7 +184,19 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
                 ),
               ),
               const SizedBox(height: 20),
-              _ReviewRow(label: 'Fee', value: '₦0.00'),
+              _ReviewRow(
+                label: 'Fee (0.2%, min ₦10, cap ₦100)',
+                value: CurrencyFormatter.ngn(fee),
+              ),
+              _ReviewRow(
+                label: 'Total charged',
+                value: CurrencyFormatter.ngn(a + fee),
+              ),
+              if (_usdcEstimate != null)
+                _ReviewRow(
+                  label: 'You receive',
+                  value: '≈ ${_usdcEstimate!.toStringAsFixed(2)} USDC',
+                ),
               _ReviewRow(
                 label: 'Destination',
                 value: destination,
