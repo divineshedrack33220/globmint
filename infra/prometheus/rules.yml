@@ -1,0 +1,72 @@
+groups:
+  - name: globmint
+    rules:
+      - alert: GlobmintServerDown
+        expr: up{job="globmint-server"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Globmint API is unreachable"
+          description: "Prometheus cannot scrape {{ $labels.job }} for over 1m. Check `docker compose ps` and server logs."
+
+      - alert: GlobmintHigh5xxRate
+        expr: sum by (job) (rate(globmint_http_requests_total{status=~"5.."}[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Elevated 5xx error rate ({{ $value }}/s)"
+          description: "The API is returning more than 10% 5xx responses over 5m. Inspect server logs and outage annotations."
+
+      - alert: GlobmintSignerBalanceLow
+        expr: globmint_signer_balance < 10
+        for: 5m
+        labels:
+          severity: critical
+          team: treasury
+        annotations:
+          summary: "Vault signer balance low ({{ $value }} USDC)"
+          description: "The vault signer wallet has less than 10 USDC. Refill before eligible elevated withdrawals cannot broadcast."
+
+      - alert: GlobmintIndexerLagHigh
+        expr: globmint_indexer_lag_blocks > 50
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Indexer falling behind ({{ $value }} blocks)"
+          description: "Deposit crediting is delayed. Check RPC health and that exactly one indexer leader is running (advisory lock)."
+
+      - alert: GlobmintElevationBroadcastFailures
+        expr: increase(globmint_outbound_failures_total{reason="elevation"}[30m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Elevated withdrawal sweep failures ({{ $value }} in 30m)"
+          description: "Time-locked withdrawals are failing to broadcast. Check signer key, RPC, and vault contract allowance."
+
+      - alert: GlobmintWithdrawBroadcastFailures
+        expr: increase(globmint_outbound_failures_total{reason="broadcast"}[30m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Instant withdrawal failures ({{ $value }} in 30m)"
+          description: "Instant withdrawals failing to broadcast. See error logging for the last failure reason."
+
+      - alert: GlobmintLedgerMismatch
+        expr: rate(globmint_outbound_failures_total{reason="ledger"}[30m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Ledger/on-chain mismatch"
+          description: "A transfer left the vault but failed to debit NGN. Human intervention required — see incident runbook."

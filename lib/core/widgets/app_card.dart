@@ -93,7 +93,7 @@ class BalanceCard extends StatelessWidget {
                   color: AppColors.textSecondary,
                 ),
               ),
-              if (trailing != null) trailing!,
+              ?trailing,
             ],
           ),
           SizedBox(height: isHero ? 12 : 8),

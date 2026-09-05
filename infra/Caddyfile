@@ -1,0 +1,16 @@
+# Caddy reverse proxy for the Globmint stack.
+# Public (+ optionally HTTPS via DNS/ACME on a real domain):
+#   */api/*            -> backend server container :8081
+#   /metrics           -> backend server container :8081/metrics (prometheus scrape)
+#   everything else    -> web static container
+
+app.globmint.example.com {
+    encode gzip
+
+    # API + Prometheus metrics
+    reverse_proxy /api/*        server:8081
+    reverse_proxy /metrics*     server:8081
+
+    # Flutter web app
+    reverse_proxy /*            web:80
+}

@@ -50,7 +50,7 @@ class BalanceCard extends StatelessWidget {
                   color: AppColors.textSecondary,
                 ),
               ),
-              if (trailing != null) trailing!,
+              ?trailing,
             ],
           ),
           const SizedBox(height: 12),

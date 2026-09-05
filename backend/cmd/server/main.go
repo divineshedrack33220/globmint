@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"log"
 	"net/http"
 	"os"
@@ -11,13 +12,18 @@ import (
 	"time"
 
 	"globmint/backend/internal/config"
+	"globmint/backend/internal/events"
 	"globmint/backend/internal/httpapi"
+	"globmint/backend/internal/httpapi/middleware"
 	"globmint/backend/internal/infrastructure/blockchain"
 	"globmint/backend/internal/services"
 	"globmint/backend/internal/storage/postgres"
 )
 
 func main() {
+	indexerOnly := flag.Bool("indexer-only", false, "run only the vault indexer + elevation sweeper (leader-elected); serve no HTTP")
+	flag.Parse()
+
 	cfg := config.Load()
 
 	if err := config.ValidateProduction(cfg); err != nil {
@@ -78,19 +84,25 @@ func main() {
 		rateMinor = er.Rate
 	}
 	vaultSvc := services.NewVaultService(store, chainSvc, moneySvc, services.VaultConfig{
-		VaultAddress:         vaultAddress,
-		StablecoinSymbol:     cfg.Blockchain.Stablecoin,
-		StablecoinDecimals:   cfg.Blockchain.StablecoinDecimals,
-		Mode:                 cfg.Blockchain.Mode,
-		PollInterval:         8 * time.Second,
-		StartBlock:           uint64(cfg.VaultStartBlock),
-		FallbackUserID:       cfg.VaultFallbackUserID,
-		MinConfirmations:     cfg.VaultMinConfirmations,
-		WithdrawEnabled:      cfg.VaultWithdrawEnabled,
-		WithdrawMinMinor:     cfg.VaultWithdrawMinMinor,
-		WithdrawMaxMinor:     cfg.VaultWithdrawMaxMinor,
-		WithdrawDailyCapMinor: cfg.VaultWithdrawDailyCapMinor,
+		VaultAddress:                     vaultAddress,
+		StablecoinSymbol:                 cfg.Blockchain.Stablecoin,
+		StablecoinDecimals:               cfg.Blockchain.StablecoinDecimals,
+		Mode:                             cfg.Blockchain.Mode,
+		PollInterval:                     8 * time.Second,
+		StartBlock:                       uint64(cfg.VaultStartBlock),
+		FallbackUserID:                   cfg.VaultFallbackUserID,
+		MinConfirmations:                 cfg.VaultMinConfirmations,
+		WithdrawEnabled:                  cfg.VaultWithdrawEnabled,
+		WithdrawMinMinor:                 cfg.VaultWithdrawMinMinor,
+		WithdrawMaxMinor:                 cfg.VaultWithdrawMaxMinor,
+		WithdrawDailyCapMinor:            cfg.VaultWithdrawDailyCapMinor,
+		WithdrawElevationThresholdMinor:  cfg.VaultWithdrawElevationThresholdMinor,
+		WithdrawElevationDelay:           cfg.VaultWithdrawElevationDelay,
 	}, rateMinor)
+
+	// Fan-out hub for SSE push; shared by the money handlers and the vault
+	// indexer so any balance/transaction change reaches connected clients.
+	eventsHub := events.NewHub()
 
 	deps := &httpapi.Deps{
 		Auth:       authSvc,
@@ -101,10 +113,33 @@ func main() {
 		Security:   securitySvc,
 		Blockchain: chainSvc,
 		Vault:      vaultSvc,
+		Events:     eventsHub,
 	}
-	handler := httpapi.NewHandler(deps, authSvc, cfg.CORSOrigins)
+	vaultSvc.Hub = eventsHub
+
+	handler := httpapi.NewHandler(deps, authSvc, cfg.CORSOrigins,
+		middleware.RateLimits{AuthBurst: cfg.RateLimitAuthBurst, MoneyBurst: cfg.RateLimitMoneyBurst},
+		middleware.ChaosConfig{
+			Enabled:      cfg.ChaosFailureRate > 0 || cfg.ChaosLatencyMaxMS > 0,
+			FailureRate:  cfg.ChaosFailureRate,
+			LatencyMaxMS: cfg.ChaosLatencyMaxMS,
+		},
+	)
+
+	if *indexerOnly {
+		// Headless indexer/sweeper: participates in single-leader election so
+		// multiple instances can run against the same Postgres + chain safely,
+		// and broadcasts due time-locked withdrawals. No HTTP surface.
+		log.Println("indexer-only mode: running indexer + elevation sweeper")
+		go vaultSvc.RunIndexer(ctx)
+		go vaultSvc.RunElevationSweeper(ctx)
+		<-ctx.Done()
+		log.Println("indexer-only mode: stopped")
+		return
+	}
 
 	go vaultSvc.RunIndexer(ctx)
+	go vaultSvc.RunElevationSweeper(ctx)
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,

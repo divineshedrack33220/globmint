@@ -36,12 +36,12 @@ class StaggeredBottomSheet extends StatelessWidget {
       backgroundColor: Colors.transparent,
       isScrollControlled: true,
       builder: (_) => StaggeredBottomSheet(
-        children: children,
         header: header,
         headerActions: headerActions,
         initialChildSize: initialChildSize,
         maxChildSize: maxChildSize,
         minChildSize: minChildSize,
+        children: children,
       ),
     );
   }
@@ -79,7 +79,7 @@ class StaggeredBottomSheet extends StatelessWidget {
                 child: Row(
                   children: [
                     Expanded(child: header!),
-                    if (headerActions != null) ...headerActions!,
+                    ...?headerActions,
                     IconButton(
                       icon: const Icon(Icons.close, color: AppColors.textSecondary),
                       onPressed: () => Navigator.pop(context),

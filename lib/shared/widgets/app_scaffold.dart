@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../app/providers.dart';
 import '../../core/theme/app_colors.dart';
+import '../../shared/services/events_service.dart';
 
 class ScaffoldWithNavBar extends ConsumerStatefulWidget {
   const ScaffoldWithNavBar({super.key, required this.navigationShell});
@@ -24,20 +25,51 @@ class ScaffoldWithNavBar extends ConsumerStatefulWidget {
 }
 
 class _ScaffoldWithNavBarState extends ConsumerState<ScaffoldWithNavBar> {
-  Timer? _poll;
+  Timer? _notifPoll;
+  ProviderSubscription<AsyncValue<UserEvent>>? _eventsSub;
 
   @override
   void initState() {
     super.initState();
     // Keep the notification badge/inbox fresh without a push channel.
-    _poll = Timer.periodic(const Duration(seconds: 10), (_) {
+    _notifPoll = Timer.periodic(const Duration(seconds: 10), (_) {
       ref.invalidate(notificationsProvider);
     });
+    // Balance/vault/transaction updates are pushed over SSE; refresh the
+    // relevant providers immediately when one arrives instead of polling.
+    _eventsSub = ref.listenManual<AsyncValue<UserEvent>>(
+      eventsStreamProvider,
+      (_, next) {
+        final event = next.valueOrNull;
+        if (event != null) _onEvent(event);
+      },
+    );
+  }
+
+  void _onEvent(UserEvent event) {
+    switch (event.kind) {
+      case EventKind.account:
+        ref.invalidate(accountSummaryProvider);
+      case EventKind.vault:
+        ref.invalidate(vaultStatusProvider);
+        ref.invalidate(accountSummaryProvider);
+      case EventKind.transactions:
+        ref.invalidate(transactionsProvider);
+        ref.invalidate(recentTransactionsProvider);
+      case EventKind.all:
+      // `connected` events also trigger a full refresh so the UI catches up
+      // on anything missed while disconnected.
+        ref.invalidate(accountSummaryProvider);
+        ref.invalidate(vaultStatusProvider);
+        ref.invalidate(transactionsProvider);
+        ref.invalidate(recentTransactionsProvider);
+    }
   }
 
   @override
   void dispose() {
-    _poll?.cancel();
+    _notifPoll?.cancel();
+    _eventsSub?.close();
     super.dispose();
   }
 

@@ -23,6 +23,24 @@ type tokenBucket struct {
 	lastUpdate time.Time
 }
 
+// RateLimits carries per-route token-bucket budgets. Operators can raise them
+// (e.g. for load testing) without code changes; zeros fall back to defaults.
+type RateLimits struct {
+	AuthBurst  int
+	MoneyBurst int
+}
+
+// Normalized returns a copy with defaults filled for zero-valued fields.
+func (l RateLimits) Normalized() RateLimits {
+	if l.AuthBurst <= 0 {
+		l.AuthBurst = 5
+	}
+	if l.MoneyBurst <= 0 {
+		l.MoneyBurst = 20
+	}
+	return l
+}
+
 // NewRateLimiter creates a limiter that allows burst tokens every interval.
 // For example, NewRateLimiter( time.Second, 10 ) allows 10 requests per second per key.
 func NewRateLimiter(interval time.Duration, burst int) *rateLimiter {

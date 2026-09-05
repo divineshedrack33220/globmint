@@ -1,0 +1,50 @@
+package domain
+
+import "time"
+
+// WithdrawalElevationStatus is the lifecycle state of a time-locked
+// (elevated) withdrawal.
+type WithdrawalElevationStatus string
+
+const (
+	// ElevationPending waits for its release_after timestamp to pass.
+	ElevationPending WithdrawalElevationStatus = "pending"
+	// ElevationBroadcasting has been claimed by a sweeper and its chain tx is
+	// being broadcast.
+	ElevationBroadcasting WithdrawalElevationStatus = "broadcasting"
+	// ElevationBroadcast finished: the signer broadcast the tx and the ledger
+	// was debited.
+	ElevationBroadcast WithdrawalElevationStatus = "broadcast"
+	// ElevationCancelled by the user while still pending.
+	ElevationCancelled WithdrawalElevationStatus = "cancelled"
+)
+
+// WithdrawalElevation is a high-value withdrawal held by the time-lock so
+// operations/user have a window to react before the signer broadcasts it.
+type WithdrawalElevation struct {
+	ID              string
+	UserID          string
+	Destination     string
+	AmountNgnMinor  int64
+	Status          WithdrawalElevationStatus
+	RequestedAt     time.Time
+	ReleaseAfter    time.Time
+	BroadcastTxHash string
+	BroadcastAt     *time.Time
+	IdempotencyKey  string
+}
+
+// IndexerEvent is a durable log line recorded for each confirmed vault transfer
+// the indexer ingests. It is the on-chain-agnostic audit trail that makes
+// replay fast (no RPC re-fetch) and ingest idempotent.
+type IndexerEvent struct {
+	TxHash      string
+	LogIndex    uint64
+	BlockNumber uint64
+	// EventType is "deposited" or "withdrawn".
+	EventType string
+	From      string
+	To        string
+	// ValueBase is the token base-unit amount (e.g. 6-decimals USDC).
+	ValueBase int64
+}

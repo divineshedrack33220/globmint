@@ -7,6 +7,7 @@ import '../shared/services/balance_service.dart';
 import '../shared/services/bank_account_service.dart';
 import '../shared/services/beneficiary_service.dart';
 import '../shared/services/conversion_service.dart';
+import '../shared/services/events_service.dart';
 import '../shared/services/savings_client.dart';
 import '../shared/services/security_service.dart';
 import '../shared/services/transaction_service.dart';
@@ -40,6 +41,20 @@ final bankAccountServiceProvider =
 
 final securityServiceProvider =
     Provider<SecurityService>((ref) => SecurityService(ref.watch(apiClientProvider)));
+
+/// Long-lived SSE client that pushes balance/vault/transaction changes to the
+/// UI instead of the app polling every few seconds.
+final eventsServerProvider = Provider<EventsServer>((ref) {
+  final server = EventsServer(baseUrl: ref.watch(apiClientProvider).baseUrl);
+  server.connect();
+  ref.onDispose(server.close);
+  return server;
+});
+
+/// Stream of pushed change notifications (see [EventsServer.stream]).
+final eventsStreamProvider =
+    StreamProvider<UserEvent>((ref) => ref.watch(eventsServerProvider).stream);
+
 
 /// Async providers used by pages to render live data.
 

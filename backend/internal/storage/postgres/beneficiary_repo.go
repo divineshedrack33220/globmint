@@ -18,16 +18,23 @@ func scanBeneficiary(row pgxRow) (*domain.Beneficiary, error) {
 	if err := row.Scan(&b.ID, &b.UserID, &b.Name, &b.Address, &b.IsFavorite, &b.CreatedAt); err != nil {
 		return nil, err
 	}
+	b.AccountNumber = b.Address
 	return b, nil
 }
 
 func (r *beneficiaryRepo) Create(ctx context.Context, b *domain.Beneficiary) error {
+	// The database keys beneficiaries by `address` (v1 resolve contract); keep
+	// the domain's account number in sync so both spellings round-trip.
+	if b.Address == "" && b.AccountNumber != "" {
+		b.Address = b.AccountNumber
+	}
 	err := r.q.QueryRow(ctx, `
 		INSERT INTO beneficiaries (user_id, name, address, is_favorite)
 		VALUES ($1::uuid, $2, $3, $4)
 		RETURNING `+beneficiaryCols,
 		b.UserID, b.Name, b.Address, b.IsFavorite,
 	).Scan(&b.ID, &b.UserID, &b.Name, &b.Address, &b.IsFavorite, &b.CreatedAt)
+	b.AccountNumber = b.Address
 	return mapPgErr(err)
 }
 

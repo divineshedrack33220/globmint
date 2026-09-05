@@ -97,10 +97,9 @@ class _VerificationPageState extends ConsumerState<VerificationPage> {
                     _error = null;
                   });
                   await Future.delayed(const Duration(milliseconds: 800));
-                  if (mounted) {
-                    setState(() => _isLoading = false);
-                    context.push('/create-pin');
-                  }
+                  if (!context.mounted) return;
+                  setState(() => _isLoading = false);
+                  context.push('/create-pin');
                 },
                 isLoading: _isLoading,
                 isExpanded: true,

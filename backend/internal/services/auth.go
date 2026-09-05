@@ -18,6 +18,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"globmint/backend/internal/domain"
+	"globmint/backend/internal/observability"
 	"globmint/backend/internal/storage"
 )
 
@@ -177,6 +178,7 @@ func (s *AuthService) Login(ctx context.Context, email, password, device, ip str
 	failKey := "login:" + emailHashKey(email)
 	user, err := s.store.UserRepo().FindByEmail(ctx, strings.ToLower(strings.TrimSpace(email)))
 	if errors.Is(err, domain.ErrNotFound) {
+		observability.Default.LoginFailure()
 		s.noteFailure(failKey)
 		if s.isThrottled(failKey, loginMaxAttempts) {
 			return nil, domain.ErrTooManyAttempts
@@ -190,6 +192,7 @@ func (s *AuthService) Login(ctx context.Context, email, password, device, ip str
 		return nil, domain.ErrUserLocked
 	}
 	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)) != nil {
+		observability.Default.LoginFailure()
 		s.noteFailure(failKey)
 		if s.isThrottled(failKey, loginMaxAttempts) {
 			return nil, domain.ErrTooManyAttempts

@@ -6,6 +6,7 @@ import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/widgets/app_button.dart';
 import '../../../../core/widgets/app_text_field.dart';
+import '../../../../shared/widgets/stablecoin_risk_disclosure.dart';
 
 class WithdrawPage extends ConsumerStatefulWidget {
   const WithdrawPage({super.key, this.initialAddress});
@@ -183,6 +184,8 @@ class _WithdrawPageState extends ConsumerState<WithdrawPage> {
                     fillColor: AppColors.surface,
                   ),
                 ),
+                const SizedBox(height: 24),
+                const StablecoinRiskDisclosure(),
                 const SizedBox(height: 32),
                 AppButton(
                   text: 'Continue',

@@ -1,6 +1,6 @@
 enum Currency {
-  NGN('NGN', '₦', 'Nigerian Naira'),
-  USDT('USDT', '\$', 'Tether USD');
+  ngn('NGN', '₦', 'Nigerian Naira'),
+  usdt('USDT', '\$', 'Tether USD');
 
   const Currency(this.code, this.symbol, this.currencyName);
   final String code;

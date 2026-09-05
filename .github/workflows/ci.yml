@@ -40,6 +40,16 @@ jobs:
         env:
           GLOBMINT_TEST_DATABASE_URL: postgres://globmint:globmint_dev@127.0.0.1:5434/globmint
         run: go test ./...
+      - name: Load test (hot path, no fault injection)
+        working-directory: backend
+        env:
+          GLOBMINT_TEST_DATABASE_URL: postgres://globmint:globmint_dev@127.0.0.1:5434/globmint
+        run: go run ./cmd/loadtest -users 8 -duration 4s -max-p95 100ms
+      - name: Load test (chaos: 20% failures + 800ms latency)
+        working-directory: backend
+        env:
+          GLOBMINT_TEST_DATABASE_URL: postgres://globmint:globmint_dev@127.0.0.1:5434/globmint
+        run: go run ./cmd/loadtest -users 8 -duration 6s -chaos-failure-rate 0.2 -chaos-latency-max-ms 800
 
   contracts:
     name: Contracts (hardhat)
@@ -68,4 +78,5 @@ jobs:
           cache: true
       - run: flutter pub get
       - run: flutter analyze
+      - run: flutter test
       - run: flutter build web --no-tree-shake-icons

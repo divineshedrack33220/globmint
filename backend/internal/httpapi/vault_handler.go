@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"net/http"
+	"time"
 
 	"globmint/backend/internal/domain"
 	"globmint/backend/internal/httpapi/middleware"
@@ -13,9 +14,32 @@ type vaultWithdrawRequest struct {
 	Pin         string `json:"pin"`
 }
 
+// elevationResponse is the client-facing shape of a time-locked withdrawal.
+type elevationResponse struct {
+	ID              string `json:"id"`
+	Destination     string `json:"destination"`
+	AmountNgnMinor  int64  `json:"amount_ngn_minor"`
+	Status          string `json:"status"`
+	ReleaseAfter    string `json:"release_after"`
+	BroadcastTxHash string `json:"broadcast_tx_hash,omitempty"`
+}
+
+func toElevationResponse(e *domain.WithdrawalElevation) elevationResponse {
+	r := elevationResponse{
+		ID:              e.ID,
+		Destination:     e.Destination,
+		AmountNgnMinor:  e.AmountNgnMinor,
+		Status:          string(e.Status),
+		ReleaseAfter:    e.ReleaseAfter.UTC().Format(time.RFC3339),
+		BroadcastTxHash: e.BroadcastTxHash,
+	}
+	return r
+}
+
 type vaultWithdrawResponse struct {
-	Transaction transactionResponse `json:"transaction"`
-	TxHash      string              `json:"tx_hash"`
+	Transaction *transactionResponse `json:"transaction,omitempty"`
+	TxHash      string              `json:"tx_hash,omitempty"`
+	Elevation   *elevationResponse  `json:"elevation,omitempty"`
 }
 
 type verifyPinRequest struct {
@@ -115,13 +139,65 @@ func (d *Deps) handleVaultWithdraw(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	txn, err := d.Vault.WithdrawToAddress(r.Context(), user.ID, req.Destination, amountMinor, middleware.IdempotencyKeyFrom(r.Context()))
+	result, err := d.Vault.WithdrawToAddress(r.Context(), user.ID, req.Destination, amountMinor, middleware.IdempotencyKeyFrom(r.Context()))
 	if err != nil {
 		writeError(w, r, err, "")
 		return
 	}
-	writeJSON(w, http.StatusCreated, vaultWithdrawResponse{
-		Transaction: newTransactionResponse(txn),
-		TxHash:      txn.ProviderRef,
-	})
+	d.publish(user.ID, "all")
+	resp := vaultWithdrawResponse{}
+	if result.Transaction != nil {
+		tr := newTransactionResponse(result.Transaction)
+		resp.Transaction = &tr
+		resp.TxHash = result.TxHash
+	}
+	if result.Elevation != nil {
+		er := toElevationResponse(result.Elevation)
+		resp.Elevation = &er
+	}
+	writeJSON(w, http.StatusCreated, resp)
+}
+
+// handleListVaultElevations lists the user's pending time-locked withdrawals.
+func (d *Deps) handleListVaultElevations(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	if user == nil {
+		writeError(w, r, domain.ErrUnauthenticated, "")
+		return
+	}
+	if d.Vault == nil {
+		writeError(w, r, domain.ErrNotFound, "")
+		return
+	}
+	elevations, err := d.Vault.ListPendingElevations(r.Context(), user.ID)
+	if err != nil {
+		writeError(w, r, err, "")
+		return
+	}
+	out := make([]elevationResponse, 0, len(elevations))
+	for i := range elevations {
+		out = append(out, toElevationResponse(&elevations[i]))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"elevations": out})
+}
+
+// handleCancelVaultWithdraw cancels a pending elevated withdrawal before its
+// release time. Already-broadcast or broadcast-in-progress elevations cannot be
+// cancelled.
+func (d *Deps) handleCancelVaultWithdraw(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	if user == nil {
+		writeError(w, r, domain.ErrUnauthenticated, "")
+		return
+	}
+	if d.Vault == nil {
+		writeError(w, r, domain.ErrNotFound, "")
+		return
+	}
+	id := r.PathValue("id")
+	if err := d.Vault.CancelElevation(r.Context(), user.ID, id); err != nil {
+		writeError(w, r, err, "")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"cancelled": true})
 }

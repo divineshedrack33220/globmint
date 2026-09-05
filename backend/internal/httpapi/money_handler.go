@@ -49,6 +49,7 @@ func (d *Deps) handleDeposit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err, txnID(txn))
 		return
 	}
+	d.publish(user.ID, "all")
 	writeJSON(w, http.StatusCreated, map[string]any{"transaction": newTransactionResponse(txn)})
 }
 
@@ -83,6 +84,7 @@ func (d *Deps) handleWithdraw(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err, txnID(txn))
 		return
 	}
+	d.publish(user.ID, "all")
 	writeJSON(w, http.StatusCreated, map[string]any{"transaction": newTransactionResponse(txn)})
 }
 
@@ -131,6 +133,7 @@ func (d *Deps) handleTransfer(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err, txnID(txn))
 		return
 	}
+	d.publish(user.ID, "all")
 	writeJSON(w, http.StatusOK, map[string]any{"transaction": newTransactionResponse(txn)})
 }
 
@@ -195,6 +198,7 @@ func (d *Deps) handleConvert(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err, txnID(txn))
 		return
 	}
+	d.publish(user.ID, "all")
 	writeJSON(w, http.StatusOK, map[string]any{"transaction": newTransactionResponse(txn)})
 }
 

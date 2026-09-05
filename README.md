@@ -133,16 +133,24 @@ sequenceDiagram
     participant V as Vault (chain)
     U->>A: 1. POST /savings/withdraw {amount, destination, pin}
     Note over A: check PIN, limits, idempotency, balance
-    A->>S: 2. broadcast transfer(destination, usdc)
-    S->>V: 3. transfer(destination, usdc) — mined
-    Note over A: txn recorded (submitted)
-    A-->>U: 4. activity shows confirmed once mined
+    alt amount ≤ elevation threshold
+        A->>S: 2a. broadcast transfer(destination, usdc)
+        S->>V: 3a. transfer(destination, usdc) — mined
+        Note over A: txn recorded (submitted)
+        A-->>U: 4a. activity shows confirmed once mined
+    else amount > threshold
+        Note over A: 2b. no chain call — pending elevation created
+        A-->>U: 3b. {elevation: pending, release_after} (cancellable)
+        Note over A: 4b. sweeper broadcasts after release_after, then debits
+    end
 ```
 
 Safety checks before any chain call: valid address (`ValidateDepositAddress`), PIN verify
 (throttled), amount within `MIN/MAX` and the UTC daily cap (`SumWithdrawalsSince`),
-idempotency key replay protection, and `WithdrawEnabled` flag. Every rejection happens
-without spending gas or touching the chain.
+idempotency key replay protection, `WithdrawEnabled` flag, and a sufficiency pre-check
+against the vault's on-chain USDC balance. Every rejection happens without spending gas
+or touching the chain. Amounts above the elevation threshold never broadcast immediately —
+they wait out the time-lock in §9.3.1 instead.
 
 ---
 
@@ -289,12 +297,25 @@ flowchart TB
 | Balances | `GET /balances` |
 | Transactions | `GET /transactions` |
 | Money | `POST /money/deposit`, `withdraw`, `transfer`, `convert`, `quote` |
-| Savings/Vault | `GET /savings/deposit-info`, `PUT /savings/deposit-address`, `GET /savings/vault-status`, `POST /savings/withdraw` |
+| Savings/Vault | `GET /savings/deposit-info`, `PUT /savings/deposit-address`, `GET /savings/vault-status`, `POST /savings/withdraw`, `GET /savings/withdraw` (pending time-locks), `POST /savings/withdraw/{id}/cancel` |
 | Beneficiaries | `GET/POST /beneficiaries`, `PATCH /beneficiaries/{id}`, `POST …/favorite`, `DELETE …/{id}`, `GET /beneficiaries/address/{address}` |
 | Bank accounts | `GET/POST /bank-accounts`, `POST /bank-accounts/{id}/default`, `DELETE …/{id}` |
 | Devices / security | `GET /devices`, `POST /devices/revoke-others`, `POST /devices/{id}/revoke`, `GET /security-events` |
 | Notifications | `GET /notifications` |
+| Realtime | `GET /events` (Server-Sent Events, Bearer auth) |
 | Ops | `GET /health`, `GET /live`, `GET /metrics` |
+
+**SSE (`GET /events`)** pushes balance/vault/transaction invalidation to connected clients
+instead of UI polling. On (re)connect the server sends a `connected` frame, then a small
+`data.changed` event per `kind` (`account` | `vault` | `transactions` | `all`) whenever a
+deposit, withdrawal, transfer, conversion, or vault hold mutates state. A 25-second
+heartbeat keeps proxies from dropping the stream; a publish with no subscribers is a no-op.
+The Flutter client reconnects with exponential backoff (1s → 15s).
+
+**Withdraw response shape.** `POST /savings/withdraw` returns 201 with either an instant
+result (`{transaction, tx_hash}`) or a time-locked one (`{elevation: {id, destination,
+amount_ngn_minor, status, release_after, broadcast_tx_hash?}}`) — see §9.3.1. Clients
+must handle both shapes; a `pending` elevation is cancellable until `release_after`.
 
 ### 6.3 Middleware chain (run order)
 
@@ -304,10 +325,16 @@ flowchart TB
    origin list for production; answers preflight `OPTIONS` with 204.
 4. **RateLimiter** — per-IP token bucket (`clientIPKey` strips the ephemeral port so bursts
    count across a browser session). Applied to login, register, 2FA-verify, PIN verify,
-   and money endpoints.
+   and money endpoints. Default burst buckets: 5 (auth) / 20 (money), overridable via
+   `GLOBMINT_RATE_LIMIT_AUTH_BURST` / `GLOBMINT_RATE_LIMIT_MONEY_BURST`.
 5. **Auth** — resolves the bearer token to a `User` (or rejects) for protected routes.
 6. **Idempotency** — reads `X-Idempotency-Key` so transfers/withdrawals/deposits replay
    exactly once.
+
+A **Chaos** middleware sits outermost and is off by default. When the server is started with
+`GLOBMINT_CHAOS_FAILURE_RATE` and/or `GLOBMINT_CHAOS_LATENCY_MAX_MS`, it injects
+HTTP 503s and/or bounded latency on a random fraction of requests — used by load testing to
+prove the API degrades cleanly under real faults.
 
 ### 6.4 Error model
 
@@ -544,21 +571,60 @@ flowchart TB
   deep enough (prevents reorg reversals).
 - `GLOBMINT_VAULT_FALLBACK_USER_ID` (testnet only) credits events whose address is not
   linked to any Globmint user; it must be empty on mainnet.
+- **Resumable cursor.** After each batch the last processed block is persisted to
+  `indexer_state` as a singleton row. On restart the indexer resumes from that cursor
+  instead of rescanning history, and a crash mid-batch can never double-credit (ledger
+  credits are idempotency-keyed by transaction hash). On first run the current confirmed
+  head is persisted as the baseline so pre-existing deposits aren't retroactively credited.
+  Fault tests in `indexer_resumability_test.go` cover restart, crash-mid-batch, RPC
+  failures, and the confirmation window.
+- **Parallel crediting.** Each processed batch resolves its confirmations concurrently
+  (worker pool), a per-user lock serializes credits to the same account, and every event
+  is appended to the durable `indexer_events` (`(tx_hash, log_index)` PK) log — so a
+  replay after restart is exactly-once. Distinct users are credited in parallel
+  (`TestIndexerParallelCrediting`).
+- **Single-leader election.** Multiple server instances (e.g. HTTP API + a dedicated
+  indexer) are safe: `RunIndexer` only works when it wins a Postgres advisory lock
+  (`TryAcquireIndexerLeadership`; session-scoped, auto-released on crash). Run a headless
+  worker with `globmint-server -indexer-only`, which also runs the elevation sweeper
+  (`TestIndexerLeadershipIsExclusive`).
 
 ### 9.3 Withdrawals (backend signer)
 
 - `POST /savings/withdraw{amount(NGN minor), destination, pin}` checks: valid address,
   verified PIN (throttled), `WITHDRAW_ENABLED`, `MIN ≤ amount ≤ MAX`, UTC daily cap via
-  `SumWithdrawalsSince`, and idempotency replay.
+  `SumWithdrawalsSince`, idempotency replay, **and a chain-sufficiency pre-check against
+  the vault's on-chain USDC balance before anything is broadcast** (an underfunded
+  vault errors with `ErrInsufficientBalance` and never spends gas —
+  `TestWithdrawRejectsInsufficientBeforeBroadcast`).
 - It converts to USDC, broadcasts the signer's `transfer(destination, usdc)` to the
   stablecoin, and records the transaction with `provider_ref = tx_hash`.
 - Env knobs: `GLOBMINT_VAULT_WITHDRAW_{ENABLED,MIN_MINOR,MAX_MINOR,DAILY_CAP_MINOR}`.
+
+#### 9.3.1 Elevated (time-locked) withdrawals — anti-theft throttle
+
+Requests above `GLOBMINT_VAULT_WITHDRAW_ELEVATION_THRESHOLD_MINOR` are **elevated**: no
+USDC leaves the vault, and a `pending` row is created instead.
+
+- **Lifecycle.** `pending` (created by `POST /savings/withdraw`) → `broadcasting` (claimed
+  atomically by the sweeper exactly once) → `broadcast` (with its tx hash) | `cancelled`.
+- **The sweeper** (`RunElevationSweeper`, also running under `-indexer-only`) periodically
+  claims due rows with a `ClaimForBroadcast` guard (only one instance wins), broadcasts
+  via the signer, then debits NGN and `MarkBroadcast`s. A claimed-but-failed row is
+  released back to `pending` for a later retry, counting a `reason="elevation"` failure.
+- **Exactly once.** The `(user_id, destination, amount_ngn_minor) WHERE status='pending'`
+  unique index makes duplicate requests idempotent, and the claim-guard stops double
+  broadcasts (`TestElevationSweepBroadcastsExactlyOnce`).
+- **User controls.** `GET /savings/withdraw` lists pending elevations; cancel before
+  release with `POST /savings/withdraw/{id}/cancel` (`TestElevationRequiresTimeLockThenCancel`).
+- Env knobs: `GLOBMINT_VAULT_WITHDRAW_ELEVATION_THRESHOLD_MINOR` (kobo; `0` disables) and
+  `GLOBMINT_VAULT_WITHDRAW_ELEVATION_DELAY` (default `24h`).
 
 ### 9.4 Environment variables (blockchain)
 
 | Variable | Purpose |
 |---|---|
-| `GLOBMINT_BLOCKCHAIN_NETWORK` | `mock` / `sepolia` / `mainnet` |
+| `GLOBMINT_BLOCKCHAIN_NETWORK` | `mock` / `sepolia` / `mainnet`, or an L2: `base` / `arbitrum` / `optimism` (+ `-sepolia` testnets) |
 | `GLOBMINT_BLOCKCHAIN_RPC_URL` | RPC endpoint (Alchemy/Infura/own node) |
 | `GLOBMINT_BLOCKCHAIN_CHAIN_ID` | 11155111 (Sepolia) / 1 (mainnet) |
 | `GLOBMINT_BLOCKCHAIN_MODE` | `mock` (no chain calls) / `real` |
@@ -567,9 +633,19 @@ flowchart TB
 | `GLOBMINT_VAULT_START_BLOCK` | Indexer anchor |
 | `GLOBMINT_VAULT_MIN_CONFIRMATIONS` | credit window (≥12 forced on mainnet) |
 | `GLOBMINT_STABLECOIN_PRIVATE_KEY` | signer key (never committed) |
+| `GLOBMINT_VAULT_WITHDRAW_ELEVATION_THRESHOLD_MINOR` | kobo above which withdrawals time-lock (`0` = disabled) |
+| `GLOBMINT_VAULT_WITHDRAW_ELEVATION_DELAY` | how long an elevation waits before broadcast (default `24h`) |
 
 > ⚠️ The canonical mainnet USDC is `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48` (note the
 > trailing `8`). A one-character error here would route production deposits to a non-token.
+
+**L2 global stablecoin groundwork.** The same vault contract deploys untouched on
+Base / Arbitrum / Optimism (native USDC, near-instant and near-free settlement):
+`GLOBMINT_BLOCKCHAIN_NETWORK=base|arbitrum|optimism` (+ `-sepolia` testnets) with the
+matching `_RPC_URL` envs and chain RPCs are pre-wired in `backend/contracts/hardhat.config.js`
+(`npx hardhat run scripts/deploy.js --network base`). Reference USDC addresses per chain
+live in `.env.example`; each network uses its own separate vault deployment, so point
+`GLOBMINT_VAULT_CONTRACT_ADDRESS` / `GLOBMINT_VAULT_ADDRESS` at that chain's vault.
 
 ---
 
@@ -583,6 +659,11 @@ flowchart TB
   `balanceServiceProvider`, `vaultStatusProvider`, `accountSummaryProvider`, and
   `transactionsProvider` model server state; pages `ref.watch` them and invalidate after
   mutations (e.g. after a withdrawal the vault status and balances refresh).
+- **Realtime**: a single SSE connection (`lib/shared/services/events_service.dart`, backed
+  by the `/api/v1/events` stream from §6.2) replaces UI polling. A listener in the app
+  shell maps pushed `kind`s to the corresponding providers and invalidates only what
+  changed — so a remote deposit or a signed withdrawal appears in the UI within ~1s
+  without a single poll timer.
 - **Routing**: `go_router` in `lib/app/router.dart` with auth-guarded routes. 2FA is a
   **step inside the login flow**: if `login` returns `requires_two_factor`, the page swaps
   to an authenticator-code step that calls `verifyTwoFactor(challenge, code)`.
@@ -652,15 +733,17 @@ served by the same TLS terminating proxy as the API (CORS-origin-matched).
 | `0004_deposit_address` | user ↔ on-chain wallet link |
 | `0004_seed_rates` | FX rates for USDT/USDC ↔ NGN |
 | `0005_security` | security events, devices, notifications |
-| `0006_indexer_state` | block-cursor + event log for the vault indexer |
+| `0006_indexer_state` | vault-indexer block cursor (singleton, resumable) |
 | `0007_beneficiary_addresses` | crypto beneficiaries with wallet addresses |
 | `0008_audit_log` | append-only admin/security audit trail |
 | `0009_pin_hash` | user PIN hashes |
 | `0010_totp` | TOTP secret + enabled flag |
+| `0011_indexer_events_and_elevations` | `indexer_events` replay log `(tx_hash, log_index)` PK + `withdrawal_elevations` time-lock table with the one-pending-per-content unique index |
 
 Key tables: `users`, `sessions`, `accounts`, `transactions`, `balance_ledger`,
-`exchange_rates`, `deposit_addresses`, `indexer_state`, `security_events`,
-`audit_log`, `beneficiaries`, `bank_accounts`, `notifications`.
+`exchange_rates`, `deposit_addresses`, `indexer_state`, `indexer_events`,
+`withdrawal_elevations`, `security_events`, `audit_log`, `beneficiaries`,
+`bank_accounts`, `notifications`.
 
 Migrations auto-apply on server boot (idempotent, tracked in a schema_migrations-style
 table). The backup script archives the whole schema + data for point-in-time restores.
@@ -729,11 +812,27 @@ when host `pg_dump` is missing.
 
 ## 13. Observability
 
-- **`GET /metrics`** — Prometheus text: `http_requests_total{method,path,status}` and
-  `globmint_login_failures_total`. No extra exports; any Prometheus/agent can scrape it.
+- **`GET /metrics`** — Prometheus text: `http_requests_total{method,path,status}`,
+  `http_request_duration_ms{method,path}` (histogram, summary/avg/p95),
+  `globmint_login_failures_total`, `globmint_outbound_failures_total{reason}`, the
+  `globmint_signer_balance` gauge (vault signer USDC), and `globmint_indexer_lag_blocks`
+  (chain head − processed cursor). No extra exports; any Prometheus/agent can scrape it.
+  - Failure reasons: `broadcast` = an instant withdrawal's chain send failed (nothing
+    debited, user retries); `ledger` = USDC left the vault but the NGN debit failed —
+    highest severity, see the runbook; `elevation` = a due time-lock's sweep broadcast
+    failed (the row returns to `pending` and retries automatically). Counters increment
+    only on real failures, so any non-zero rate is alert-worthy.
 - **`GET /health`** and **`GET /live`** — liveness probes for orchestrators.
 - **Request IDs** — every response carries `request_id` for cross-referencing logs with
   support cases.
+- **Stack.** `docker-compose.yml` brings up the full prod shape: `db`, `server`, `web`
+  (Flutter build served by nginx), `caddy` (in `/infra/Caddyfile`: `/api/*` and `/metrics`
+  → server, everything else → web), `prometheus` (scrapes `server:8081/metrics`), and
+  `grafana` with a provisioned platform dashboard. Alert rules live in
+  `infra/prometheus/rules.yml` (server down, 5xx rate, signer low, indexer lag,
+  elevation/broadcast/ledger failures) mapped to the incident steps in
+  `infra/incident-response.md`. Set `GRAFANA_ADMIN_PASSWORD` (never the default) before
+  exposing Grafana.
 
 ---
 
@@ -742,14 +841,16 @@ when host `pg_dump` is missing.
 | Suite | Command | Coverage |
 |---|---|---|
 | Go unit | `go test ./internal/domain/...` | money arithmetic, rounding, negatives |
-| Go integration | `go test ./internal/services/...` | real Postgres (docker on :5434): credits/debits, idempotency (incl. concurrent), transfers, conversion, beneficiary CRUD |
+| Go integration | `go test ./internal/services/...` | real Postgres (docker on :5434): credits/debits, idempotency (incl. concurrent), transfers, conversion, beneficiary CRUD, indexer resumability (restart, crash-safe cursor, RPC faults, confirmation window), parallel crediting, leader election, and the elevation lifecycle (time-lock, cancel, exactly-once sweep, insufficient pre-check) |
+| Load/chaos | `go run ./cmd/loadtest` + `scripts/chaos-test.sh` | end-to-end hot path against an in-process server (register → login→2FA → convert → transfer), plus injected-fault runs asserting graceful 503s/latency (see §15) |
 | Solidity | `npx hardhat test` | 9 tests: deposit, depositFor, withdraw, over-withdrawal revert, no-admin isolation, totalDeposits |
-| Flutter | `flutter analyze` + `flutter build web` | static analysis + web compile |
+| Flutter unit/widget | `flutter test` | formatters (incl. `vaultUsdc`), auth service (login + 2FA verify, token persistence), balance service mapping, login-page 2FA widget flow |
+| Flutter lint | `flutter analyze` + `flutter build web` | static analysis + web compile |
 
 CI (`.github/workflows/ci.yml`) runs all of the above on push/PR: `setup-go` + Postgres
-service for Go tests, Node + `npm ci`/`npm test` for the contracts, and Flutter
-analyze/build. The Go service container mirrors `docker-compose` (port 5434) so the same
-integration tests run in CI as locally.
+service for Go tests, clean + chaos loadtests, Node + `npm ci`/`npm test` for the
+contracts, and Flutter analyze/build/test. The Go service container mirrors
+`docker-compose` (port 5434) so the same integration tests run in CI as locally.
 
 ---
 
@@ -762,13 +863,41 @@ vault has no owner, user balances are unaffected; only the ability to broadcast 
 withdrawals changes.
 
 **DB restored after loss** — `pg_restore` the latest `backup.sh` archives; sessions,
-ledger, rates, and audit all come back together.
+ledger, rates, and audit all come back together. The indexer re-scans from its persisted
+cursor and the `indexer_events` log makes replays exactly-once.
 
 **Confirming the indexer caught up** — the vault-status endpoint reports the confirmed
-balance; check the server log for the processed block cursor vs. the chain head.
+balance; the `globmint_indexer_lag_blocks` metric shows chain head − processed cursor.
+
+**Elevated withdrawal stuck** — if a time-locked withdrawal never leaves `pending` past
+its `release_after`, check the sweeper is running (it runs in the server and under
+`-indexer-only`), the signer balance is positive, and the RPC is healthy. Failed claims
+auto-return to `pending`. Reference `infra/incident-response.md` for the full
+pause-switch / reconcile / key-rotation playbook.
+
+**Multi-instance deployment** — run one instance normally and scale an extra one with
+`globmint-server -indexer-only` (leader-elected, no HTTP): `docker compose up -d --scale
+server=N` and flip the extras to the indexer command.
 
 **Config change dry-run** — boot a shadow instance against a DB copy and run the smoke flow
 (register → login → balances → quote → withdraw-reject).
+
+**Load / chaos testing** — exercise the full hot path without an HTTP server or network:
+
+```bash
+cd backend
+go run ./cmd/loadtest \                      # defaults: -users 20 -duration 15s
+  -users 40 -duration 20s                    # end-to-end register→login→2FA→convert→transfer
+cd .. && scripts/chaos-test.sh               # clean run, then one with 503s + latency
+```
+
+The loadtest spins an in-process `httptest.Server` with the real middleware stack, real
+Postgres, and the mock chain (seeded so balances are deterministic), then prints a
+per-path status breakdown and fails the run if p95 latency exceeds `-max-p95`. The chaos
+script asserts the API surfaces injected 503s/latency without breaking the happy path, and
+optionally scrapes `/metrics`. Restart the dev server with
+`GLOBMINT_CHAOS_FAILURE_RATE` / `GLOBMINT_CHAOS_LATENCY_MAX_MS` set to manually observe the
+same behaviour through the real HTTP endpoints.
 
 ---
 
@@ -776,10 +905,12 @@ balance; check the server log for the processed block cursor vs. the chain head.
 
 - **Mainnet is configured, not yet funded.** All deploy tooling, the production gate, and
   the runbook are in place; real USDC is not yet flowing (requires the §12.3 steps).
-- **Withdraw-to-any-address is operator-authorized by PIN + limits.** The chain-level
-  `withdraw` remains self-only; the app's signer flow adds off-chain spend controls on top.
+- **Withdraw-to-any-address is operator-authorized by PIN + limits + time-lock.** The chain-level
+  `withdraw` remains self-only; the app's signer flow adds off-chain spend controls on top,
+  and high-value requests wait out the elevation delay (§9.3.1) instead of broadcasting.
 - **FX rates are seeded static values**, not streamed market data; the quote endpoint is
   the extension point for a price feed.
 - **Future work:** real price feeds, email/SMS notification delivery, a QR-code flow for
-  the TOTP secret, wallet-deep-link deposit flow (WalletConnect/MetaMask), and Prometheus
-  alerting rules wired to `/metrics`.
+  the TOTP secret, wallet-deep-link deposit flow (WalletConnect/MetaMask), and multi-chain
+  UX once the L2 groundwork (§9.4) is exercised on a testnet. The app surfaces the Circle
+  USDC risk disclosure and watch-only clarity before any real money moves.

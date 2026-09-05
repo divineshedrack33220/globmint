@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"globmint/backend/internal/events"
 	"globmint/backend/internal/infrastructure/blockchain"
 	"globmint/backend/internal/services"
 )
@@ -16,4 +17,6 @@ type Deps struct {
 	Security    *services.SecurityService
 	Blockchain  blockchain.BlockchainService
 	Vault       *services.VaultService
+	// Events fans change notifications out to SSE subscribers.
+	Events *events.Hub
 }

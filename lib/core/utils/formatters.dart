@@ -34,6 +34,14 @@ abstract final class CurrencyFormatter {
     final prefix = value >= 0 ? '+' : '';
     return '$prefix${value.toStringAsFixed(1)}%';
   }
+
+  /// Parses the numeric leading part of an on-chain balance string like
+  /// `"8.000000 USDC"` into its USDC amount. Returns 0 for empty/garbage input.
+  static double vaultUsdc(String raw) {
+    final match = RegExp(r'^\s*([\d.]+)').firstMatch(raw);
+    if (match == null || match.group(1) == null) return 0;
+    return double.tryParse(match.group(1)!) ?? 0;
+  }
 }
 
 abstract final class DateFormatter {

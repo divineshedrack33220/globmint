@@ -30,9 +30,26 @@ type Config struct {
 	VaultWithdrawMaxMinor  int64 // 0 = no maximum
 	VaultWithdrawDailyCapMinor int64 // 0 = no daily cap
 
+	// VaultWithdrawElevationThresholdMinor time-locks withdrawals above this
+	// amount (kobo); 0 disables the time-lock entirely.
+	VaultWithdrawElevationThresholdMinor int64
+	// VaultWithdrawElevationDelay is how long an elevated withdrawal waits
+	// before the signer broadcasts it (default 24h).
+	VaultWithdrawElevationDelay time.Duration
+
 	// VaultMinConfirmations: number of block confirmations a deposit must
 	// reach before the indexer credits the ledger (protects against reorgs).
 	VaultMinConfirmations uint64
+
+	// RateLimitAuthBurst / RateLimitMoneyBurst override the per-IP token-bucket
+	// budgets (auth: 5/s, money: 20/s). Raise them for load testing only.
+	RateLimitAuthBurst  int
+	RateLimitMoneyBurst int
+
+	// ChaosFailureRate / ChaosLatencyMaxMS enable adversarial fault injection
+	// for chaos testing. Both default to disabled in production.
+	ChaosFailureRate  float64
+	ChaosLatencyMaxMS int
 
 	// Blockchain holds settings for the on-chain settlement layer.
 	Blockchain BlockchainConfig
@@ -40,7 +57,7 @@ type Config struct {
 
 // BlockchainConfig holds blockchain and stablecoin settings.
 type BlockchainConfig struct {
-	Network         string // "mock", "sepolia", "mainnet"
+	Network         string // "mock", "sepolia", "mainnet", or an L2: base, arbitrum, optimism (+ their -sepolia forms)
 	RPCURL          string // e.g. Alchemy/Infura endpoint
 	ChainID         int64
 	Stablecoin      string // e.g. "USDC"
@@ -79,7 +96,13 @@ func Load() Config {
 		VaultWithdrawMinMinor:     int64Env("GLOBMINT_VAULT_WITHDRAW_MIN_MINOR", 0),
 		VaultWithdrawMaxMinor:     int64Env("GLOBMINT_VAULT_WITHDRAW_MAX_MINOR", 0),
 		VaultWithdrawDailyCapMinor: int64Env("GLOBMINT_VAULT_WITHDRAW_DAILY_CAP_MINOR", 0),
+		VaultWithdrawElevationThresholdMinor: int64Env("GLOBMINT_VAULT_WITHDRAW_ELEVATION_THRESHOLD_MINOR", 0),
+		VaultWithdrawElevationDelay:           durationEnv("GLOBMINT_VAULT_WITHDRAW_ELEVATION_DELAY", 24*time.Hour),
 		VaultMinConfirmations:      uint64Env("GLOBMINT_VAULT_MIN_CONFIRMATIONS", 0),
+		RateLimitAuthBurst:         intEnv("GLOBMINT_RATE_LIMIT_AUTH_BURST", 5),
+		RateLimitMoneyBurst:        intEnv("GLOBMINT_RATE_LIMIT_MONEY_BURST", 20),
+		ChaosFailureRate:           float64Env("GLOBMINT_CHAOS_FAILURE_RATE", 0),
+		ChaosLatencyMaxMS:          intEnv("GLOBMINT_CHAOS_LATENCY_MAX_MS", 0),
 		Blockchain: BlockchainConfig{
 			Network:          envOr("GLOBMINT_BLOCKCHAIN_NETWORK", "mock"),
 			RPCURL:           os.Getenv("GLOBMINT_BLOCKCHAIN_RPC_URL"),
@@ -128,6 +151,15 @@ func uint64Env(key string, def uint64) uint64 {
 	if v := os.Getenv(key); v != "" {
 		if n, err := strconv.ParseUint(v, 10, 64); err == nil {
 			return n
+		}
+	}
+	return def
+}
+
+func float64Env(key string, def float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
 		}
 	}
 	return def

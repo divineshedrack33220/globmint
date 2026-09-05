@@ -1,0 +1,9 @@
+.git
+build
+*.log
+.env*
+.wallets
+android
+ios
+test
+.dart_tool

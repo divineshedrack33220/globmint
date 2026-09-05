@@ -5,6 +5,7 @@ import (
 	"embed"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -124,3 +125,35 @@ func (s *Store) ExchangeRateRepo() storage.ExchangeRateRepository { return NewEx
 func (s *Store) DepositAddressRepo() storage.DepositAddressRepository { return NewDepositAddressRepo(s.q) }
 func (s *Store) SecurityEventRepo() storage.SecurityEventRepository { return NewSecurityEventRepo(s.q) }
 func (s *Store) NotificationRepo() storage.NotificationRepository { return NewNotificationRepo(s.q) }
+func (s *Store) IndexerStateRepo() storage.IndexerStateRepository { return NewIndexerStateRepo(s.q) }
+func (s *Store) IndexerEventRepo() storage.IndexerEventRepository { return NewIndexerEventRepo(s.q) }
+func (s *Store) ElevationRepo() storage.ElevationRepository { return NewElevationRepo(s.q) }
+
+// TryAcquireIndexerLeadership grabs a session-level Postgres advisory lock on
+// a dedicated connection so exactly one indexer instance scans at a time. The
+// returned release func must be called exactly once when the process gives up
+// leadership (or ctx is cancelled); a crashed process releases automatically
+// because its session dies, letting a standby take over on the next poll.
+func (s *Store) TryAcquireIndexerLeadership(ctx context.Context, key int64) (func(), bool, error) {
+	conn, err := s.pool.Acquire(ctx)
+	if err != nil {
+		return nil, false, fmt.Errorf("acquire leader connection: %w", err)
+	}
+	var got bool
+	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, key).Scan(&got); err != nil {
+		conn.Release()
+		return nil, false, fmt.Errorf("try advisory lock: %w", err)
+	}
+	if !got {
+		conn.Release()
+		return nil, false, nil
+	}
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() {
+			_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, key)
+			conn.Release()
+		})
+	}
+	return release, true, nil
+}

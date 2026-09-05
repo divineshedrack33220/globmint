@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum"
@@ -21,6 +22,7 @@ type TokenTransfer struct {
 	To          string
 	Value       *big.Int // raw base units (e.g. 6 decimals)
 	TxHash      string
+	LogIndex    uint64
 	BlockNumber uint64
 }
 
@@ -44,10 +46,16 @@ type BlockchainService interface {
 
 // ---------- Mock ----------
 
-// MockBlockchainService is a mock implementation for development/testing.
+// MockBlockchainService is a mock implementation for development/testing. It
+// is controllable: SetLatest advances the head block, AddTransfer seeds events,
+// and SetError injects RPC failures for chaos/fault tests.
 type MockBlockchainService struct {
+	mu       sync.Mutex
 	balances map[string]string
 	transfers []TokenTransfer
+	latest    uint64
+	headErr   error
+	filterErr error
 }
 
 // ---------- Mock ----------
@@ -57,6 +65,27 @@ func NewMockBlockchainService() *MockBlockchainService {
 	return &MockBlockchainService{
 		balances: make(map[string]string),
 	}
+}
+
+// SetLatest sets the head block the mock reports (mock-only, for tests).
+func (m *MockBlockchainService) SetLatest(n uint64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.latest = n
+}
+
+// SetHeadError injects a failure on the next LatestBlock call; pass nil to clear.
+func (m *MockBlockchainService) SetHeadError(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.headErr = err
+}
+
+// SetFilterError injects a failure on FilterTokenTransfers; pass nil to clear.
+func (m *MockBlockchainService) SetFilterError(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.filterErr = err
 }
 
 // GetBalance returns a mock balance.
@@ -96,6 +125,11 @@ func (m *MockBlockchainService) VaultAddress() string { return "" }
 
 // FilterTokenTransfers returns any transfers seeded via AddTransfer for tests.
 func (m *MockBlockchainService) FilterTokenTransfers(ctx context.Context, fromBlock, toBlock uint64, address string) ([]TokenTransfer, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.filterErr != nil {
+		return nil, m.filterErr
+	}
 	var out []TokenTransfer
 	for _, t := range m.transfers {
 		if t.BlockNumber >= fromBlock && t.BlockNumber <= toBlock {
@@ -109,11 +143,20 @@ func (m *MockBlockchainService) FilterTokenTransfers(ctx context.Context, fromBl
 
 // AddTransfer seeds a synthetic Transfer event (mock-only, for tests).
 func (m *MockBlockchainService) AddTransfer(t TokenTransfer) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.transfers = append(m.transfers, t)
 }
 
-// LatestBlock returns a synthetic head block number for mock mode.
-func (m *MockBlockchainService) LatestBlock(ctx context.Context) (uint64, error) { return 0, nil }
+// LatestBlock returns the configured head block number for mock mode.
+func (m *MockBlockchainService) LatestBlock(ctx context.Context) (uint64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.headErr != nil {
+		return 0, m.headErr
+	}
+	return m.latest, nil
+}
 
 // ---------- Real (Ethereum RPC) ----------
 
@@ -413,6 +456,7 @@ func (s *EthereumService) FilterTokenTransfers(ctx context.Context, fromBlock, t
 				To:          common.HexToAddress(l.Topics[2].Hex()).Hex(),
 				Value:       new(big.Int).SetBytes(l.Data[:32]),
 				TxHash:      l.TxHash.Hex(),
+				LogIndex:    uint64(l.Index),
 				BlockNumber: l.BlockNumber,
 			}
 			if address == "" || strings.EqualFold(tsf.To, address) {

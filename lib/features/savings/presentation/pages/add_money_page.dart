@@ -8,6 +8,7 @@ import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/utils/formatters.dart';
 import '../../../../shared/services/savings_client.dart';
+import '../../../../shared/widgets/stablecoin_risk_disclosure.dart';
 
 /// Personal savings vault. You top it up by sending USDC on-chain to the
 /// deposit address shown here. The app watches that address and reflects every
@@ -24,23 +25,11 @@ class _AddMoneyPageState extends ConsumerState<AddMoneyPage> {
   DepositInfo? _deposit;
   bool _depositError = false;
   bool _copied = false;
-  Timer? _poll;
 
   @override
   void initState() {
     super.initState();
     _loadDeposit();
-    _poll = Timer.periodic(const Duration(seconds: 6), (_) {
-      if (!mounted) return;
-      ref.invalidate(accountSummaryProvider);
-      ref.invalidate(vaultStatusProvider);
-    });
-  }
-
-  @override
-  void dispose() {
-    _poll?.cancel();
-    super.dispose();
   }
 
   Future<void> _loadDeposit() async {
@@ -106,6 +95,8 @@ class _AddMoneyPageState extends ConsumerState<AddMoneyPage> {
               const SizedBox(height: 24),
               _VaultHoldingsCard(),
               const SizedBox(height: 24),
+              const StablecoinRiskDisclosure(),
+              const SizedBox(height: 24),
               // Deposit address card
               Container(
                 width: double.infinity,
@@ -131,8 +122,29 @@ class _AddMoneyPageState extends ConsumerState<AddMoneyPage> {
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      'Funds arriving here are detected on-chain and added to your vault holdings and transaction history automatically. No amount needed, and no sender link required.',
+                      'Send any amount of USDC from any wallet. The app '
+                      'watches this address on-chain and reflects deposits '
+                      'automatically — no sender link required.',
                       style: context.typography.bodySmall,
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Icon(Icons.visibility_outlined,
+                            color: AppColors.textSecondary, size: 16),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            'Watch-only address: the app observes this address '
+                            'to credit you, but cannot spend from it — funds '
+                            'are held by the vault smart contract under its '
+                            'own key.',
+                            style: context.typography.bodySmall.copyWith(
+                                color: AppColors.textSecondary),
+                          ),
+                        ),
+                      ],
                     ),
                     const SizedBox(height: 16),
                     if (deposit == null && _depositError)
@@ -254,7 +266,7 @@ class _VaultHoldingsCard extends ConsumerWidget {
     final vault = ref.watch(vaultStatusProvider).valueOrNull;
     final summary = ref.watch(accountSummaryProvider).valueOrNull;
     final rate = summary?.currentRate ?? 0;
-    final usdc = vault == null ? 0.0 : _vaultUsdc(vault.vaultUsdcBalance);
+    final usdc = vault == null ? 0.0 : CurrencyFormatter.vaultUsdc(vault.vaultUsdcBalance);
     final vaultNgn = usdc * rate;
 
     return Container(
@@ -300,11 +312,6 @@ class _VaultHoldingsCard extends ConsumerWidget {
         ],
       ),
     );
-  }
-
-  double _vaultUsdc(String raw) {
-    final match = RegExp(r'^\s*([\d.]+)').firstMatch(raw);
-    return match == null ? 0 : double.tryParse(match.group(1)!) ?? 0;
   }
 
   String _fmtUsdc(double v) =>

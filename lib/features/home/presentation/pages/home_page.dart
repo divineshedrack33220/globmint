@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -22,27 +20,8 @@ class HomePage extends ConsumerStatefulWidget {
 }
 
 class _HomePageState extends ConsumerState<HomePage> {
-  Timer? _poll;
-
-  @override
-  void initState() {
-    super.initState();
-    // Keep the dashboard live: as the vault indexer credits on-chain USDC
-    // deposits, invalidate the balance, vault status and transaction history
-    // so the UI reflects them immediately.
-    _poll = Timer.periodic(const Duration(seconds: 6), (_) {
-      if (!mounted) return;
-      ref.invalidate(accountSummaryProvider);
-      ref.invalidate(vaultStatusProvider);
-      ref.invalidate(transactionsProvider);
-    });
-  }
-
-  @override
-  void dispose() {
-    _poll?.cancel();
-    super.dispose();
-  }
+  // Balance/vault/transaction updates are pushed over SSE via
+  // ScaffoldWithNavBar; the dashboard needs no local polling timer.
 
   @override
   Widget build(BuildContext context) {
@@ -141,16 +120,10 @@ class _BalanceSection extends ConsumerWidget {
   const _BalanceSection({required this.summary});
   final AccountSummary summary;
 
-  /// Parses a vault balance string like "8.000000 USDC" into its numeric part.
-  double _vaultUsdc(String raw) {
-    final match = RegExp(r'^\s*([\d.]+)').firstMatch(raw);
-    return match == null ? 0 : double.tryParse(match.group(1)!) ?? 0;
-  }
-
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final vault = ref.watch(vaultStatusProvider).valueOrNull;
-    final vaultUsdc = vault == null ? 0.0 : _vaultUsdc(vault.vaultUsdcBalance);
+    final vaultUsdc = vault == null ? 0.0 : CurrencyFormatter.vaultUsdc(vault.vaultUsdcBalance);
     final rate = summary.currentRate;
     final nairaBase = summary.totalNgnEquivalent;
     final vaultNgn = vaultUsdc * rate;
@@ -232,8 +205,6 @@ class _AvailableBalanceCard extends StatelessWidget {
 class _VaultStatusCard extends ConsumerWidget {
   const _VaultStatusCard();
 
-  static final _numReg = RegExp(r'^\s*([\d.]+)');
-
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final status = ref.watch(vaultStatusProvider);
@@ -242,14 +213,11 @@ class _VaultStatusCard extends ConsumerWidget {
 
     return status.when(
       loading: () => const SizedBox.shrink(),
-      error: (_, __) => const SizedBox.shrink(),
+      error: (_, _) => const SizedBox.shrink(),
       data: (v) {
         if (!v.hasAddress) return const SizedBox.shrink();
         final balance = v.vaultUsdcBalance;
-        final match = _numReg.firstMatch(balance);
-        final usdc = match == null || match.group(1) == null
-            ? 0.0
-            : double.tryParse(match.group(1)!) ?? 0.0;
+        final usdc = CurrencyFormatter.vaultUsdc(balance);
         final vaultNgn = usdc * rate;
         return Container(
           width: double.infinity,
@@ -316,7 +284,7 @@ class _NetworkChip extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-        color: AppColors.primary.withOpacity(0.12),
+        color: AppColors.primary.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(6),
       ),
       child: Text(

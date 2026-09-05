@@ -1,3 +1,12 @@
+# Full Globmint stack: PostgreSQL + backend API + Flutter web + monitoring.
+#
+#   cp .env.example .env          # fill in real values
+#   docker compose up -d --build
+#
+# Dev/test tips:
+#   * `docker compose up -d db` only for the local Postgres (tests + dev server).
+#   * Auth uses GLOBMINT_SESSION_SECRET / GLOBMINT_REQUEST_ID_SALT from the
+#     `server` env_file; if unset the API refuses connections on mainnet.
 services:
   db:
     image: postgres:16-alpine
@@ -6,9 +15,9 @@ services:
     environment:
       POSTGRES_DB: globmint
       POSTGRES_USER: globmint
-      POSTGRES_PASSWORD: globmint_dev
+      POSTGRES_PASSWORD: ${GLOBMINT_DB_PASSWORD:-globmint_dev}
     ports:
-      - "5434:5432"
+      - "${GLOBMINT_DB_PORT:-5434}:5432"
     volumes:
       - globmint_pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -17,5 +26,96 @@ services:
       timeout: 5s
       retries: 10
 
+  server:
+    build:
+      context: ./backend
+    container_name: globmint-server
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      GLOBMINT_DATABASE_URL: ${GLOBMINT_DATABASE_URL_INTERNAL:-postgres://globmint:${GLOBMINT_DB_PASSWORD:-globmint_dev}@db:5432/globmint}
+      GLOBMINT_HTTP_ADDR: :8081
+    # Optionally run a second instance in indexer-only mode to scale scanning:
+    #   docker compose up -d --scale server=2
+    # and flip one instance with `command: ["globmint-server", "-indexer-only"]`.
+    command: ["globmint-server"]
+    depends_on:
+      db:
+        condition: service_healthy
+    expose:
+      - "8081"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8081/api/health >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    # Add for Caddy: ports: - "8081:8081"
+
+  web:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    container_name: globmint-web
+    restart: unless-stopped
+    expose:
+      - "80"
+
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: globmint-caddy
+    restart: unless-stopped
+    volumes:
+      - ./infra/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      server:
+        condition: service_healthy
+      web:
+        condition: service_started
+
+  # ---- monitoring ----
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: globmint-prometheus
+    restart: unless-stopped
+    volumes:
+      - ./infra/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/prometheus/rules.yml:/etc/prometheus/rules.yml:ro
+      - prom_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=30d"
+    depends_on:
+      server:
+        condition: service_healthy
+    expose:
+      - "9090"
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    container_name: globmint-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+    volumes:
+      - ./infra/grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - ./infra/grafana/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      prometheus:
+        condition: service_started
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+
 volumes:
   globmint_pgdata:
+  prom_data:
+  grafana_data:
+  caddy_data:
+  caddy_config:
