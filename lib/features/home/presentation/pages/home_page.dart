@@ -93,7 +93,10 @@ class _HomePageState extends ConsumerState<HomePage> {
                     isHero: true,
                   ),
                 ),
-                data: (summary) => _BalanceSection(summary: summary),
+                data: (summary) => Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 24),
+                  child: _BalanceSection(summary: summary),
+                ),
               ),
               const SizedBox(height: 16),
               // Available Balance

@@ -9,20 +9,22 @@ their vault, money-out is the user telling the app which address to pay. The pla
 Go API + Solidity vault + Flutter client, currently live on **Sepolia testnet** and staged
 for Ethereum mainnet.
 
-```
-┌──────────────────────────┐          ┌─────────────────────────────────────────┐
-│    Flutter app (web/mob) │  HTTPS   │        Go API  (backend)                │
-│  feature-first, Riverpod │ ───────► │  httpapi ─ services ─ storage(postgres) │
-└──────────────────────────┘          │            │                            │
-      │ user wallet (MetaMask/WalletConnect/raw)   │ RPC                        │
-      │        │ approve + deposit / withdraw      ▼                            │
-      │        └────────────────────────────► Ethereum (Sepolia/mainnet)        │
-      │                                             ▲  GlobmintVault.sol        │
-      └──────── users sign their own txs ──────────┘  (no owner, no admin)      │
-┌──────────────────────────┐          ┌─────────────────────────────────────────┘
-│  Postgres 16 (Docker)    │ ◄───────┤  indexer: vault events → ledger credits
-│  ledger, sessions, rates │         └─────────────────────────────────────────┘
-└──────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph Client["Flutter app (web / mobile) — Riverpod, feature-first"]
+        UI["User wallet (MetaMask / WalletConnect / raw)"]
+    end
+    subgraph Server["Go API (backend)"]
+        API[httpapi] --> SVC[Services] --> DB[(Postgres 16: ledger, sessions, rates)]
+        IDX["Indexer: vault events → ledger credits"] --> DB
+    end
+    subgraph Chain["Ethereum (Sepolia / mainnet)"]
+        VAULT["GlobmintVault.sol — no owner, no admin"]
+    end
+    UI == HTTPS ==> API
+    UI -->|"approve + deposit / withdraw (users sign their own txs)"| VAULT
+    SVC -->|"RPC: signer broadcasts withdrawals"| VAULT
+    VAULT -->|Deposited / Withdrawn events| IDX
 ```
 
 ---
@@ -71,28 +73,22 @@ operate it safely — especially the mainnet path where real funds move.
 
 ### 2.1 High-level topology
 
-```
-                          ┌───────────────────────────────────────────────┐
-                          │                   Globe Mint                   │
-   ┌──────────────────┐   │  ┌────────────┐  ┌────────────┐  ┌─────────┐  │
-   │   Flutter app    │──►│  │ HTTP API   │─►│ Services   │─►│ Postgres│  │
-   │  web / android   │   │  │  :8081     │  │ domain     │  │  :5434  │  │
-   │   / iOS          │   │  └────────────┘  └────────────┘  └─────────┘  │
-   └──────────────────┘   │         │ ▲                                     │
-                          │         │ │ RPC (filter logs / send tx)         │
-                          │         ▼ │                                     │
-                          │  ┌──────────────────────────┐                   │
-                          │  │  blockchain indexer       │                   │
-                          │  │  vault events → ledger    │                   │
-                          │  └──────────────────────────┘                   │
-                          └──────────┬──────────────────────────────────────┘
-                                     │  approve + deposit / withdraw
-                                     ▼
-                        ┌───────────────────────────────┐
-                        │  Ethereum (Sepolia / mainnet) │
-                        │   GlobmintVault.sol (no owner)│
-                        │   USDC ERC-20                 │
-                        └───────────────────────────────┘
+```mermaid
+flowchart LR
+    subgraph Client["Flutter app — web / Android / iOS"]
+        APP
+    end
+    subgraph GM["Globe Mint"]
+        direction TB
+        API["HTTP API :8081"] --> SVC[Services / domain]
+        SVC --> PG[(Postgres :5434)]
+        SVC <--> IDX["Blockchain indexer — vault events → ledger"]
+    end
+    subgraph CHAIN["Ethereum (Sepolia / mainnet)"]
+        VAULT["GlobmintVault.sol (no owner) / USDC ERC-20"]
+    end
+    APP -- HTTPS --> API
+    IDX <--> |"RPC: filter logs / send tx"| VAULT
 ```
 
 Three actors move money:
@@ -105,20 +101,18 @@ Three actors move money:
 
 ### 2.2 Deposit flow (money in)
 
-```
-User                             App/API                    Vault (chain)
- │ 1. PUT /savings/deposit-address  │                            │
- ├─────────────────────────────────►│                            │
- │ 2. GET /savings/deposit-info     │                            │
- │◄─────────────────────────────────┤                            │
- │ 3. approve(vault, amount)        │                            │
- ├──────────────────────────────────┼───────────────────────────►│
- │ 4. deposit(amount)               │                            │
- ├──────────────────────────────────┼───────────────────────────►│
- │                                  │                            │ emits Deposited(user, amt)
- │ 5. indexer scans new blocks      │◄───────────────────────────┤
- │                                  │ 6. balances/activity refresh
- │◄─────────────────────────────────┤                            │
+```mermaid
+sequenceDiagram
+    participant U as User (their wallet)
+    participant A as App / API
+    participant V as GlobmintVault (chain)
+    U->>A: 1. PUT /savings/deposit-address
+    A-->>U: 2. GET /savings/deposit-info (vault + stablecoin + decimals)
+    U->>V: 3. approve(vault, amount)
+    U->>V: 4. deposit(amount)
+    V-->>A: 5. emits Deposited(user, amt)
+    Note over A: indexer scans new blocks
+    A-->>U: 6. balances / activity refresh
 ```
 
 1. The user links their own wallet address (`PUT /savings/deposit-address`).
@@ -131,17 +125,18 @@ User                             App/API                    Vault (chain)
 
 ### 2.3 Withdrawal flow (money out)
 
-```
-User                    App/API                        Signer           Vault(chain)
- │ 1. POST /savings/withdraw{amount,destination,pin}   │                  │
- ├────────────────────────►│                           │                  │
- │                         │ check: PIN, limits,       │                  │
- │                         │ idempotency, balance      │                  │
- │                         │ 2. broadcast transfer(destination, usdc)      │
- │                         ├───────────────────────────►├─────────────────►│
- │                         │ 3. txn recorded (submitted)│                  │
- │ 4. activity shows confirmed once mined               │                  │
- │◄────────────────────────┤                           │                  │
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant A as App / API
+    participant S as Signer wallet
+    participant V as Vault (chain)
+    U->>A: 1. POST /savings/withdraw {amount, destination, pin}
+    Note over A: check PIN, limits, idempotency, balance
+    A->>S: 2. broadcast transfer(destination, usdc)
+    S->>V: 3. transfer(destination, usdc) — mined
+    Note over A: txn recorded (submitted)
+    A-->>U: 4. activity shows confirmed once mined
 ```
 
 Safety checks before any chain call: valid address (`ValidateDepositAddress`), PIN verify
@@ -219,11 +214,22 @@ The core entities live in `backend/internal/domain`.
 
 ### 5.1 Users & sessions
 
-```
-User ─ 1 ─ N Session(many devices)   User ─ has 1 ─ DepositAddress(their wallet)
-  ├─ password_hash (bcrypt)
-  ├─ pin_hash     (bcrypt, for sensitive ops)
-  └─ totp_secret / totp_enabled     (RFC 6238, 30s, 6 digits)
+```mermaid
+erDiagram
+    USER ||--o{ SESSION : "has many devices"
+    USER ||--o| DEPOSIT_ADDRESS : "owns (their own wallet)"
+    USER {
+        string password_hash "bcrypt"
+        string pin_hash "bcrypt, for sensitive ops"
+        string totp_secret "RFC 6238, 30s, 6 digits"
+        boolean totp_enabled
+    }
+    SESSION {
+        string bearer_token_hash "SHA-256 of random 256-bit token"
+    }
+    DEPOSIT_ADDRESS {
+        string address "linked user wallet"
+    }
 ```
 
 Sessions are **server-side**: a random bearer token is hashed and stored; `Auth` middleware
@@ -256,23 +262,14 @@ negatives.
 
 ### 6.1 Layers and request lifecycle
 
-```
-HTTP request
-   │
-   ▼
-middleware.RequestID ──► logging ──► CORS ──► (RateLimiter) ──► Auth ──► Idempotency
-   │
-   ▼
-Handler (httpapi/*_handler.go)            ┌──────────────────────────────┐
-   │  parse+validate JSON (DisallowUnknown)│  domain.Err* ─► error codes  │
-   ▼                                       │  e.g. INVALID_PIN, LIMIT_…   │
-Service (internal/services/*.go)           └──────────────────────────────┘
-   │  business rules, throttling, tx logic
-   ▼
-Repository (storage.go interface ─► postgres/*.go)   and/or  BlockchainService
-   │
-   ▼
-writeJSON / writeError(response code + request_id)
+```mermaid
+flowchart TB
+    REQ["HTTP request"] --> MW["middleware: RequestID → logging → CORS → RateLimiter → Auth → Idempotency"]
+    MW --> H["Handler (httpapi/*_handler.go)"]
+    H -->|"parse + validate JSON (DisallowUnknown)"| S["Service (internal/services/*.go)"]
+    H -.->|"domain.Err* → error codes (INVALID_PIN, LIMIT_…)"| RESP
+    S -->|"business rules, throttling, tx logic"| R["Repository (storage.go → postgres/*.go) and/or BlockchainService"]
+    R --> RESP["writeJSON / writeError (response code + request_id)"]
 ```
 
 - **Handlers** are thin: decode with `DisallowUnknownFields()`, call exactly one service,
@@ -389,11 +386,13 @@ per state change, reconstructed from `balance_ledger` entries rather than recomp
 
 ### 7.2 Two-factor authentication (RFC 6238 TOTP)
 
-```
-login(credentials) ──► Requires2FA=true + signed challenge_token
-    │
-    ▼
-verify 2FA code + challenge ──► session token
+```mermaid
+flowchart LR
+    A[login credentials] --> B{password valid?}
+    B -- "2FA on" --> C["Requires2FA=true + signed challenge_token"]
+    B -- "2FA off" --> E[session token]
+    C --> D[verify 2FA code + challenge]
+    D --> E[session token]
 ```
 
 - Enabled via Security Center: `GET /auth/totp/setup` returns a base32 secret + `otpauth://`
@@ -461,10 +460,10 @@ through the indexer.
 
 A representative transfer:
 
-```
-Credit ──► available      Debit  ──► available     (transfer)
-    │                         │
-    └─ txn(status=confirmed) ─┘
+```mermaid
+flowchart LR
+    C[Credit → available] --> T["txn (status = confirmed)"]
+    D[Debit → available] --> T
 ```
 
 Insufflate checks, fees (`fee_minor`), and conversion outputs are all computed from the
@@ -533,14 +532,12 @@ Design principles encoded in the contract itself:
 
 ### 9.2 The indexer
 
-```
-vault contract ──Deposited/Withdrawn▸ filter logs (Topics, fromBlock=START_BLOCK)
-                        │
-                        ▼
-        confirmed head = latest - MIN_CONFIRMATIONS     (0 testnet, ≥12 mainnet)
-                        │
-                        ▼ per event: resolve deposit_address → user → ledger credit
-                        │ cursor persisted in indexer_state (resumable, crash-safe)
+```mermaid
+flowchart TB
+    VAULT[vault contract] -->|"Deposited / Withdrawn events"| L["filter logs (Topics, fromBlock = START_BLOCK)"]
+    L --> H["confirmed head = latest − MIN_CONFIRMATIONS (0 testnet, ≥12 mainnet)"]
+    H --> R["per event: resolve deposit_address → user → ledger credit"]
+    R --> C["cursor persisted in indexer_state (resumable, crash-safe)"]
 ```
 
 - Events before the confirmation window are **not** credited — deposits appear only once
@@ -595,10 +592,12 @@ vault contract ──Deposited/Withdrawn▸ filter logs (Topics, fromBlock=START
 
 ### 10.2 Data flow
 
-```
-Widget ── prodider.watch ──► Service(Repository) ── ApiClient ──► Go API
-   ▲                                                              │
-   └──────── invalidate() after success ◄────── JSON response ────┘
+```mermaid
+flowchart LR
+    W[Widget] -->|provider.watch| S["Service / Repository"]
+    S --> AC[ApiClient] --> G[Go API]
+    G -->|JSON response| W
+    W -.->|"invalidate() after success"| S
 ```
 
 ### 10.3 Feature map
