@@ -70,6 +70,12 @@ class TransactionService {
         return (j['destination'] as String?) ?? 'Beneficiary';
       case TransactionType.conversion:
         return currency;
+      case TransactionType.fee:
+        return (j['destination'] as String?) ?? 'Globmint Fee';
+      case TransactionType.adjustment:
+        return 'Globmint Adjustment';
+      case TransactionType.reversal:
+        return 'Globmint Reversal';
     }
   }
 
@@ -85,6 +91,12 @@ class TransactionService {
         return TransactionType.transfer;
       case 'savings':
         return TransactionType.savings;
+      case 'fee':
+        return TransactionType.fee;
+      case 'adjustment':
+        return TransactionType.adjustment;
+      case 'reversal':
+        return TransactionType.reversal;
       default:
         return TransactionType.transfer;
     }
@@ -92,10 +104,18 @@ class TransactionService {
 
   TransactionStatus _statusFrom(String raw) {
     switch (raw.toLowerCase()) {
-      case 'initiated':
+      case 'created':
         return TransactionStatus.initiated;
+      case 'pending_authentication':
+        return TransactionStatus.pending;
+      case 'authorized':
+        return TransactionStatus.authorized;
       case 'processing':
         return TransactionStatus.processing;
+      case 'submitted':
+        return TransactionStatus.submitted;
+      case 'confirmed':
+        return TransactionStatus.confirmed;
       case 'completed':
         return TransactionStatus.completed;
       case 'failed':
@@ -104,6 +124,8 @@ class TransactionService {
         return TransactionStatus.cancelled;
       case 'reversed':
         return TransactionStatus.reversed;
+      case 'expired':
+        return TransactionStatus.expired;
       default:
         return TransactionStatus.completed;
     }

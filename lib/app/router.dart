@@ -122,7 +122,15 @@ final GoRouter appRouter = GoRouter(
     GoRoute(
       path: '/savings/withdraw',
       parentNavigatorKey: _rootNavigatorKey,
-      pageBuilder: (context, state) => _buildPageWithTransition(context, state, const WithdrawPage(), isFullScreenDialog: true),
+      pageBuilder: (context, state) {
+        final extra = (state.extra as Map?) ?? const {};
+        return _buildPageWithTransition(
+          context,
+          state,
+          WithdrawPage(initialAddress: extra['address'] as String?),
+          isFullScreenDialog: true,
+        );
+      },
     ),
     GoRoute(
       path: '/savings/withdraw-review',
@@ -136,6 +144,7 @@ final GoRouter appRouter = GoRouter(
             amount: (extra['amount'] as num?)?.toDouble(),
             account: extra['account'] as dynamic,
             destination: extra['destination'] as String?,
+            network: extra['network'] as String?,
           ),
           isFullScreenDialog: true,
         );
@@ -151,8 +160,15 @@ final GoRouter appRouter = GoRouter(
     GoRoute(
       path: '/pay/send-beneficiary',
       parentNavigatorKey: _rootNavigatorKey,
-      pageBuilder: (context, state) => _buildPageWithTransition(
-        context, state, const SendToBeneficiaryPage(), isFullScreenDialog: true),
+      pageBuilder: (context, state) {
+        final extra = (state.extra as Map?) ?? const {};
+        return _buildPageWithTransition(
+          context,
+          state,
+          SendToBeneficiaryPage(beneficiary: extra['beneficiary'] as dynamic),
+          isFullScreenDialog: true,
+        );
+      },
     ),
     GoRoute(
       path: '/pay/review',

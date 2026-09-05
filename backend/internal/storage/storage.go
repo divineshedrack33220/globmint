@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"time"
 
 	"globmint/backend/internal/domain"
 )
@@ -12,6 +13,9 @@ type UserRepository interface {
 	FindByID(ctx context.Context, id string) (*domain.User, error)
 	FindByEmail(ctx context.Context, email string) (*domain.User, error)
 	UpdateStatus(ctx context.Context, id string, status domain.UserStatus) error
+	UpdatePIN(ctx context.Context, id, pinHash string) error
+	UpdatePassword(ctx context.Context, id, passwordHash string) error
+	UpdateTOTP(ctx context.Context, id, secret string, enabled bool) error
 }
 
 // SessionRepository persists sessions.
@@ -46,6 +50,7 @@ type LedgerRepository interface {
 	InsertEntry(ctx context.Context, e *domain.LedgerEntry) error
 	ListEntriesByAccount(ctx context.Context, accountID string) ([]domain.LedgerEntry, error)
 	SumBalanceByAccount(ctx context.Context, accountID string) (int64, error)
+	SumWithdrawalsSince(ctx context.Context, userID string, since time.Time) (int64, error)
 }
 
 // BeneficiaryRepository persists saved payees.
@@ -55,7 +60,7 @@ type BeneficiaryRepository interface {
 	Update(ctx context.Context, b *domain.Beneficiary) error
 	Delete(ctx context.Context, userID, id string) error
 	ToggleFavorite(ctx context.Context, userID, id string) error
-	FindByAccountNumber(ctx context.Context, userID, accountNumber string) (*domain.Beneficiary, error)
+	FindByAddress(ctx context.Context, userID, address string) (*domain.Beneficiary, error)
 }
 
 // BankAccountRepository persists a user's saved external bank accounts.

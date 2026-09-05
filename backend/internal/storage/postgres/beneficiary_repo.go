@@ -11,11 +11,11 @@ type beneficiaryRepo struct{ q Querier }
 
 func NewBeneficiaryRepo(q Querier) storage.BeneficiaryRepository { return &beneficiaryRepo{q: q} }
 
-const beneficiaryCols = `id::text, user_id::text, name, bank, account_number, is_favorite, created_at`
+const beneficiaryCols = `id::text, user_id::text, name, address, is_favorite, created_at`
 
 func scanBeneficiary(row pgxRow) (*domain.Beneficiary, error) {
 	b := &domain.Beneficiary{}
-	if err := row.Scan(&b.ID, &b.UserID, &b.Name, &b.Bank, &b.AccountNumber, &b.IsFavorite, &b.CreatedAt); err != nil {
+	if err := row.Scan(&b.ID, &b.UserID, &b.Name, &b.Address, &b.IsFavorite, &b.CreatedAt); err != nil {
 		return nil, err
 	}
 	return b, nil
@@ -23,11 +23,11 @@ func scanBeneficiary(row pgxRow) (*domain.Beneficiary, error) {
 
 func (r *beneficiaryRepo) Create(ctx context.Context, b *domain.Beneficiary) error {
 	err := r.q.QueryRow(ctx, `
-		INSERT INTO beneficiaries (user_id, name, bank, account_number, is_favorite)
-		VALUES ($1::uuid, $2, $3, $4, $5)
+		INSERT INTO beneficiaries (user_id, name, address, is_favorite)
+		VALUES ($1::uuid, $2, $3, $4)
 		RETURNING `+beneficiaryCols,
-		b.UserID, b.Name, b.Bank, b.AccountNumber, b.IsFavorite,
-	).Scan(&b.ID, &b.UserID, &b.Name, &b.Bank, &b.AccountNumber, &b.IsFavorite, &b.CreatedAt)
+		b.UserID, b.Name, b.Address, b.IsFavorite,
+	).Scan(&b.ID, &b.UserID, &b.Name, &b.Address, &b.IsFavorite, &b.CreatedAt)
 	return mapPgErr(err)
 }
 
@@ -50,9 +50,9 @@ func (r *beneficiaryRepo) ListByUser(ctx context.Context, userID string) ([]doma
 
 func (r *beneficiaryRepo) Update(ctx context.Context, b *domain.Beneficiary) error {
 	tag, err := r.q.Exec(ctx, `
-		UPDATE beneficiaries SET name=$1, bank=$2, account_number=$3, is_favorite=$4
-		WHERE id=$5::uuid AND user_id=$6::uuid`,
-		b.Name, b.Bank, b.AccountNumber, b.IsFavorite, b.ID, b.UserID)
+		UPDATE beneficiaries SET name=$1, address=$2, is_favorite=$3
+		WHERE id=$4::uuid AND user_id=$5::uuid`,
+		b.Name, b.Address, b.IsFavorite, b.ID, b.UserID)
 	if err != nil {
 		return mapPgErr(err)
 	}
@@ -86,10 +86,10 @@ func (r *beneficiaryRepo) ToggleFavorite(ctx context.Context, userID, id string)
 	return nil
 }
 
-func (r *beneficiaryRepo) FindByAccountNumber(ctx context.Context, userID, accountNumber string) (*domain.Beneficiary, error) {
+func (r *beneficiaryRepo) FindByAddress(ctx context.Context, userID, address string) (*domain.Beneficiary, error) {
 	row := r.q.QueryRow(ctx, `
 		SELECT `+beneficiaryCols+` FROM beneficiaries
-		WHERE user_id=$1::uuid AND account_number=$2`, userID, accountNumber)
+		WHERE user_id=$1::uuid AND address=$2`, userID, address)
 	b, err := scanBeneficiary(row)
 	if err != nil {
 		return nil, mapPgErr(err)

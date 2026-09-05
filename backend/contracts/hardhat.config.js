@@ -30,6 +30,13 @@ module.exports = {
         : [],
       chainId: 11155111,
     },
+    mainnet: {
+      url: process.env.GLOBMINT_MAINNET_RPC_URL || process.env.GLOBMINT_BLOCKCHAIN_RPC_URL || "",
+      accounts: process.env.GLOBMINT_DEPLOYER_PRIVATE_KEY
+        ? [process.env.GLOBMINT_DEPLOYER_PRIVATE_KEY]
+        : [],
+      chainId: 1,
+    },
   },
   mocha: {
     timeout: 40000,

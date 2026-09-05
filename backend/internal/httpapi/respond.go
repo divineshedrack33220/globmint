@@ -62,9 +62,22 @@ func safeMessage(err error) string {
 		return "The amount provided is invalid."
 	case errors.Is(err, domain.ErrInvalidAddress):
 		return "A valid Ethereum deposit address is required."
+	case errors.Is(err, domain.ErrInvalidPin):
+		return "Invalid PIN. Please try again."
+	case errors.Is(err, domain.ErrInvalidCode):
+		return "The verification code is invalid or has expired."
+	case errors.Is(err, domain.ErrLimitExceeded):
+		return "This transaction exceeds an account limit. Please try again later."
+	case errors.Is(err, domain.ErrFeatureDisabled):
+		return "This feature is currently disabled."
+	case errors.Is(err, domain.ErrTooManyAttempts):
+		return "Too many attempts. Please wait and try again."
+	case errors.Is(err, domain.ErrTwoFactorInvalid):
+		return "The two-factor challenge has expired. Please sign in again."
 	case errors.Is(err, domain.ErrBadRequest):
 		return "The request could not be processed."
 	default:
+		log.Printf("httpapi: internal error %v", err)
 		return "Something went wrong. Please try again."
 	}
 }
@@ -100,8 +113,16 @@ func errorStatus(err error) int {	switch {
 		errors.Is(err, domain.ErrBadRequest),
 		errors.Is(err, domain.ErrUnsupportedCurrency),
 		errors.Is(err, domain.ErrRateExceeded),
-		errors.Is(err, domain.ErrInvalidAddress):
+		errors.Is(err, domain.ErrInvalidAddress),
+		errors.Is(err, domain.ErrInvalidPin),
+		errors.Is(err, domain.ErrInvalidCode):
 		return http.StatusBadRequest
+	case errors.Is(err, domain.ErrLimitExceeded), errors.Is(err, domain.ErrFeatureDisabled):
+		return http.StatusForbidden
+	case errors.Is(err, domain.ErrTooManyAttempts):
+		return http.StatusTooManyRequests
+	case errors.Is(err, domain.ErrTwoFactorRequired):
+		return http.StatusOK
 	default:
 		return http.StatusInternalServerError
 	}

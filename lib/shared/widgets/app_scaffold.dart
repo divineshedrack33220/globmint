@@ -1,8 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import '../../app/providers.dart';
 import '../../core/theme/app_colors.dart';
 
-class ScaffoldWithNavBar extends StatelessWidget {
+class ScaffoldWithNavBar extends ConsumerStatefulWidget {
   const ScaffoldWithNavBar({super.key, required this.navigationShell});
 
   final StatefulNavigationShell navigationShell;
@@ -16,8 +20,37 @@ class ScaffoldWithNavBar extends StatelessWidget {
   ];
 
   @override
+  ConsumerState<ScaffoldWithNavBar> createState() => _ScaffoldWithNavBarState();
+}
+
+class _ScaffoldWithNavBarState extends ConsumerState<ScaffoldWithNavBar> {
+  Timer? _poll;
+
+  @override
+  void initState() {
+    super.initState();
+    // Keep the notification badge/inbox fresh without a push channel.
+    _poll = Timer.periodic(const Duration(seconds: 10), (_) {
+      ref.invalidate(notificationsProvider);
+    });
+  }
+
+  @override
+  void dispose() {
+    _poll?.cancel();
+    super.dispose();
+  }
+
+  int get _unread =>
+      ref.watch(notificationsProvider).maybeWhen(
+        data: (data) => data.unread,
+        orElse: () => 0,
+      );
+
+  @override
   Widget build(BuildContext context) {
-    final currentIndex = navigationShell.currentIndex;
+    final currentIndex = widget.navigationShell.currentIndex;
+    final unread = _unread;
 
     return Scaffold(
       body: Stack(
@@ -28,7 +61,7 @@ class ScaffoldWithNavBar extends StatelessWidget {
             left: 0,
             right: 0,
             bottom: 70,
-            child: navigationShell,
+            child: widget.navigationShell,
           ),
           // Fixed top nav bar - minimal branding only
           Positioned(
@@ -69,18 +102,29 @@ class ScaffoldWithNavBar extends StatelessWidget {
                           clipBehavior: Clip.none,
                           children: [
                             const Icon(Icons.notifications_none, color: AppColors.textSecondary, size: 24),
-                            Positioned(
-                              right: -2,
-                              top: -2,
-                              child: Container(
-                                width: 8,
-                                height: 8,
-                                decoration: const BoxDecoration(
-                                  color: AppColors.primary,
-                                  shape: BoxShape.circle,
+                            if (unread > 0)
+                              Positioned(
+                                right: -2,
+                                top: -2,
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                                  constraints: const BoxConstraints(minWidth: 16),
+                                  decoration: const ShapeDecoration(
+                                    color: AppColors.primary,
+                                    shape: StadiumBorder(),
+                                  ),
+                                  child: Center(
+                                    child: Text(
+                                      unread > 9 ? '9+' : '$unread',
+                                      style: const TextStyle(
+                                        color: AppColors.primaryForeground,
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                  ),
                                 ),
                               ),
-                            ),
                           ],
                         ),
                         onPressed: () => context.push('/notifications'),
@@ -108,13 +152,13 @@ class ScaffoldWithNavBar extends StatelessWidget {
                   ),
                 ),
                 child: Row(
-                  children: List.generate(_destinations.length, (index) {
-                    final dest = _destinations[index];
+                  children: List.generate(ScaffoldWithNavBar._destinations.length, (index) {
+                    final dest = ScaffoldWithNavBar._destinations[index];
                     final isActive = index == currentIndex;
                     return Expanded(
                       child: InkWell(
                         onTap: () {
-                          navigationShell.goBranch(
+                          widget.navigationShell.goBranch(
                             index,
                             initialLocation: index == currentIndex,
                           );

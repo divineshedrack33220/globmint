@@ -10,66 +10,69 @@ class BalanceService {
   final ApiClient _api;
 
   /// Fetches the authenticated user's account balances and derives an
-  /// [AccountSummary]. When the exchange-rate snapshot is not part of the
-  /// response, the USD equivalent is exposed only if the backend provides it.
+  /// [AccountSummary]. The savings figure is driven by the on-chain vault
+  /// USDC holdings so it stays consistent everywhere in the app; the exchange
+  /// rate snapshot falls back to the current market rate placeholder.
   Future<AccountSummary> getAccountSummary() async {
     final data = await _api.get('${AppConstants.apiV1Prefix}/balances');
     final list = ((data?['balances'] as List?) ?? const [])
         .whereType<Map<String, dynamic>>()
         .toList();
 
-    if (list.isEmpty) {
-      return _emptySummary();
-    }
-
     Account? available;
-    Account? savings;
+    Account? fallback;
     for (final raw in list) {
       final id = raw['account_id'] as String? ?? '';
       final currency = (raw['currency'] as String? ?? 'NGN').toUpperCase();
       final amountMinor = (raw['amount_minor'] as num?)?.toDouble() ?? 0;
-      final amountMajor = (raw['amount'] as num?)?.toDouble() ?? amountMinor / 100;
+      final rawAmount = raw['amount'];
+      final double amountMajor =
+          rawAmount is num
+              ? rawAmount.toDouble()
+              : double.tryParse('$rawAmount') ?? amountMinor / 100;
       final balance = amountMajor > 0 ? amountMajor : amountMinor / 100;
 
       final kind = (raw['kind'] as String? ?? '').toLowerCase();
-      final acc = Account(
-        id: id,
-        currency: currency,
-        balance: balance,
-      );
-      if (kind.contains('sav') || currency == AppConstants.savingsCurrency) {
-        savings ??= acc;
-      } else {
-        available ??= acc;
+      if (!kind.contains('sav') && currency != AppConstants.savingsCurrency) {
+        fallback ??= Account(id: id, currency: currency, balance: balance);
+        // Prefer the NGN available wallet; the API contract lists NGN first,
+        // but we must not rely on ordering.
+        if (currency == 'NGN') {
+          available = Account(id: id, currency: currency, balance: balance);
+          break;
+        }
       }
     }
+    available ??= fallback ?? Account(id: '', currency: 'NGN', balance: 0);
 
-    available ??= Account(id: '', currency: 'NGN', balance: 0);
-    savings ??= Account(id: '', currency: AppConstants.savingsCurrency, balance: 0);
-
-    // Without a live rate, USDT equivalent equals the USDT balance and the
-    // NGN equivalent is the available-NGN balance; the displayed rate falls
-    // back to the current market rate placeholder.
     final currentRate = _defaultRate();
-    final totalNgn = available.balance;
-    final totalUsdt = savings.balance;
+    final vaultUsdc = await _vaultUsdcBalance();
+
+    final savings =
+        Account(id: '', currency: AppConstants.savingsCurrency, balance: vaultUsdc);
 
     return AccountSummary(
       savings: savings,
       available: available,
-      totalNgnEquivalent: totalNgn,
-      totalUsdtEquivalent: totalUsdt,
+      totalNgnEquivalent: available.balance,
+      totalUsdtEquivalent: vaultUsdc,
       currentRate: currentRate,
     );
   }
 
-  AccountSummary _emptySummary() => AccountSummary(
-        savings: Account(id: '', currency: AppConstants.savingsCurrency, balance: 0),
-        available: Account(id: '', currency: AppConstants.defaultCurrency, balance: 0),
-        totalNgnEquivalent: 0,
-        totalUsdtEquivalent: 0,
-        currentRate: _defaultRate(),
-      );
+  /// Reads the on-chain vault USDC holdings from the vault-status endpoint and
+  /// returns the numeric part; `0` when unavailable or errored.
+  Future<double> _vaultUsdcBalance() async {
+    try {
+      final status = await _api.get('${AppConstants.apiV1Prefix}/savings/vault-status');
+      final raw = status?['vault_usdc_balance'] as String? ?? '';
+      final match = RegExp(r'^\s*([\d.]+)').firstMatch(raw);
+      if (match == null || match.group(1) == null) return 0;
+      return double.tryParse(match.group(1)!) ?? 0;
+    } catch (_) {
+      return 0;
+    }
+  }
 
   double _defaultRate() => 1604.50;
 }

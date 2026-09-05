@@ -12,16 +12,17 @@ type userRepo struct{ q Querier }
 // NewUserRepo returns a UserRepository bound to the given querier.
 func NewUserRepo(q Querier) storage.UserRepository { return &userRepo{q: q} }
 
-const userCols = `id::text, email, phone, first_name, last_name, password_hash, status, created_at, updated_at`
+const userCols = `id::text, email, phone, first_name, last_name, password_hash, COALESCE(pin_hash,'') AS pin_hash, COALESCE(totp_secret,'') AS totp_secret, totp_enabled, status, created_at, updated_at`
 
 func scanUser(row pgxRow) (*domain.User, error) {
 	u := &domain.User{}
 	err := row.Scan(
 		&u.ID, &u.Email, &u.Phone, &u.FirstName, &u.LastName,
-		&u.PasswordHash, &u.Status, &u.CreatedAt, &u.UpdatedAt,
+		&u.PasswordHash, &u.PINHash, &u.TOTPSecret, &u.TOTPEnabled,
+		&u.Status, &u.CreatedAt, &u.UpdatedAt,
 	)
 	if err != nil {
-		return nil, err
+		return nil, mapPgErr(err)
 	}
 	return u, nil
 }
@@ -32,7 +33,7 @@ func (r *userRepo) Create(ctx context.Context, u *domain.User) error {
 		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING `+userCols,
 		u.Email, u.Phone, u.FirstName, u.LastName, u.PasswordHash, u.Status,
-	).Scan(&u.ID, &u.Email, &u.Phone, &u.FirstName, &u.LastName, &u.PasswordHash, &u.Status, &u.CreatedAt, &u.UpdatedAt)
+	).Scan(&u.ID, &u.Email, &u.Phone, &u.FirstName, &u.LastName, &u.PasswordHash, &u.PINHash, &u.TOTPSecret, &u.TOTPEnabled, &u.Status, &u.CreatedAt, &u.UpdatedAt)
 	return mapPgErr(err)
 }
 
@@ -48,6 +49,39 @@ func (r *userRepo) FindByEmail(ctx context.Context, email string) (*domain.User,
 
 func (r *userRepo) UpdateStatus(ctx context.Context, id string, status domain.UserStatus) error {
 	tag, err := r.q.Exec(ctx, `UPDATE users SET status = $2, updated_at = now() WHERE id = $1::uuid`, id, status)
+	if err != nil {
+		return mapPgErr(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+func (r *userRepo) UpdatePIN(ctx context.Context, id, pinHash string) error {
+	tag, err := r.q.Exec(ctx, `UPDATE users SET pin_hash = $2, updated_at = now() WHERE id = $1::uuid`, id, pinHash)
+	if err != nil {
+		return mapPgErr(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+func (r *userRepo) UpdatePassword(ctx context.Context, id, passwordHash string) error {
+	tag, err := r.q.Exec(ctx, `UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1::uuid`, id, passwordHash)
+	if err != nil {
+		return mapPgErr(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+func (r *userRepo) UpdateTOTP(ctx context.Context, id, secret string, enabled bool) error {
+	tag, err := r.q.Exec(ctx, `UPDATE users SET totp_secret = $2, totp_enabled = $3, updated_at = now() WHERE id = $1::uuid`, id, secret, enabled)
 	if err != nil {
 		return mapPgErr(err)
 	}

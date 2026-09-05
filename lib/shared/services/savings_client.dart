@@ -43,6 +43,53 @@ class DepositInfo {
       );
 }
 
+/// Live on-chain vault status returned by `GET /savings/vault-status`: the
+/// deposit info plus the vault's current on-chain stablecoin balance.
+class VaultStatus {
+  const VaultStatus({
+    required this.address,
+    required this.vaultContract,
+    required this.stablecoinSymbol,
+    required this.stablecoinName,
+    required this.stablecoinDecimals,
+    required this.stablecoinContract,
+    required this.network,
+    required this.chainId,
+    required this.mode,
+    required this.vaultUsdcBalance,
+  });
+
+  final String address;
+  final String vaultContract;
+  final String stablecoinSymbol;
+  final String stablecoinName;
+  final int stablecoinDecimals;
+  final String stablecoinContract;
+  final String network;
+  final int chainId;
+  final String mode;
+  final String vaultUsdcBalance;
+
+  bool get hasAddress => address.isNotEmpty && address != '0x0000000000000000000000000000000000000000';
+
+  factory VaultStatus.fromJson(Map<String, dynamic> j) {
+    final info =
+        (j['deposit_info'] as Map<String, dynamic>?) ?? j; // tolerate flat shape
+    return VaultStatus(
+      address: info['address'] as String? ?? '',
+      vaultContract: info['vault_contract'] as String? ?? '',
+      stablecoinSymbol: info['stablecoin_symbol'] as String? ?? 'USDC',
+      stablecoinName: info['stablecoin_name'] as String? ?? '',
+      stablecoinDecimals: (info['stablecoin_decimals'] as num?)?.toInt() ?? 6,
+      stablecoinContract: info['stablecoin_contract'] as String? ?? '',
+      network: info['network'] as String? ?? '',
+      chainId: (info['chain_id'] as num?)?.toInt() ?? 0,
+      mode: info['mode'] as String? ?? '',
+      vaultUsdcBalance: j['vault_usdc_balance'] as String? ?? '0',
+    );
+  }
+}
+
 /// Real backend-backed client for the savings/deposit-address endpoints.
 class SavingsClient {
   SavingsClient(this._api);
@@ -53,6 +100,12 @@ class SavingsClient {
     final data = await _api.get('${AppConstants.apiV1Prefix}/savings/deposit-info');
     if (data == null) throw ApiException(0, 'Empty response from server');
     return DepositInfo.fromJson(data);
+  }
+
+  Future<VaultStatus> getVaultStatus() async {
+    final data = await _api.get('${AppConstants.apiV1Prefix}/savings/vault-status');
+    if (data == null) throw ApiException(0, 'Empty response from server');
+    return VaultStatus.fromJson(data);
   }
 
   Future<DepositInfo> setDepositAddress(String address) async {
@@ -69,11 +122,12 @@ class SavingsClient {
   Future<String> withdrawToAddress({
     required String amount,
     required String destination,
+    required String pin,
   }) async {
     final data = await _api.post(
       '${AppConstants.apiV1Prefix}/savings/withdraw',
       idempotent: true,
-      body: {'amount': amount, 'destination': destination},
+      body: {'amount': amount, 'destination': destination, 'pin': pin},
     );
     if (data == null) throw ApiException(0, 'Empty response from server');
     return data['tx_hash'] as String? ?? '';

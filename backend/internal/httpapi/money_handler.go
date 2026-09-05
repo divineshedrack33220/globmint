@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"globmint/backend/internal/domain"
@@ -144,7 +146,21 @@ func (d *Deps) handleQuoteConversion(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err, "")
 		return
 	}
-	amountMinor, err := parseIntAmount(req.Amount)
+	var amountStr string
+	switch v := req.Amount.(type) {
+	case string:
+		amountStr = v
+	case float64:
+		amountStr = strconv.FormatFloat(v, 'f', -1, 64)
+	case int:
+		amountStr = strconv.Itoa(v)
+	case json.Number:
+		amountStr = v.String()
+	default:
+		writeError(w, r, domain.ErrInvalidAmount, "")
+		return
+	}
+	amountMinor, err := parseIntAmount(amountStr)
 	if err != nil {
 		writeError(w, r, err, "")
 		return
@@ -213,15 +229,14 @@ func (d *Deps) handleCreateBeneficiary(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err, "")
 		return
 	}
-	if strings.TrimSpace(req.Name) == "" || strings.TrimSpace(req.AccountNumber) == "" {
+	if strings.TrimSpace(req.Name) == "" || strings.TrimSpace(req.Address) == "" {
 		writeError(w, r, domain.ErrBadRequest, "")
 		return
 	}
 	b := &domain.Beneficiary{
-		Name:          req.Name,
-		Bank:          req.Bank,
-		AccountNumber: req.AccountNumber,
-		IsFavorite:    req.IsFavorite,
+		Name:       req.Name,
+		Address:    req.Address,
+		IsFavorite: req.IsFavorite,
 	}
 	if err := d.Money.CreateBeneficiary(r.Context(), user.ID, b); err != nil {
 		writeError(w, r, err, "")
@@ -244,11 +259,10 @@ func (d *Deps) handleUpdateBeneficiary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	b := &domain.Beneficiary{
-		ID:            id,
-		Name:          req.Name,
-		Bank:          req.Bank,
-		AccountNumber: req.AccountNumber,
-		IsFavorite:    req.IsFavorite,
+		ID:         id,
+		Name:       req.Name,
+		Address:    req.Address,
+		IsFavorite: req.IsFavorite,
 	}
 	if err := d.Money.UpdateBeneficiary(r.Context(), user.ID, b); err != nil {
 		writeError(w, r, err, "")
@@ -292,7 +306,7 @@ func (d *Deps) handleResolveAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, domain.ErrUnauthenticated, "")
 		return
 	}
-	b, err := d.Money.ResolveAccount(r.Context(), user.ID, r.PathValue("account_number"))
+	b, err := d.Money.ResolveAccount(r.Context(), user.ID, r.PathValue("address"))
 	if err != nil {
 		writeError(w, r, err, "")
 		return

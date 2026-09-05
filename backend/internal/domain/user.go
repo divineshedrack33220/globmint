@@ -20,6 +20,9 @@ type User struct {
 	FirstName    string
 	LastName     string
 	PasswordHash string
+	PINHash      string
+	TOTPSecret   string
+	TOTPEnabled  bool
 	Status       UserStatus
 	CreatedAt    time.Time
 	UpdatedAt    time.Time

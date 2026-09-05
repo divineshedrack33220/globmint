@@ -8,8 +8,7 @@ class Beneficiary with _$Beneficiary {
   const factory Beneficiary({
     required String id,
     required String name,
-    required String bank,
-    required String accountNumber,
+    required String address,
     @Default(false) bool isFavorite,
   }) = _Beneficiary;
 
@@ -18,6 +17,9 @@ class Beneficiary with _$Beneficiary {
 }
 
 extension BeneficiaryExtensions on Beneficiary {
-  String get maskedNumber => '•••• ${accountNumber.substring(accountNumber.length - 4)}';
-  String get displayName => '$name — $bank ${accountNumber.substring(accountNumber.length - 4)}';
+  /// Short label like `0x1a0f…5678` for on-screen display.
+  String get shortAddress {
+    if (address.length <= 14) return address;
+    return '${address.substring(0, 6)}…${address.substring(address.length - 4)}';
+  }
 }

@@ -375,34 +375,54 @@ func (s *EthereumService) LatestBlock(ctx context.Context) (uint64, error) {
 // FilterTokenTransfers returns decoded stablecoin Transfer events from
 // `fromBlock`..`toBlock` (inclusive) where the recipient matches `address`
 // (or all recipients when `address` is empty).
+// maxLogsBlockRange caps each eth_getLogs request. Alchemy's free tier allows
+// at most a 10-block range per request; larger ranges are rejected with a 400
+// error, so we always split the scan into sub-ranges of this size.
+const maxLogsBlockRange = 10
+
 func (s *EthereumService) FilterTokenTransfers(ctx context.Context, fromBlock, toBlock uint64, address string) ([]TokenTransfer, error) {
 	// Transfer(address,address,uint256) topic0
 	topic0 := common.HexToHash("0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef")
-	query := ethereum.FilterQuery{
-		FromBlock: new(big.Int).SetUint64(fromBlock),
-		ToBlock:   new(big.Int).SetUint64(toBlock),
-		Addresses: []common.Address{s.token},
-		Topics:    [][]common.Hash{{topic0}},
-	}
-	logs, err := s.client.FilterLogs(ctx, query)
-	if err != nil {
-		return nil, fmt.Errorf("filter token transfers: %w", err)
-	}
-	out := make([]TokenTransfer, 0, len(logs))
-	for _, l := range logs {
-		if len(l.Topics) < 3 || len(l.Data) < 32 {
-			continue
+	out := make([]TokenTransfer, 0)
+	// Walk the (inclusive) range in up-to-10-block slices.
+	start := fromBlock
+	for start <= toBlock {
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
-		tsf := TokenTransfer{
-			From:   common.HexToAddress(l.Topics[1].Hex()).Hex(),
-			To:     common.HexToAddress(l.Topics[2].Hex()).Hex(),
-			Value:  new(big.Int).SetBytes(l.Data[:32]),
-			TxHash: l.TxHash.Hex(),
-			BlockNumber: l.BlockNumber,
+		end := start + maxLogsBlockRange - 1
+		if end > toBlock {
+			end = toBlock
 		}
-		if address == "" || strings.EqualFold(tsf.To, address) {
-			out = append(out, tsf)
+		query := ethereum.FilterQuery{
+			FromBlock: new(big.Int).SetUint64(start),
+			ToBlock:   new(big.Int).SetUint64(end),
+			Addresses: []common.Address{s.token},
+			Topics:    [][]common.Hash{{topic0}},
 		}
+		logs, err := s.client.FilterLogs(ctx, query)
+		if err != nil {
+			return nil, fmt.Errorf("filter token transfers (%d..%d): %w", start, end, err)
+		}
+		for _, l := range logs {
+			if len(l.Topics) < 3 || len(l.Data) < 32 {
+				continue
+			}
+			tsf := TokenTransfer{
+				From:        common.HexToAddress(l.Topics[1].Hex()).Hex(),
+				To:          common.HexToAddress(l.Topics[2].Hex()).Hex(),
+				Value:       new(big.Int).SetBytes(l.Data[:32]),
+				TxHash:      l.TxHash.Hex(),
+				BlockNumber: l.BlockNumber,
+			}
+			if address == "" || strings.EqualFold(tsf.To, address) {
+				out = append(out, tsf)
+			}
+		}
+		if end >= toBlock {
+			break
+		}
+		start = end + 1
 	}
 	return out, nil
 }

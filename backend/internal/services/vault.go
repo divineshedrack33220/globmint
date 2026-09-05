@@ -28,6 +28,19 @@ type VaultConfig struct {
 	PollInterval time.Duration
 	// StartBlock is the first block the indexer scans from on first run.
 	StartBlock uint64
+	// FallbackUserID credits vault deposits to this user when the on-chain
+	// sender has no deposit-address link (single-user demo deployments).
+	FallbackUserID string
+	// MinConfirmations is how many block confirmations a deposit must reach
+	// before the indexer credits the ledger (reorg protection).
+	MinConfirmations uint64
+	// WithdrawEnabled gates on-chain withdrawals entirely.
+	WithdrawEnabled bool
+	// WithdrawMinMinor / WithdrawMaxMinor bound a single withdrawal (kobo).
+	WithdrawMinMinor int64
+	WithdrawMaxMinor int64
+	// WithdrawDailyCapMinor caps the total withdrawn per user per UTC day (kobo).
+	WithdrawDailyCapMinor int64
 }
 
 // VaultService runs the deposit indexer and executes withdrawals on the
@@ -103,6 +116,17 @@ func (v *VaultService) scan(ctx context.Context) error {
 		return err
 	}
 
+	// Only credit deposits past the confirmation window so a reorg cannot
+	// reverse a credited deposit. Blocks inside the window are re-scanned on a
+	// later poll once they are deep enough.
+	confirmedHead := latest
+	if v.cfg.MinConfirmations > 0 {
+		if latest <= v.cfg.MinConfirmations {
+			return nil
+		}
+		confirmedHead = latest - v.cfg.MinConfirmations
+	}
+
 	v.mu.Lock()
 	scanFrom := v.lastBlock
 	// On the very first scan, skip pre-existing history and only watch blocks
@@ -110,11 +134,16 @@ func (v *VaultService) scan(ctx context.Context) error {
 	if scanFrom == 0 {
 		scanFrom = latest
 	}
-	if latest < scanFrom {
+	if scanFrom == 0 {
 		v.mu.Unlock()
 		return nil
 	}
-	toBlock := latest
+	confHead := confirmedHead
+	if confHead < scanFrom {
+		v.mu.Unlock()
+		return nil
+	}
+	toBlock := confHead
 	v.mu.Unlock()
 
 	tsf, err := v.chain.FilterTokenTransfers(ctx, scanFrom, toBlock, v.cfg.VaultAddress)
@@ -183,6 +212,12 @@ func (v *VaultService) senderUserID(ctx context.Context, from string) (string, e
 	if err != nil {
 		return "", err
 	}
+	if uid == "" {
+		uid = v.cfg.FallbackUserID
+	}
+	if uid == "" {
+		return "", nil
+	}
 	v.mu.Lock()
 	v.addressUser[from] = uid
 	v.mu.Unlock()
@@ -198,8 +233,35 @@ func (v *VaultService) WithdrawToAddress(ctx context.Context, userID, destinatio
 	if v.cfg.Mode == "mock" || v.cfg.VaultAddress == "" {
 		return nil, errors.New("on-chain vault is not enabled")
 	}
+	if !v.cfg.WithdrawEnabled {
+		return nil, domain.ErrFeatureDisabled
+	}
 	if amountNgnMinor <= 0 {
 		return nil, domain.ErrInvalidAmount
+	}
+	if v.cfg.WithdrawMinMinor > 0 && amountNgnMinor < v.cfg.WithdrawMinMinor {
+		return nil, domain.ErrInvalidAmount
+	}
+	if v.cfg.WithdrawMaxMinor > 0 && amountNgnMinor > v.cfg.WithdrawMaxMinor {
+		return nil, domain.ErrLimitExceeded
+	}
+	if v.cfg.WithdrawDailyCapMinor > 0 {
+		dayStart := time.Now().UTC().Truncate(24 * time.Hour)
+		used, err := v.store.LedgerRepo().SumWithdrawalsSince(ctx, userID, dayStart)
+		if err != nil {
+			return nil, err
+		}
+		if used+amountNgnMinor > v.cfg.WithdrawDailyCapMinor {
+			return nil, domain.ErrLimitExceeded
+		}
+	}
+
+	// Replay protection: if this idempotency key already produced a
+	// withdrawal, return the recorded transaction without touching the chain.
+	if key != "" {
+		if existing, err := v.store.LedgerRepo().FindTransactionByIDempotencyKey(ctx, key); err == nil && existing != nil {
+			return existing, nil
+		}
 	}
 
 	usdcBase := withdrawUSDCBase(amountNgnMinor, v.rateMinor)

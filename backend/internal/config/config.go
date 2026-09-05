@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -11,11 +12,27 @@ import (
 type Config struct {
 	HTTPAddr      string
 	DatabaseURL   string
-	SessionSecret string // base64-encoded secret for signing/encrypting session tokens
+	SessionSecret string
+	VaultFallbackUserID string // demo/dev: credit vault deposits to this user when sender is unlinked
+	VaultStartBlock     int64 // first block the vault indexer scans from
 	SessionTTL    time.Duration
 	TokenIssuer   string
 	LogLevel      string
 	RequestIDSalt string
+
+	// CORSOrigins is the explicit list of allowed browser origins (e.g.
+	// "https://app.example.com,https://admin.example.com"). Empty = allow all.
+	CORSOrigins []string
+
+	// VaultWithdraw* guard real-money withdrawals.
+	VaultWithdrawEnabled   bool
+	VaultWithdrawMinMinor  int64 // 0 = no minimum
+	VaultWithdrawMaxMinor  int64 // 0 = no maximum
+	VaultWithdrawDailyCapMinor int64 // 0 = no daily cap
+
+	// VaultMinConfirmations: number of block confirmations a deposit must
+	// reach before the indexer credits the ledger (protects against reorgs).
+	VaultMinConfirmations uint64
 
 	// Blockchain holds settings for the on-chain settlement layer.
 	Blockchain BlockchainConfig
@@ -55,6 +72,14 @@ func Load() Config {
 		TokenIssuer:   envOr("GLOBMINT_TOKEN_ISSUER", "globmint"),
 		LogLevel:      envOr("GLOBMINT_LOG_LEVEL", "info"),
 		RequestIDSalt: envOr("GLOBMINT_REQUEST_ID_SALT", "dev-request-salt"),
+		VaultFallbackUserID: os.Getenv("GLOBMINT_VAULT_FALLBACK_USER_ID"),
+		VaultStartBlock:     int64Env("GLOBMINT_VAULT_START_BLOCK", 0),
+		CORSOrigins:         csvEnv("GLOBMINT_CORS_ORIGINS"),
+		VaultWithdrawEnabled:      boolEnv("GLOBMINT_VAULT_WITHDRAW_ENABLED", true),
+		VaultWithdrawMinMinor:     int64Env("GLOBMINT_VAULT_WITHDRAW_MIN_MINOR", 0),
+		VaultWithdrawMaxMinor:     int64Env("GLOBMINT_VAULT_WITHDRAW_MAX_MINOR", 0),
+		VaultWithdrawDailyCapMinor: int64Env("GLOBMINT_VAULT_WITHDRAW_DAILY_CAP_MINOR", 0),
+		VaultMinConfirmations:      uint64Env("GLOBMINT_VAULT_MIN_CONFIRMATIONS", 0),
 		Blockchain: BlockchainConfig{
 			Network:          envOr("GLOBMINT_BLOCKCHAIN_NETWORK", "mock"),
 			RPCURL:           os.Getenv("GLOBMINT_BLOCKCHAIN_RPC_URL"),
@@ -97,6 +122,25 @@ func boolEnv(key string, def bool) bool {
 		}
 	}
 	return def
+}
+
+func uint64Env(key string, def uint64) uint64 {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.ParseUint(v, 10, 64); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
+func csvEnv(key string) []string {
+	var out []string
+	for _, part := range strings.Split(os.Getenv(key), ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func envOr(key, def string) string {

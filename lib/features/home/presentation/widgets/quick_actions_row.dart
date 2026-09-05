@@ -24,21 +24,9 @@ class QuickActionsRow extends StatelessWidget {
             ),
             const SizedBox(width: 12),
             _ActionItem(
-              icon: Icons.currency_exchange,
-              label: 'Save',
-              onTap: () => context.push('/savings/convert'),
-            ),
-            const SizedBox(width: 12),
-            _ActionItem(
               icon: Icons.arrow_downward,
               label: 'Withdraw',
               onTap: () => context.push('/savings/withdraw'),
-            ),
-            const SizedBox(width: 12),
-            _ActionItem(
-              icon: Icons.send_outlined,
-              label: 'Pay',
-              onTap: () => context.push('/pay/bank-transfer'),
             ),
           ],
         ),

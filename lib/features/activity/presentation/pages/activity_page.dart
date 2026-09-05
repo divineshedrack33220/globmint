@@ -292,6 +292,12 @@ class _TransactionTile extends StatelessWidget {
         return Icons.send;
       case TransactionType.savings:
         return Icons.savings;
+      case TransactionType.fee:
+        return Icons.receipt;
+      case TransactionType.adjustment:
+        return Icons.tune;
+      case TransactionType.reversal:
+        return Icons.swap_horiz;
     }
   }
 
@@ -307,6 +313,12 @@ class _TransactionTile extends StatelessWidget {
         return AppColors.info;
       case TransactionType.savings:
         return AppColors.primary;
+      case TransactionType.fee:
+        return AppColors.warning;
+      case TransactionType.adjustment:
+        return AppColors.info;
+      case TransactionType.reversal:
+        return AppColors.destructive;
     }
   }
 
@@ -322,6 +334,12 @@ class _TransactionTile extends StatelessWidget {
         return AppColors.infoMuted;
       case TransactionType.savings:
         return AppColors.primaryMuted;
+      case TransactionType.fee:
+        return AppColors.warningMuted;
+      case TransactionType.adjustment:
+        return AppColors.infoMuted;
+      case TransactionType.reversal:
+        return AppColors.destructiveMuted;
     }
   }
 }

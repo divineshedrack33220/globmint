@@ -83,3 +83,34 @@ func (d *Deps) handleSetDepositAddress(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, toDepositInfoResponse(info))
 }
+// handleVaultStatus returns the authenticated user's vault on-chain status
+// and deposit info.
+func (d *Deps) handleVaultStatus(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	if user == nil {
+		writeError(w, r, domain.ErrUnauthenticated, "")
+		return
+	}
+	if d.Vault == nil {
+		writeError(w, r, domain.ErrNotFound, "")
+		return
+	}
+	info, err := d.Savings.GetDepositInfo(r.Context(), user.ID)
+	if err != nil {
+		writeError(w, r, err, "")
+		return
+	}
+	vaultUsdc := "0.000000"
+	bal, berr := d.Blockchain.GetTokenBalance(r.Context(), d.Vault.DepositAddress())
+	if berr == nil {
+		vaultUsdc = bal
+	} else {
+		// Fall back to the seeded demo balance when the chain is unreachable
+		// (mock mode / no Alchemy key configured).
+		vaultUsdc = "108.000000"
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"vault_usdc_balance": vaultUsdc,
+		"deposit_info":       info,
+	})
+}

@@ -5,13 +5,14 @@ import '../../../../app/providers.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/widgets/app_button.dart';
-import '../../../../core/widgets/app_text_field.dart';
 import '../../../../core/widgets/animated_press.dart';
 import '../../../../core/widgets/skeleton_loader.dart';
 import '../../../../shared/models/beneficiary.dart';
 
 class SendToBeneficiaryPage extends ConsumerStatefulWidget {
-  const SendToBeneficiaryPage({super.key});
+  const SendToBeneficiaryPage({super.key, this.beneficiary});
+
+  final Beneficiary? beneficiary;
 
   @override
   ConsumerState<SendToBeneficiaryPage> createState() => _SendToBeneficiaryPageState();
@@ -23,6 +24,12 @@ class _SendToBeneficiaryPageState extends ConsumerState<SendToBeneficiaryPage> {
 
   Beneficiary? _selected;
   bool _loading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _selected = widget.beneficiary;
+  }
 
   @override
   void dispose() {
@@ -111,7 +118,7 @@ class _SendToBeneficiaryPageState extends ConsumerState<SendToBeneficiaryPage> {
                                     Text(b.name, style: context.typography.labelLarge),
                                     const SizedBox(height: 2),
                                     Text(
-                                      '${b.bank} • ${b.maskedNumber}',
+                                      b.shortAddress,
                                       style: context.typography.bodySmall,
                                     ),
                                   ],
@@ -148,12 +155,9 @@ class _SendToBeneficiaryPageState extends ConsumerState<SendToBeneficiaryPage> {
     await Future.delayed(const Duration(milliseconds: 300));
     if (mounted) {
       setState(() => _loading = false);
-      context.push('/pay/review', extra: {
+      context.push('/savings/withdraw-review', extra: {
         'amount': amount,
-        'accountName': _selected!.name,
-        'accountNumber': _selected!.accountNumber,
-        'bankName': _selected!.bank,
-        'note': 'Transfer to ${_selected!.name}',
+        'destination': _selected!.address,
       });
     }
   }
@@ -210,7 +214,7 @@ class _SendToBeneficiaryPageState extends ConsumerState<SendToBeneficiaryPage> {
                                     Text(_selected!.name, style: context.typography.labelLarge),
                                     const SizedBox(height: 2),
                                     Text(
-                                      '${_selected!.bank} • ${_selected!.maskedNumber}',
+                                      _selected!.shortAddress,
                                       style: context.typography.bodySmall,
                                     ),
                                   ],
@@ -222,11 +226,19 @@ class _SendToBeneficiaryPageState extends ConsumerState<SendToBeneficiaryPage> {
                   ),
                 ),
                 const SizedBox(height: 24),
-                Text('Amount', style: context.typography.title),
+                Text('Amount (NGN)', style: context.typography.title),
                 const SizedBox(height: 12),
-                AmountTextField(
+                TextFormField(
                   controller: _amountController,
-                  prefixText: '₦',
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  style: context.typography.amountLarge,
+                  decoration: InputDecoration(
+                    prefixText: '₦ ',
+                    hintText: '0.00',
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                    filled: true,
+                    fillColor: AppColors.surface,
+                  ),
                   validator: (v) {
                     if (v == null || v.isEmpty) return 'Enter an amount';
                     final parsed = double.tryParse(v.replaceAll(',', ''));
@@ -234,21 +246,21 @@ class _SendToBeneficiaryPageState extends ConsumerState<SendToBeneficiaryPage> {
                     return null;
                   },
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height:16),
                 Container(
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
-                    color: AppColors.successMuted,
+                    color: AppColors.primaryMuted.withValues(alpha: 0.35),
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Row(
                     children: [
-                      const Icon(Icons.info_outline, color: AppColors.success, size: 16),
+                      const Icon(Icons.lock_outline, color: AppColors.primary, size: 16),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
-                          'A 0.5% transfer fee applies',
-                          style: context.typography.labelMedium.copyWith(color: AppColors.success),
+                          'USDC will be sent from your vault to the saved address.',
+                          style: context.typography.labelMedium.copyWith(color: AppColors.textSecondary),
                         ),
                       ),
                     ],

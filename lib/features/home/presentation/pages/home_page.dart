@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -12,11 +14,38 @@ import '../widgets/quick_actions_row.dart';
 import '../widgets/savings_summary_card.dart';
 import '../widgets/recent_transactions_list.dart';
 
-class HomePage extends ConsumerWidget {
+class HomePage extends ConsumerStatefulWidget {
   const HomePage({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<HomePage> createState() => _HomePageState();
+}
+
+class _HomePageState extends ConsumerState<HomePage> {
+  Timer? _poll;
+
+  @override
+  void initState() {
+    super.initState();
+    // Keep the dashboard live: as the vault indexer credits on-chain USDC
+    // deposits, invalidate the balance, vault status and transaction history
+    // so the UI reflects them immediately.
+    _poll = Timer.periodic(const Duration(seconds: 6), (_) {
+      if (!mounted) return;
+      ref.invalidate(accountSummaryProvider);
+      ref.invalidate(vaultStatusProvider);
+      ref.invalidate(transactionsProvider);
+    });
+  }
+
+  @override
+  void dispose() {
+    _poll?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final summaryAsync = ref.watch(accountSummaryProvider);
     final userAsync = ref.watch(currentUserProvider);
 
@@ -73,6 +102,12 @@ class HomePage extends ConsumerWidget {
                 child: _AvailableBalanceCard(summaryAsync: summaryAsync),
               ),
               const SizedBox(height: 24),
+              // On-chain vault status
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 24),
+                child: _VaultStatusCard(),
+              ),
+              const SizedBox(height: 24),
               // Quick Actions
               const Padding(
                 padding: EdgeInsets.symmetric(horizontal: 24),
@@ -99,19 +134,36 @@ class HomePage extends ConsumerWidget {
   }
 }
 
-class _BalanceSection extends StatelessWidget {
+class _BalanceSection extends ConsumerWidget {
   const _BalanceSection({required this.summary});
   final AccountSummary summary;
 
+  /// Parses a vault balance string like "8.000000 USDC" into its numeric part.
+  double _vaultUsdc(String raw) {
+    final match = RegExp(r'^\s*([\d.]+)').firstMatch(raw);
+    return match == null ? 0 : double.tryParse(match.group(1)!) ?? 0;
+  }
+
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final vault = ref.watch(vaultStatusProvider).valueOrNull;
+    final vaultUsdc = vault == null ? 0.0 : _vaultUsdc(vault.vaultUsdcBalance);
+    final rate = summary.currentRate;
+    final nairaBase = summary.totalNgnEquivalent;
+    final vaultNgn = vaultUsdc * rate;
+    final totalNgn = nairaBase + vaultNgn;
+
     return BalanceCard(
-      label: 'TOTAL SAVINGS',
-      amount: CurrencyFormatter.ngn(summary.totalNgnEquivalent),
-      subtitle: '≈ ${CurrencyFormatter.usdt(summary.totalUsdtEquivalent)}',
+      label: 'TOTAL ASSETS',
+      amount: CurrencyFormatter.ngn(totalNgn),
+      subtitle:
+          '${CurrencyFormatter.ngn(nairaBase)} + on-chain ${_fmtUsdc(vaultUsdc)} vault ≈ ${CurrencyFormatter.ngn(vaultNgn)}',
       isHero: true,
     );
   }
+
+  String _fmtUsdc(double v) =>
+      '${v.toStringAsFixed(v == v.roundToDouble() ? 0 : 2)} USDC';
 }
 
 class _AvailableBalanceCard extends StatelessWidget {
@@ -167,6 +219,109 @@ class _AvailableBalanceCard extends StatelessWidget {
             ],
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Live on-chain vault summary: the deposit address, the network it is on, and
+/// the USDC balance currently held on-chain by the vault.
+class _VaultStatusCard extends ConsumerWidget {
+  const _VaultStatusCard();
+
+  static final _numReg = RegExp(r'^\s*([\d.]+)');
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final status = ref.watch(vaultStatusProvider);
+    final summary = ref.watch(accountSummaryProvider).valueOrNull;
+    final rate = summary?.currentRate ?? 0;
+
+    return status.when(
+      loading: () => const SizedBox.shrink(),
+      error: (_, __) => const SizedBox.shrink(),
+      data: (v) {
+        if (!v.hasAddress) return const SizedBox.shrink();
+        final balance = v.vaultUsdcBalance;
+        final match = _numReg.firstMatch(balance);
+        final usdc = match == null || match.group(1) == null
+            ? 0.0
+            : double.tryParse(match.group(1)!) ?? 0.0;
+        final vaultNgn = usdc * rate;
+        return Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: AppColors.surface,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: AppColors.border, width: 1),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.account_balance_wallet,
+                      color: AppColors.primary, size: 20),
+                  const SizedBox(width: 8),
+                  Text('On-chain vault', style: context.typography.labelMedium),
+                  const Spacer(),
+                  _NetworkChip(network: v.network),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Text('Vault USDC balance',
+                  style: context.typography.bodySmall),
+              const SizedBox(height: 2),
+              Text(balance, style: context.typography.amountMedium),
+              const SizedBox(height: 2),
+              Text(
+                '≈ ${CurrencyFormatter.ngn(vaultNgn)}',
+                style: context.typography.bodySmall
+                    .copyWith(color: AppColors.textSecondary),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                '1 USDC = ${CurrencyFormatter.ngn(rate)}',
+                style: context.typography.bodySmall
+                    .copyWith(color: AppColors.textSecondary, fontSize: 12),
+              ),
+              const SizedBox(height: 12),
+              Text('Deposit address', style: context.typography.bodySmall),
+              const SizedBox(height: 2),
+              SelectableText(
+                v.address,
+                style: context.typography.bodySmall.copyWith(
+                    color: AppColors.textSecondary,
+                    fontSize: 12),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _NetworkChip extends StatelessWidget {
+  const _NetworkChip({required this.network});
+  final String network;
+
+  @override
+  Widget build(BuildContext context) {
+    final label = network.isEmpty ? 'Unknown' : network;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: AppColors.primary.withOpacity(0.12),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text(
+        label,
+        style: context.typography.labelSmall.copyWith(
+          color: AppColors.primary,
+          fontWeight: FontWeight.w600,
+        ),
       ),
     );
   }

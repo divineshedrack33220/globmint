@@ -20,6 +20,10 @@ import (
 func main() {
 	cfg := config.Load()
 
+	if err := config.ValidateProduction(cfg); err != nil {
+		log.Fatalf("refusing to start: %v", err)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -37,7 +41,7 @@ func main() {
 		log.Fatalf("run migrations: %v", err)
 	}
 
-	authSvc := services.NewAuthService(store, cfg.SessionTTL)
+	authSvc := services.NewAuthService(store, cfg.SessionTTL, cfg.SessionSecret)
 	balanceSvc := services.NewBalanceService(store)
 	ledgerSvc := services.NewLedgerService(store)
 	moneySvc := services.NewMoneyService(store)
@@ -74,12 +78,18 @@ func main() {
 		rateMinor = er.Rate
 	}
 	vaultSvc := services.NewVaultService(store, chainSvc, moneySvc, services.VaultConfig{
-		VaultAddress:       vaultAddress,
-		StablecoinSymbol:   cfg.Blockchain.Stablecoin,
-		StablecoinDecimals: cfg.Blockchain.StablecoinDecimals,
-		Mode:               cfg.Blockchain.Mode,
-		PollInterval:       8 * time.Second,
-		StartBlock:         uint64(0),
+		VaultAddress:         vaultAddress,
+		StablecoinSymbol:     cfg.Blockchain.Stablecoin,
+		StablecoinDecimals:   cfg.Blockchain.StablecoinDecimals,
+		Mode:                 cfg.Blockchain.Mode,
+		PollInterval:         8 * time.Second,
+		StartBlock:           uint64(cfg.VaultStartBlock),
+		FallbackUserID:       cfg.VaultFallbackUserID,
+		MinConfirmations:     cfg.VaultMinConfirmations,
+		WithdrawEnabled:      cfg.VaultWithdrawEnabled,
+		WithdrawMinMinor:     cfg.VaultWithdrawMinMinor,
+		WithdrawMaxMinor:     cfg.VaultWithdrawMaxMinor,
+		WithdrawDailyCapMinor: cfg.VaultWithdrawDailyCapMinor,
 	}, rateMinor)
 
 	deps := &httpapi.Deps{
@@ -92,7 +102,7 @@ func main() {
 		Blockchain: chainSvc,
 		Vault:      vaultSvc,
 	}
-	handler := httpapi.NewHandler(deps, authSvc)
+	handler := httpapi.NewHandler(deps, authSvc, cfg.CORSOrigins)
 
 	go vaultSvc.RunIndexer(ctx)
 

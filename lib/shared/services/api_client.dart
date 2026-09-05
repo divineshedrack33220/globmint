@@ -22,6 +22,11 @@ class ApiClient {
   final http.Client _http;
   final String _baseUrl;
 
+  /// Idempotency keys held per endpoint until that call succeeds, so a retry
+  /// after a failure reuses the same key and the backend can dedupe the money
+  /// movement instead of double-applying it.
+  final Map<String, String> _pendingKeys = {};
+
   /// The resolved server origin, e.g. `http://localhost:8081`.
   String get baseUrl => _baseUrl;
 
@@ -44,18 +49,25 @@ class ApiClient {
     return Uri.parse('$_baseUrl$p');
   }
 
-  Future<Map<String, String>> _headers({bool idempotent = false}) async {
+  Future<Map<String, String>> _headers({String? idempotencyKey}) async {
     final headers = <String, String>{'Content-Type': 'application/json'};
     final prefs = await SharedPreferences.getInstance();
     final token = prefs.getString(AppConstants.authTokenKey);
     if (token != null && token.isNotEmpty) {
       headers['Authorization'] = 'Bearer $token';
     }
-    if (idempotent) {
-      headers['Idempotency-Key'] = _newKey();
+    if (idempotencyKey != null && idempotencyKey.isNotEmpty) {
+      headers['Idempotency-Key'] = idempotencyKey;
     }
     return headers;
   }
+
+  /// Returns the idempotency key for [path], reusing any key from a previous
+  /// failed attempt so money moves aren't duplicated on retry.
+  String _idempotencyKeyFor(String path) =>
+      _pendingKeys[path] ??= _newKey();
+
+  void _releaseKey(String path) => _pendingKeys.remove(path);
 
   static String _newKey() {
     final rnd = DateTime.now().microsecondsSinceEpoch;
@@ -63,8 +75,11 @@ class ApiClient {
   }
 
   Future<Map<String, dynamic>?> get(String path, {bool idempotent = false}) async {
-    final res = await _http.get(_uri(path), headers: await _headers(idempotent: idempotent));
-    return _decode(res);
+    final key = idempotent ? _idempotencyKeyFor(path) : null;
+    final res = await _http.get(_uri(path), headers: await _headers(idempotencyKey: key));
+    final data = _decode(res);
+    if (key != null) _releaseKey(path);
+    return data;
   }
 
   Future<Map<String, dynamic>?> post(
@@ -72,12 +87,15 @@ class ApiClient {
     Map<String, dynamic>? body,
     bool idempotent = false,
   }) async {
+    final key = idempotent ? _idempotencyKeyFor(path) : null;
     final res = await _http.post(
       _uri(path),
-      headers: await _headers(idempotent: idempotent),
+      headers: await _headers(idempotencyKey: key),
       body: body == null ? null : jsonEncode(body),
     );
-    return _decode(res);
+    final data = _decode(res);
+    if (key != null) _releaseKey(path);
+    return data;
   }
 
   Future<Map<String, dynamic>?> put(
@@ -85,12 +103,15 @@ class ApiClient {
     Map<String, dynamic>? body,
     bool idempotent = false,
   }) async {
+    final key = idempotent ? _idempotencyKeyFor(path) : null;
     final res = await _http.put(
       _uri(path),
-      headers: await _headers(idempotent: idempotent),
+      headers: await _headers(idempotencyKey: key),
       body: body == null ? null : jsonEncode(body),
     );
-    return _decode(res);
+    final data = _decode(res);
+    if (key != null) _releaseKey(path);
+    return data;
   }
 
   Future<Map<String, dynamic>?> patch(
@@ -98,20 +119,26 @@ class ApiClient {
     Map<String, dynamic>? body,
     bool idempotent = false,
   }) async {
+    final key = idempotent ? _idempotencyKeyFor(path) : null;
     final res = await _http.patch(
       _uri(path),
-      headers: await _headers(idempotent: idempotent),
+      headers: await _headers(idempotencyKey: key),
       body: body == null ? null : jsonEncode(body),
     );
-    return _decode(res);
+    final data = _decode(res);
+    if (key != null) _releaseKey(path);
+    return data;
   }
 
   Future<Map<String, dynamic>?> delete(String path, {bool idempotent = false}) async {
+    final key = idempotent ? _idempotencyKeyFor(path) : null;
     final res = await _http.delete(
       _uri(path),
-      headers: await _headers(idempotent: idempotent),
+      headers: await _headers(idempotencyKey: key),
     );
-    return _decode(res);
+    final data = _decode(res);
+    if (key != null) _releaseKey(path);
+    return data;
   }
 
   /// Decodes the body and throws [ApiException] on non-2xx responses, surfacing
@@ -130,16 +157,19 @@ class ApiClient {
     }
     final message =
         data?['message'] as String? ?? data?['error'] as String? ?? 'Request failed';
-    throw ApiException(res.statusCode, message);
+    throw ApiException(res.statusCode, message,
+        code: data?['code'] as String? ?? '');
   }
 }
 
-/// Raised for non-2xx backend responses. Carries the HTTP status and a
-/// user-safe message from the backend error envelope.
+/// Raised for non-2xx backend responses. Carries the HTTP status, a
+/// user-safe message from the backend error envelope, and the stable error
+/// code (e.g. INVALID_PIN) for programmatic handling.
 class ApiException implements Exception {
-  ApiException(this.statusCode, this.message);
+  ApiException(this.statusCode, this.message, {this.code = ''});
   final int statusCode;
   final String message;
+  final String code;
 
   @override
   String toString() => 'ApiException($statusCode): $message';

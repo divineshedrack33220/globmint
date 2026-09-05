@@ -7,6 +7,7 @@ type Beneficiary struct {
 	ID            string
 	UserID        string
 	Name          string
+	Address       string
 	Bank          string
 	AccountNumber string
 	IsFavorite    bool

@@ -22,8 +22,7 @@ class _BeneficiariesPageState extends ConsumerState<BeneficiariesPage> {
   Future<void> _addBeneficiary() async {
     final formKey = GlobalKey<FormState>();
     final nameController = TextEditingController();
-    final bankController = TextEditingController();
-    final accountNumberController = TextEditingController();
+    final addressController = TextEditingController();
     final isFavoriteController = ValueNotifier(false);
 
     final result = await showDialog<Map<String, dynamic>>(
@@ -45,21 +44,15 @@ class _BeneficiariesPageState extends ConsumerState<BeneficiariesPage> {
                 children: [
                   AppTextField(
                     controller: nameController,
-                    label: 'Full Name',
-                    validator: (v) => v == null || v.isEmpty ? 'Required' : null,
+                    label: 'Name',
+                    validator: (v) => v == null || v.trim().isEmpty ? 'Required' : null,
                   ),
                   const SizedBox(height: 12),
                   AppTextField(
-                    controller: bankController,
-                    label: 'Bank Name',
-                    validator: (v) => v == null || v.isEmpty ? 'Required' : null,
-                  ),
-                  const SizedBox(height: 12),
-                  AppTextField(
-                    controller: accountNumberController,
-                    label: 'Account Number (10 digits)',
-                    keyboardType: TextInputType.number,
-                    validator: (v) => v == null || v.length != 10 ? '10 digits' : null,
+                    controller: addressController,
+                    label: 'Crypto Address',
+                    hint: 'Paste their address here',
+                    validator: (v) => v == null || v.trim().isEmpty ? 'Required' : null,
                   ),
                   const SizedBox(height: 12),
                   Row(
@@ -87,8 +80,7 @@ class _BeneficiariesPageState extends ConsumerState<BeneficiariesPage> {
                 if (formKey.currentState!.validate()) {
                   Navigator.pop(context, {
                     'name': nameController.text.trim(),
-                    'bank': bankController.text.trim(),
-                    'accountNumber': accountNumberController.text.trim(),
+                    'address': addressController.text.trim(),
                     'isFavorite': isFavoriteController.value,
                   });
                 }
@@ -102,8 +94,7 @@ class _BeneficiariesPageState extends ConsumerState<BeneficiariesPage> {
     if (result is Map<String, dynamic>) {
       await ref.read(beneficiaryServiceProvider).create(
             name: result['name'] as String,
-            bank: result['bank'] as String,
-            accountNumber: result['accountNumber'] as String,
+            address: result['address'] as String,
             isFavorite: result['isFavorite'] as bool,
           );
       ref.invalidate(beneficiariesProvider);
@@ -120,8 +111,7 @@ class _BeneficiariesPageState extends ConsumerState<BeneficiariesPage> {
       context: context,
       title: 'Remove ${beneficiary.name}?',
       details: [
-        ConfirmationDetail(label: 'Bank', value: beneficiary.bank),
-        ConfirmationDetail(label: 'Account', value: beneficiary.maskedNumber),
+        ConfirmationDetail(label: 'Address', value: beneficiary.shortAddress),
       ],
       confirmText: 'Remove',
       isDestructive: true,
@@ -206,7 +196,7 @@ class _BeneficiariesPageState extends ConsumerState<BeneficiariesPage> {
                     const SizedBox(height: 16),
                     Text('No beneficiaries yet', style: context.typography.headline),
                     const SizedBox(height: 8),
-                    Text('Add people you send money to often', style: context.typography.bodyMedium),
+                    Text('Add addresses you send to often', style: context.typography.bodyMedium),
                     const SizedBox(height: 24),
                     AppButton(
                       text: 'Add Beneficiary',
@@ -291,7 +281,7 @@ class _BeneficiaryTile extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(height: 2),
-                Text('${beneficiary.bank} • ${beneficiary.maskedNumber}', style: context.typography.bodySmall),
+                Text(beneficiary.shortAddress, style: context.typography.bodySmall),
               ],
             ),
           ),

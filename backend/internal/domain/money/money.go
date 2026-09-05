@@ -167,12 +167,18 @@ func (m Money) Compare(other Money) int {
 
 func (m Money) IsZero() bool { return m.minor == 0 }
 
-// String returns a canonical decimal string, e.g. "1250000.50".
+// String returns a canonical decimal string, e.g. "1250000.50". Negative
+// values are prefixed with a minus sign.
 func (m Money) String() string {
-	whole := m.minor / MinorUnit
-	frac := m.minor % MinorUnit
-	if frac < 0 {
-		frac = -frac
+	neg := m.minor < 0
+	abs := m.minor
+	if neg {
+		abs = -abs
+	}
+	whole := abs / MinorUnit
+	frac := abs % MinorUnit
+	if neg {
+		return fmt.Sprintf("-%d.%02d", whole, frac)
 	}
 	return fmt.Sprintf("%d.%02d", whole, frac)
 }

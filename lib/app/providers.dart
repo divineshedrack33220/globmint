@@ -78,6 +78,10 @@ final depositInfoProvider = FutureProvider<DepositInfo>((ref) async {
   return ref.watch(savingsClientProvider).getDepositInfo();
 });
 
+final vaultStatusProvider = FutureProvider<VaultStatus>((ref) async {
+  return ref.watch(savingsClientProvider).getVaultStatus();
+});
+
 final devicesProvider = FutureProvider<List<Device>>((ref) async {
   return ref.watch(securityServiceProvider).getDevices();
 });

@@ -6,13 +6,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../app/providers.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/theme_extensions.dart';
-import '../../../../core/widgets/app_button.dart';
 import '../../../../core/utils/formatters.dart';
 import '../../../../shared/services/savings_client.dart';
 
 /// Personal savings vault. You top it up by sending USDC on-chain to the
-/// deposit address shown here. The app watches that address and auto-credits
-/// your NGN balance when funds arrive — you never type an amount.
+/// deposit address shown here. The app watches that address and reflects every
+/// incoming deposit as vault holdings (valued in NGN at the live rate) and in
+/// your transaction history — no wallet linking required.
 class AddMoneyPage extends ConsumerStatefulWidget {
   const AddMoneyPage({super.key});
 
@@ -21,10 +21,8 @@ class AddMoneyPage extends ConsumerStatefulWidget {
 }
 
 class _AddMoneyPageState extends ConsumerState<AddMoneyPage> {
-  final _addressController = TextEditingController();
   DepositInfo? _deposit;
   bool _depositError = false;
-  bool _linking = false;
   bool _copied = false;
   Timer? _poll;
 
@@ -35,13 +33,13 @@ class _AddMoneyPageState extends ConsumerState<AddMoneyPage> {
     _poll = Timer.periodic(const Duration(seconds: 6), (_) {
       if (!mounted) return;
       ref.invalidate(accountSummaryProvider);
+      ref.invalidate(vaultStatusProvider);
     });
   }
 
   @override
   void dispose() {
     _poll?.cancel();
-    _addressController.dispose();
     super.dispose();
   }
 
@@ -52,42 +50,10 @@ class _AddMoneyPageState extends ConsumerState<AddMoneyPage> {
         setState(() {
           _deposit = info;
           _depositError = false;
-          _addressController.text =
-              info.address.isEmpty || info.address == DepositInfo.zeroAddress
-                  ? ''
-                  : info.address;
         });
       }
     } catch (_) {
       if (mounted) setState(() => _depositError = true);
-    }
-  }
-
-  Future<void> _linkAddress() async {
-    final address = _addressController.text.trim();
-    if (address.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Enter your wallet address')),
-      );
-      return;
-    }
-    setState(() => _linking = true);
-    try {
-      await ref.read(savingsClientProvider).setDepositAddress(address);
-      if (mounted) {
-        setState(() => _linking = false);
-        ref.invalidate(depositInfoProvider);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Wallet linked successfully')),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() => _linking = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not link wallet: $e')),
-        );
-      }
     }
   }
 
@@ -138,6 +104,8 @@ class _AddMoneyPageState extends ConsumerState<AddMoneyPage> {
                 ),
               ),
               const SizedBox(height: 24),
+              _VaultHoldingsCard(),
+              const SizedBox(height: 24),
               // Deposit address card
               Container(
                 width: double.infinity,
@@ -163,7 +131,7 @@ class _AddMoneyPageState extends ConsumerState<AddMoneyPage> {
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      'Funds arriving here are detected and added to your NGN balance automatically. No amount needed.',
+                      'Funds arriving here are detected on-chain and added to your vault holdings and transaction history automatically. No amount needed, and no sender link required.',
                       style: context.typography.bodySmall,
                     ),
                     const SizedBox(height: 16),
@@ -209,38 +177,12 @@ class _AddMoneyPageState extends ConsumerState<AddMoneyPage> {
                 ),
               ),
               const SizedBox(height: 24),
-              // Link your source wallet so deposits are credited to you.
-              Text('Link your wallet', style: context.typography.title),
-              const SizedBox(height: 6),
-              Text(
-                'Deposits sent to your vault are credited to the linked wallet below. Keep it set to your own address.',
-                style: context.typography.bodySmall,
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _addressController,
-                enabled: !_linking,
-                style: context.typography.bodyMedium,
-                decoration: InputDecoration(
-                  hintText: '0x…',
-                  border:
-                      OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                  filled: true,
-                  fillColor: AppColors.surface,
-                ),
-              ),
-              const SizedBox(height: 12),
-              AppButton(
-                text: 'Save linked wallet',
-                onPressed: _linkAddress,
-                variant: AppButtonVariant.secondary,
-                isExpanded: true,
-                isLoading: _linking,
-              ),
-              const SizedBox(height: 20),
               Center(
                 child: Text(
-                  'Using the local hardhat network — test USDC only',
+                  deposit?.network != null && deposit!.network.isNotEmpty
+                      ? 'Live on ${deposit.network} — USDC (${deposit.stablecoinSymbol})'
+                      : 'Sending to the vault is detected automatically',
+                  textAlign: TextAlign.center,
                   style: context.typography.bodySmall,
                 ),
               ),
@@ -300,4 +242,71 @@ class _AddMoneyPageState extends ConsumerState<AddMoneyPage> {
       ),
     );
   }
+}
+
+/// Live vault holdings: the on-chain USDC balance converted to NGN at the
+/// current rate, so the account holder always sees what their vault is worth.
+class _VaultHoldingsCard extends ConsumerWidget {
+  const _VaultHoldingsCard();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final vault = ref.watch(vaultStatusProvider).valueOrNull;
+    final summary = ref.watch(accountSummaryProvider).valueOrNull;
+    final rate = summary?.currentRate ?? 0;
+    final usdc = vault == null ? 0.0 : _vaultUsdc(vault.vaultUsdcBalance);
+    final vaultNgn = usdc * rate;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.primary,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.lock_outline,
+                  color: AppColors.primaryForeground, size: 20),
+              const SizedBox(width: 8),
+              Text(
+                'YOUR VAULT',
+                style: context.typography.labelMedium
+                    .copyWith(color: AppColors.primaryForeground),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Text(
+            _fmtUsdc(usdc),
+            style: context.typography.headline
+                .copyWith(color: AppColors.primaryForeground),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '≈ ${CurrencyFormatter.ngn(vaultNgn)}',
+            style: context.typography.amountMedium
+                .copyWith(color: AppColors.primaryForeground),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            '1 USDC = ${CurrencyFormatter.ngn(rate)}',
+            style: context.typography.bodySmall
+                .copyWith(color: AppColors.primaryForeground),
+          ),
+        ],
+      ),
+    );
+  }
+
+  double _vaultUsdc(String raw) {
+    final match = RegExp(r'^\s*([\d.]+)').firstMatch(raw);
+    return match == null ? 0 : double.tryParse(match.group(1)!) ?? 0;
+  }
+
+  String _fmtUsdc(double v) =>
+      '${v.toStringAsFixed(v == v.roundToDouble() ? 0 : 2)} USDC';
 }

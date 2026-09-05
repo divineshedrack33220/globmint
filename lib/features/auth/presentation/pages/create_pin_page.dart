@@ -1,17 +1,20 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import '../../../../app/providers.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/widgets/pin_input.dart';
+import '../../../../shared/services/api_client.dart';
 
-class CreatePinPage extends StatefulWidget {
+class CreatePinPage extends ConsumerStatefulWidget {
   const CreatePinPage({super.key});
 
   @override
-  State<CreatePinPage> createState() => _CreatePinPageState();
+  ConsumerState<CreatePinPage> createState() => _CreatePinPageState();
 }
 
-class _CreatePinPageState extends State<CreatePinPage> {
+class _CreatePinPageState extends ConsumerState<CreatePinPage> {
   String? _error;
   bool _isLoading = false;
   bool _isConfirming = false;
@@ -25,7 +28,7 @@ class _CreatePinPageState extends State<CreatePinPage> {
     });
   }
 
-  void _handleConfirmPin(String pin) async {
+  Future<void> _handleConfirmPin(String pin) async {
     if (pin != _firstPin) {
       setState(() {
         _error = 'PINs do not match. Please try again.';
@@ -38,10 +41,27 @@ class _CreatePinPageState extends State<CreatePinPage> {
       _isLoading = true;
       _error = null;
     });
-    await Future.delayed(const Duration(milliseconds: 800));
-    if (mounted) {
+    try {
+      await ref.read(authServiceProvider).setPin(pin: pin);
+      if (!mounted) return;
       setState(() => _isLoading = false);
       context.go('/home');
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isLoading = false;
+        _error = e.message;
+        _isConfirming = false;
+        _firstPin = null;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _isLoading = false;
+        _error = 'Could not save your PIN. Please try again.';
+        _isConfirming = false;
+        _firstPin = null;
+      });
     }
   }
 

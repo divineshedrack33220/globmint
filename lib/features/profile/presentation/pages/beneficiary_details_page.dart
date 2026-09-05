@@ -28,17 +28,14 @@ class _BeneficiaryDetailsPageState extends ConsumerState<BeneficiaryDetailsPage>
         Beneficiary(
           id: 'ben_000',
           name: 'Unknown',
-          bank: '—',
-          accountNumber: '0000000000',
+          address: '0x0000000000000000000000000000000000000000',
         );
   }
 
   Future<void> _editBeneficiary() async {
     final formKey = GlobalKey<FormState>();
     final nameController = TextEditingController(text: _beneficiary.name);
-    final bankController = TextEditingController(text: _beneficiary.bank);
-    final accountNumberController =
-        TextEditingController(text: _beneficiary.accountNumber);
+    final addressController = TextEditingController(text: _beneficiary.address);
     final isFavoriteController = ValueNotifier(_beneficiary.isFavorite);
 
     final result = await showDialog<bool>(
@@ -60,21 +57,15 @@ class _BeneficiaryDetailsPageState extends ConsumerState<BeneficiaryDetailsPage>
                 children: [
                   AppTextField(
                     controller: nameController,
-                    label: 'Full Name',
-                    validator: (v) => v == null || v.isEmpty ? 'Required' : null,
+                    label: 'Name',
+                    validator: (v) => v == null || v.trim().isEmpty ? 'Required' : null,
                   ),
                   const SizedBox(height: 12),
                   AppTextField(
-                    controller: bankController,
-                    label: 'Bank Name',
-                    validator: (v) => v == null || v.isEmpty ? 'Required' : null,
-                  ),
-                  const SizedBox(height: 12),
-                  AppTextField(
-                    controller: accountNumberController,
-                    label: 'Account Number (10 digits)',
-                    keyboardType: TextInputType.number,
-                    validator: (v) => v == null || v.length != 10 ? '10 digits' : null,
+                    controller: addressController,
+                    label: 'Crypto Address',
+                    hint: 'Paste their address here',
+                    validator: (v) => v == null || v.trim().isEmpty ? 'Required' : null,
                   ),
                   const SizedBox(height: 12),
                   Row(
@@ -111,11 +102,10 @@ class _BeneficiaryDetailsPageState extends ConsumerState<BeneficiaryDetailsPage>
     );
 
     if (result == true && mounted) {
-      await ref.read(beneficiaryServiceProvider).remove(_beneficiary.id);
-      await ref.read(beneficiaryServiceProvider).create(
+      await ref.read(beneficiaryServiceProvider).update(
+            id: _beneficiary.id,
             name: nameController.text.trim(),
-            bank: bankController.text.trim(),
-            accountNumber: accountNumberController.text.trim(),
+            address: addressController.text.trim(),
             isFavorite: isFavoriteController.value,
           );
       ref.invalidate(beneficiariesProvider);
@@ -132,8 +122,7 @@ class _BeneficiaryDetailsPageState extends ConsumerState<BeneficiaryDetailsPage>
       context: context,
       title: 'Remove ${_beneficiary.name}?',
       details: [
-        ConfirmationDetail(label: 'Bank', value: _beneficiary.bank),
-        ConfirmationDetail(label: 'Account', value: _beneficiary.maskedNumber),
+        ConfirmationDetail(label: 'Address', value: _beneficiary.shortAddress),
       ],
       confirmText: 'Remove',
       isDestructive: true,
@@ -192,8 +181,6 @@ class _BeneficiaryDetailsPageState extends ConsumerState<BeneficiaryDetailsPage>
                       style: context.typography.headline,
                       textAlign: TextAlign.center,
                     ),
-                    const SizedBox(height: 4),
-                    Text(_beneficiary.bank, style: context.typography.bodyMedium),
                     if (_beneficiary.isFavorite) ...[
                       const SizedBox(height: 6),
                       Container(
@@ -218,19 +205,17 @@ class _BeneficiaryDetailsPageState extends ConsumerState<BeneficiaryDetailsPage>
                       ),
                       child: Column(
                         children: [
-                          _DetailRow(
-                            label: 'Account Number',
-                            value: _beneficiary.accountNumber,
+                          Align(
+                            alignment: Alignment.centerLeft,
+                            child:
+                                Text('Crypto address', style: context.typography.labelMedium),
                           ),
-                          const Divider(color: AppColors.divider, height: 20),
-                          _DetailRow(
-                            label: 'Bank',
-                            value: _beneficiary.bank,
-                          ),
-                          const Divider(color: AppColors.divider, height: 20),
-                          _DetailRow(
-                            label: 'Account Name',
-                            value: _beneficiary.name,
+                          const SizedBox(height: 8),
+                          SelectableText(
+                            _beneficiary.address,
+                            style: context.typography.bodySmall.copyWith(
+                              color: AppColors.textSecondary,
+                            ),
                           ),
                         ],
                       ),
@@ -240,11 +225,11 @@ class _BeneficiaryDetailsPageState extends ConsumerState<BeneficiaryDetailsPage>
               ),
               const SizedBox(height: 24),
               AppButton(
-                text: 'Send Money',
+                text: 'Send to this address',
                 icon: Icons.send_outlined,
                 isExpanded: true,
                 onPressed: () {
-                  context.push('/pay/send-beneficiary');
+                  context.push('/savings/withdraw', extra: {'address': _beneficiary.address});
                 },
               ),
               const SizedBox(height: 12),
@@ -270,31 +255,6 @@ class _BeneficiaryDetailsPageState extends ConsumerState<BeneficiaryDetailsPage>
           ),
         ),
       ),
-    );
-  }
-}
-
-class _DetailRow extends StatelessWidget {
-  const _DetailRow({required this.label, required this.value});
-
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-      children: [
-        Text(label, style: context.typography.bodyMedium),
-        const SizedBox(width: 16),
-        Flexible(
-          child: Text(
-            value,
-            textAlign: TextAlign.right,
-            style: context.typography.labelLarge,
-          ),
-        ),
-      ],
     );
   }
 }

@@ -7,14 +7,22 @@ import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/utils/formatters.dart';
 import '../../../../core/widgets/app_button.dart';
 import '../../../../core/widgets/app_confirmation_modal.dart';
+import '../../../../core/widgets/pin_verify_sheet.dart';
 import '../../../../core/widgets/success_dialog.dart';
 
 class WithdrawalReviewPage extends ConsumerStatefulWidget {
-  const WithdrawalReviewPage({super.key, this.amount, this.account, this.destination});
+  const WithdrawalReviewPage({
+    super.key,
+    this.amount,
+    this.account,
+    this.destination,
+    this.network,
+  });
 
   final double? amount;
   final dynamic account; // kept for compatibility; unused in the vault flow
   final String? destination;
+  final String? network;
 
   @override
   ConsumerState<WithdrawalReviewPage> createState() =>
@@ -66,15 +74,25 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
     );
 
     if (confirmed == true && mounted) {
+      final pin = await showPinVerifySheet(
+        context,
+        title: 'Enter your PIN',
+        subtitle: 'Verify it\u2019s you before sending ${CurrencyFormatter.ngn(a)}',
+        onVerify: (pin) => ref.read(authServiceProvider).verifyPin(pin),
+      );
+      if (pin == null || !mounted) return;
+
       setState(() => _isProcessing = true);
       try {
         final txHash = await ref.read(savingsClientProvider).withdrawToAddress(
               amount: a.toStringAsFixed(2),
               destination: destination,
+              pin: pin,
             );
         if (mounted) {
           ref.invalidate(accountSummaryProvider);
           ref.invalidate(transactionsProvider);
+          ref.invalidate(vaultStatusProvider);
           setState(() => _isProcessing = false);
           _showSuccess(a, txHash);
         }
@@ -108,6 +126,16 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
     final availableAfter = ref.watch(accountSummaryProvider).whenOrNull(
           data: (s) => s.available.balance - a,
         );
+
+    final network = widget.network?.isNotEmpty == true
+        ? widget.network!
+        : ref
+            .watch(depositInfoProvider)
+            .maybeWhen(
+              data: (info) =>
+                  info.network.isNotEmpty ? info.network : 'on-chain',
+              orElse: () => 'on-chain',
+            );
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -157,7 +185,7 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
               const SizedBox(height: 8),
               _ReviewRow(
                 label: 'Sent on',
-                value: 'local hardhat network',
+                value: network,
               ),
               const SizedBox(height: 32),
               AppButton(

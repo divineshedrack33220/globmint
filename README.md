@@ -1,17 +1,786 @@
-# globe_mint
+# Globe Mint
 
-A new Flutter project.
+**Self-custodial, stablecoin savings and payments on Ethereum — no banks, no fiat rails.**
 
-## Getting Started
+Globe Mint is a full-stack fintech product that lets users hold and move money entirely in
+USD-backed stablecoins (USDC) through a non-custodial smart-contract vault. There is no
+Paystack, no Flutterwave, no local-bank integration: money-in is a user depositing USDC to
+their vault, money-out is the user telling the app which address to pay. The platform is a
+Go API + Solidity vault + Flutter client, currently live on **Sepolia testnet** and staged
+for Ethereum mainnet.
 
-This project is a starting point for a Flutter application.
+```
+┌──────────────────────────┐          ┌─────────────────────────────────────────┐
+│    Flutter app (web/mob) │  HTTPS   │        Go API  (backend)                │
+│  feature-first, Riverpod │ ───────► │  httpapi ─ services ─ storage(postgres) │
+└──────────────────────────┘          │            │                            │
+      │ user wallet (MetaMask/WalletConnect/raw)   │ RPC                        │
+      │        │ approve + deposit / withdraw      ▼                            │
+      │        └────────────────────────────► Ethereum (Sepolia/mainnet)        │
+      │                                             ▲  GlobmintVault.sol        │
+      └──────── users sign their own txs ──────────┘  (no owner, no admin)      │
+┌──────────────────────────┐          ┌─────────────────────────────────────────┘
+│  Postgres 16 (Docker)    │ ◄───────┤  indexer: vault events → ledger credits
+│  ledger, sessions, rates │         └─────────────────────────────────────────┘
+└──────────────────────────┘
+```
 
-A few resources to get you started if this is your first Flutter project:
+---
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+## Table of contents
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+1. [What it is](#1-what-it-is)
+2. [System architecture](#2-system-architecture)
+3. [Technology stack](#3-technology-stack)
+4. [Repository layout](#4-repository-layout)
+5. [Domain model](#5-domain-model)
+6. [Backend architecture](#6-backend-architecture)
+7. [Security](#7-security)
+8. [Money, ledger and FX](#8-money-ledger-and-fx)
+9. [Blockchain & the vault](#9-blockchain--the-vault)
+10. [Frontend architecture](#10-frontend-architecture)
+11. [Data model (Postgres migrations)](#11-data-model-postgres-migrations)
+12. [Deployment](#12-deployment)
+13. [Observability](#13-observability)
+14. [Testing & CI](#14-testing--ci)
+15. [Operations runbooks](#15-operations-runbooks)
+16. [Known boundaries & roadmap](#16-known-boundaries--roadmap)
+
+---
+
+## 1. What it is
+
+Globe Mint is a product decision made deliberately: **self-custodial crypto only**.
+
+- Deposits and balances live **on-chain** in `GlobmintVault`, a contract with no owner and
+  no admin. No operator — not even this platform — can seize, freeze, or move a user's USDC.
+- The backend is an **indexer + ledger + intent service**. It watches the contract for
+  `Deposited` events, credits the user's internal ledger so the UI can show balances, and
+  relays withdrawal *intents* (signed by the user's PIN) to the chain via a designated
+  signer wallet.
+- The app has **no fiat off-ramp built in**. Users withdraw USDC to any address they name —
+  their own wallet, or an OTC desk / off-ramp provider that accepts USDC. Fiat conversion
+  happens outside Globe Mint entirely.
+
+This README is the architectural reference: how the pieces fit, how money flows, and how to
+operate it safely — especially the mainnet path where real funds move.
+
+---
+
+## 2. System architecture
+
+### 2.1 High-level topology
+
+```
+                          ┌───────────────────────────────────────────────┐
+                          │                   Globe Mint                   │
+   ┌──────────────────┐   │  ┌────────────┐  ┌────────────┐  ┌─────────┐  │
+   │   Flutter app    │──►│  │ HTTP API   │─►│ Services   │─►│ Postgres│  │
+   │  web / android   │   │  │  :8081     │  │ domain     │  │  :5434  │  │
+   │   / iOS          │   │  └────────────┘  └────────────┘  └─────────┘  │
+   └──────────────────┘   │         │ ▲                                     │
+                          │         │ │ RPC (filter logs / send tx)         │
+                          │         ▼ │                                     │
+                          │  ┌──────────────────────────┐                   │
+                          │  │  blockchain indexer       │                   │
+                          │  │  vault events → ledger    │                   │
+                          │  └──────────────────────────┘                   │
+                          └──────────┬──────────────────────────────────────┘
+                                     │  approve + deposit / withdraw
+                                     ▼
+                        ┌───────────────────────────────┐
+                        │  Ethereum (Sepolia / mainnet) │
+                        │   GlobmintVault.sol (no owner)│
+                        │   USDC ERC-20                 │
+                        └───────────────────────────────┘
+```
+
+Three actors move money:
+
+| Actor | Role |
+|---|---|
+| **User wallet** | The only party that can deposit. Signs `approve` + `deposit` (or `depositWithPermit`) transactions. |
+| **GlobmintVault** | Holds USDC per-user. Emits `Deposited` / `Withdrawn`. No admin functions. |
+| **Signer wallet** | Server-side key that broadcasts withdrawal transactions *the user requested* and pre-approved with their PIN. Only sends to addresses the user named. |
+
+### 2.2 Deposit flow (money in)
+
+```
+User                             App/API                    Vault (chain)
+ │ 1. PUT /savings/deposit-address  │                            │
+ ├─────────────────────────────────►│                            │
+ │ 2. GET /savings/deposit-info     │                            │
+ │◄─────────────────────────────────┤                            │
+ │ 3. approve(vault, amount)        │                            │
+ ├──────────────────────────────────┼───────────────────────────►│
+ │ 4. deposit(amount)               │                            │
+ ├──────────────────────────────────┼───────────────────────────►│
+ │                                  │                            │ emits Deposited(user, amt)
+ │ 5. indexer scans new blocks      │◄───────────────────────────┤
+ │                                  │ 6. balances/activity refresh
+ │◄─────────────────────────────────┤                            │
+```
+
+1. The user links their own wallet address (`PUT /savings/deposit-address`).
+2. The app exposes the vault contract + stablecoin + decimals (`GET /savings/deposit-info`).
+3. In their wallet the user `approve`s the vault for an amount of USDC.
+4. The user calls `deposit(amount)`; USDC is pulled and credited to `balanceOf[user]`.
+5. The **indexer** watches for `Deposited` events and — only after a confirmation window —
+   credits the user's internal ledger.
+6. The UI refreshes balances and activity.
+
+### 2.3 Withdrawal flow (money out)
+
+```
+User                    App/API                        Signer           Vault(chain)
+ │ 1. POST /savings/withdraw{amount,destination,pin}   │                  │
+ ├────────────────────────►│                           │                  │
+ │                         │ check: PIN, limits,       │                  │
+ │                         │ idempotency, balance      │                  │
+ │                         │ 2. broadcast transfer(destination, usdc)      │
+ │                         ├───────────────────────────►├─────────────────►│
+ │                         │ 3. txn recorded (submitted)│                  │
+ │ 4. activity shows confirmed once mined               │                  │
+ │◄────────────────────────┤                           │                  │
+```
+
+Safety checks before any chain call: valid address (`ValidateDepositAddress`), PIN verify
+(throttled), amount within `MIN/MAX` and the UTC daily cap (`SumWithdrawalsSince`),
+idempotency key replay protection, and `WithdrawEnabled` flag. Every rejection happens
+without spending gas or touching the chain.
+
+---
+
+## 3. Technology stack
+
+| Layer | Technology | Notes |
+|---|---|---|
+| API | **Go 1.24** (`net/http` stdlib mux + middleware chain) | No heavyweight web framework; layered handlers over a shared `Deps` struct. |
+| Storage | **PostgreSQL 16** (Docker) + **pgx/v5** | All state (ledger, sessions, rates, users, audit) in one DB. |
+| Contracts | **Solidity ^0.8.24**, **Hardhat** + ethers v6 | `GlobmintVault.sol`, zero OpenZeppelin dependency. |
+| Chain client | **go-ethereum v1.17** (`rpc`, `ethclient`, `crypto`) | Filter-logs indexer + `SendTransaction`. |
+| Client | **Flutter** (`flutter_riverpod`, `go_router`, `freezed`, `http`) | Web + Android/iOS targets; `build/web` served locally. |
+| Infra | `docker-compose.yml` (Postgres), bash scripts | Backup, wallet generation, deploy scripts. |
+| CI | **GitHub Actions** (`.github/workflows/ci.yml`) | Backend build/vet/test, hardhat test, flutter analyze/build. |
+| Observability | Prometheus text format (`/metrics`), `/health` | Pure-Go counters; no agent required. |
+
+---
+
+## 4. Repository layout
+
+```
+globe-mint/
+├── lib/                          # Flutter client
+│   ├── app/                      # app.dart, providers.dart, router.dart
+│   ├── core/                     # theme, enums, widgets, network, errors, utils
+│   ├── features/
+│   │   ├── auth/                 # welcome, login (2FA step), register, PIN, verify
+│   │   ├── home/                 # dashboard, balance card, quick actions
+│   │   ├── pay/                  # transfer, send-to-beneficiary, bank/OTC transfer
+│   │   ├── savings/              # savings page, add money, withdraw, review, vault status
+│   │   ├── activity/             # transaction list + filters
+│   │   ├── notifications/
+│   │   └── profile/              # security center (2FA), change PIN/password, beneficiaries
+│   └── shared/
+│       ├── models/               # freezed models (User, Transaction, Beneficiary, …)
+│       └── services/             # api_client + per-feature API clients
+├── backend/
+│   ├── cmd/
+│   │   ├── server/               # HTTP server entrypoint
+│   │   ├── gentestwallet/        # keypair generator + .env verification
+│   │   ├── usdcsend/             # raw USDC transfer CLI (dev/OPS)
+│   │   └── verifychain/          # on-chain sanity checks (vault/permissions)
+│   └── internal/
+│       ├── config/               # env parsing + mainnet production gate
+│       ├── domain/               # types, errors, money arithmetic
+│       ├── httpapi/              # handlers, DTOs, middleware, router
+│       ├── infrastructure/       # blockchain (indexer, signer), rates provider
+│       ├── observability/        # metrics registry + server
+│       ├── services/             # business logic (auth, ledger, money, vault, totp)
+│       └── storage/
+│           ├── storage.go        # repository interfaces
+│           └── postgres/         # pgx implementations + migrations 0001..0010
+├── backend/contracts/
+│   ├── contracts/GlobmintVault.sol
+│   ├── scripts/                  # deploy.js, devdepositor.js, devsetup.js
+│   ├── test/                     # hardhat tests (9 passing)
+│   └── DEPLOYMENT.md             # full deploy + mainnet runbook
+├── scripts/backup.sh             # pg_dump + retention (Docker-aware)
+├── .github/workflows/ci.yml
+├── .env.example
+└── docker-compose.yml            # Postgres 16 on :5434
+```
+
+---
+
+## 5. Domain model
+
+The core entities live in `backend/internal/domain`.
+
+### 5.1 Users & sessions
+
+```
+User ─ 1 ─ N Session(many devices)   User ─ has 1 ─ DepositAddress(their wallet)
+  ├─ password_hash (bcrypt)
+  ├─ pin_hash     (bcrypt, for sensitive ops)
+  └─ totp_secret / totp_enabled     (RFC 6238, 30s, 6 digits)
+```
+
+Sessions are **server-side**: a random bearer token is hashed and stored; `Auth` middleware
+resolves it per request. Revoking a session (e.g. after a password change) kills that device.
+
+### 5.2 Accounts & the ledger
+
+Accounts are per-user NGN accounts (`available` and `savings`) plus implicitly the on-chain
+USDC vault balance. Every balance mutation is a double-entry-style **transaction row**:
+
+```
+Transaction(id, type, status, from_account, to_account, amount_minor,
+            fee_minor, provider_ref, idempotency_key, created_at, …)
+```
+
+`status` spans `initiated → authorized → processing → submitted → confirmed`, or
+`failed / cancelled / expired / reversed`. `type` includes `deposit, withdrawal, transfer,
+conversion, fee, adjustment, reversal`.
+
+### 5.3 Money arithmetic
+
+`domain/money` wraps `int64` minor units (kobo / raw units) with a strict `Money` type:
+no floats, no negative balances, ratio multiplication that rounds deterministically
+(`MulRatioRounds`), and a correct `String()` for display. Unit tests cover rounding and
+negatives.
+
+---
+
+## 6. Backend architecture
+
+### 6.1 Layers and request lifecycle
+
+```
+HTTP request
+   │
+   ▼
+middleware.RequestID ──► logging ──► CORS ──► (RateLimiter) ──► Auth ──► Idempotency
+   │
+   ▼
+Handler (httpapi/*_handler.go)            ┌──────────────────────────────┐
+   │  parse+validate JSON (DisallowUnknown)│  domain.Err* ─► error codes  │
+   ▼                                       │  e.g. INVALID_PIN, LIMIT_…   │
+Service (internal/services/*.go)           └──────────────────────────────┘
+   │  business rules, throttling, tx logic
+   ▼
+Repository (storage.go interface ─► postgres/*.go)   and/or  BlockchainService
+   │
+   ▼
+writeJSON / writeError(response code + request_id)
+```
+
+- **Handlers** are thin: decode with `DisallowUnknownFields()`, call exactly one service,
+  map domain errors to HTTP via `respond.go`, and never touch SQL.
+- **Services** hold the business rules and compose repositories + the blockchain client.
+  They take `context.Context` and return domain errors.
+- **Repositories** are interfaces in `storage/storage.go`, implemented with pgx in
+  `storage/postgres`. This is what lets integration tests hit a real Postgres.
+
+### 6.2 HTTP API surface (all prefixed `/api/v1`)
+
+| Group | Routes |
+|---|---|
+| Auth | `POST /auth/register`, `POST /auth/login`, `POST /auth/logout`, `POST /auth/password`, `POST /auth/2fa/verify`, `GET/POST /auth/totp/{setup,enable,disable}` |
+| Users | `GET /users/me` |
+| PIN | `POST /pin/verify`, `PUT /pin` |
+| Balances | `GET /balances` |
+| Transactions | `GET /transactions` |
+| Money | `POST /money/deposit`, `withdraw`, `transfer`, `convert`, `quote` |
+| Savings/Vault | `GET /savings/deposit-info`, `PUT /savings/deposit-address`, `GET /savings/vault-status`, `POST /savings/withdraw` |
+| Beneficiaries | `GET/POST /beneficiaries`, `PATCH /beneficiaries/{id}`, `POST …/favorite`, `DELETE …/{id}`, `GET /beneficiaries/address/{address}` |
+| Bank accounts | `GET/POST /bank-accounts`, `POST /bank-accounts/{id}/default`, `DELETE …/{id}` |
+| Devices / security | `GET /devices`, `POST /devices/revoke-others`, `POST /devices/{id}/revoke`, `GET /security-events` |
+| Notifications | `GET /notifications` |
+| Ops | `GET /health`, `GET /live`, `GET /metrics` |
+
+### 6.3 Middleware chain (run order)
+
+1. **RequestID** — assigns/echoes a `request_id`, derived with a salt so it can't be spoofed.
+2. **Logging** — method, path, status, duration, request_id.
+3. **CORS** — allowlist from `GLOBMINT_CORS_ORIGINS`; `*` = allow all (dev), explicit
+   origin list for production; answers preflight `OPTIONS` with 204.
+4. **RateLimiter** — per-IP token bucket (`clientIPKey` strips the ephemeral port so bursts
+   count across a browser session). Applied to login, register, 2FA-verify, PIN verify,
+   and money endpoints.
+5. **Auth** — resolves the bearer token to a `User` (or rejects) for protected routes.
+6. **Idempotency** — reads `X-Idempotency-Key` so transfers/withdrawals/deposits replay
+   exactly once.
+
+### 6.4 Error model
+
+`domain.Err*` constants carry a canonical code + default message + HTTP status:
+
+| Domain error | Code | HTTP |
+|---|---|---|
+| `ErrInvalidCredentials` | `INVALID_CREDENTIALS` | 401 |
+| `ErrInvalidPIN` | `INVALID_PIN` | 400 |
+| `ErrTwoFactorRequired` | `TWO_FACTOR_REQUIRED` | 200 (challenge) |
+| `ErrTwoFactorInvalid` | `INVALID_CODE` | 400 |
+| `ErrTooManyAttempts` | `TOO_MANY_ATTEMPTS` | 429 |
+| `ErrLimitExceeded` | `LIMIT_EXCEEDED` | 403 |
+| `ErrFeatureDisabled` | `FEATURE_DISABLED` | 403 |
+| `ErrInvalidAmount` | `INVALID_REQUEST` | 400 |
+| `ErrUnauthenticated` | `UNAUTHENTICATED` | 401 |
+
+Every error response includes `request_id`; unmapped internal errors are logged
+server-side and returned as `INTERNAL` (500).
+
+### 6.5 API conventions
+
+**Request shape.** All bodies are strict JSON. `decodeJSON` uses
+`DisallowUnknownFields()`, so a misspelled field name is a real `INVALID_REQUEST` —
+never a silent no-op. Currency amounts travel either as **decimal strings** (`"10.50"`)
+in request bodies or as **integer minor units** in responses (`amount_minor: 1050000`
+for ₦10,500.00). The client parses these with a single formatter; no floats are ever
+used for money.
+
+**Response envelope.** Success payloads are bare JSON objects (`{"token": …, "user": …}`
+or `{"balances": […]}`). Money spinners (quotes) nest under a `quote` object with
+`input_amount`, `output_amount`, `rate`, `reverse_rate`, `fee_bps`, `fee_amount` and
+`expires_at`, so clients can show a preview before a user commits.
+
+**Errors.** Consistent triple: `{"code": "SNAKE_CASE", "message": "human string",
+"request_id": "…"}`. The client surfaces `message` to the user verbatim and uses `code`
+for control flow (e.g. `TWO_FACTOR_REQUIRED` triggers the second login step; `
+TOO_MANY_ATTEMPTS` pauses attempts).
+
+**Idempotency.** Money-mutating endpoints accept `X-Idempotency-Key`. A seen key returns
+the already-recorded transaction, making client retries safe after network blips.
+
+**Pagination & filtering.** `GET /transactions` supports type/status filters and
+cursor-style pagination; the activity screen renders status badges in six switch sites
+covering the entire status enum (including `expired`, `reversed`).
+
+### 6.6 Walking one endpoint: `POST /money/transfer`
+
+```
+Client:  {"amount": "5000", "currency": "NGN", "to_kind": "savings",
+          "idempotency_key": "uuid-123"}
+  1. middleware.RequestID/logging/CORS/Auth ──► user resolved from bearer token
+  2. Idempotency ──► key "uuid-123" seen? return prior txn, done.
+  3. handleTransfer: decodeJSON(strict) → parseIntAmount("5000") → 500000 minor
+  4. to_kind="savings" maps to AccountKindSavings; empty destination → wallet move
+  5. Money.Transfer: load accounts, Money.Sub for sufficiency, create txn, apply
+     both credit and debit atomically in one Postgres transaction
+  6. response: {"transaction": {…}, "request_id": "…"}
+```
+
+Every money endpoint follows the identical spine (validate → idempotency → service →
+atomic ledger write), which is what makes the audit trail possible: one transaction row
+per state change, reconstructed from `balance_ledger` entries rather than recomputed.
+
+---
+
+## 7. Security
+
+### 7.1 Authentication & sessions
+
+- Passwords hashed with bcrypt; PINs hashed too (separate, throttled path).
+- Bearer tokens are random 256-bit values; only their SHA-256 hash is stored. Logout,
+  password change, and per-device revoke all invalidate server-side sessions.
+- **Change-password revocation**: changing your password revokes *every other* active
+  session (current device keeps its token).
+
+### 7.2 Two-factor authentication (RFC 6238 TOTP)
+
+```
+login(credentials) ──► Requires2FA=true + signed challenge_token
+    │
+    ▼
+verify 2FA code + challenge ──► session token
+```
+
+- Enabled via Security Center: `GET /auth/totp/setup` returns a base32 secret + `otpauth://`
+  URI; `POST /auth/totp/enable` activates it after the user proves a valid code.
+- Disabling requires a valid current TOTP code **and** the transaction PIN.
+- The challenge token is an HMAC-SHA256-signed payload (`userID|expiry`), 5-minute TTL, so a
+  valid password alone cannot mint a session when 2FA is on.
+
+### 7.3 Throttling & rate limits
+
+- Per-account **login lockout**: 5 failed attempts → `TOO_MANY_ATTEMPTS` for 15 minutes.
+- PIN verification is throttled identically, so brute-forcing a 6-digit PIN is not feasible.
+- Global per-IP token buckets protect auth and money endpoints from burst abuse.
+
+### 7.4 CORS & injection hygiene
+
+- CORS reflect-or-allowlist; production requires explicit origins (no wildcard).
+- JSON decoding rejects unknown fields — typo'd request keys cannot silently no-op.
+
+### 7.5 The production gate (`config/gate.go`)
+
+If `GLOBMINT_BLOCKCHAIN_NETWORK=mainnet` (or chain id 1) the server **refuses to boot**
+unless *all* of:
+
+- `MODE=real`, a mainnet RPC, signer private key, vault contract + vault address set;
+- `SESSION_SECRET` and `REQUEST_ID_SALT` replaced (not the dev defaults);
+- explicit CORS origins (no `*`);
+- `GLOBMINT_VAULT_FALLBACK_USER_ID` empty (the testnet backstop that silently credits
+  unlinked deposits is banned on mainnet);
+- `GLOBMINT_VAULT_MIN_CONFIRMATIONS >= 12`.
+
+The gate returns a list of every missing item so operators fix the whole config at once.
+
+### 7.6 Self-custody guarantees
+
+- The vault contract has **no owner, no admin, no seizable balances** (see §9).
+- The backend never holds user private keys; users always initiate deposits.
+- No banking rails exist anywhere in the codebase by design.
+
+### 7.7 Threat model (who can do what)
+
+| Attacker | Can | Cannot |
+|---|---|---|
+| Random internet user | Register, see only their own data | Read other users' balances/sessions (bearer tokens + scoped `Auth` middleware) |
+| Credential attacker | Try passwords/PINs | Brute force: 5-attempt/15-min per-account throttle + per-IP buckets |
+| Phisher with 1 password | — | Mint a session when 2FA is on (challenge token is signed, 5-min TTL) |
+| Compromised signer key | Broadcast the *user-requested* withdrawal txs | Move money without a matching PIN + limits + idempotency check on record |
+| Insider / operator | Read the DB | Seize user USDC: vault has no owner/admin functions |
+| Reorg attacker (mainnet) | — | Get a deposit credited early: confirmations window ≥ 12 |
+| CSRF / cross-site | — | Call the API: no cookies, bearer-in-header, CORS-allowlisted origins |
+
+The boundaries above are enforced at three layers simultaneously: the contract (money can
+only move per its rules), the service layer (limits, PIN, throttling, idempotency), and the
+transport layer (no cookies, strict CORS, request IDs, strict JSON).
+
+---
+
+## 8. Money, ledger and FX
+
+### 8.1 Accounts and transaction lifecycle
+
+NGN balances live in `accounts` (`available` and `savings`); USDC value lives on-chain (the
+vault is the source of truth) and is *displayed* by summing confirmed `Deposited` events
+through the indexer.
+
+A representative transfer:
+
+```
+Credit ──► available      Debit  ──► available     (transfer)
+    │                         │
+    └─ txn(status=confirmed) ─┘
+```
+
+Insufflate checks, fees (`fee_minor`), and conversion outputs are all computed from the
+same `Money` type to avoid float drift.
+
+### 8.2 Idempotency
+
+Money endpoints accept `X-Idempotency-Key`. On replay the service returns the already
+recorded transaction instead of a second charge — verified by a concurrent test so parallel
+retries cannot double-spend.
+
+### 8.3 FX rates
+
+- `exchange_rates` seeds `USDT→NGN` (160450), `USDC→NGN` (160000), and their inverses
+  (`NGN→USDC`, `NGN→USDT`, rate 62) via migration `0004_seed_rates.sql`.
+- `POST /money/quote{amount, from_currency, to_currency}` returns `output_amount`,
+  `rate`, `fee_bps` (50 bps), and an `expires_at`, with the inverse rate for reverse pairs.
+- Withdrawals convert NGN-minor amounts to USDC at the service rate before broadcasting.
+
+### 8.4 Worked example
+
+Request `POST /money/quote {amount: "1000", from_currency: "NGN", to_currency: "USDT"}`:
+
+```
+input_amount  ₦1000.00
+rate          0.62        (USDT per NGN)
+gross         ₦1000 × 0.62 = 620.00 USDT units
+fee_bps       50          (0.5%)
+fee_amount    ₦5.00 → deducted in NGN before conversion
+net           ₦995 × 0.62 = 616.90 USDT
+```
+
+Reciprocal pair `{amount: "100", from_currency: "USDT", to_currency: "NGN"}` uses the
+reverse rate (USDT→NGN ≈ 1604.50), mirroring the seed so round-trips don't invent money.
+All multiplications happen in integer minor units through `Money.MulRatioRounds`, so the
+floating-point quote preview can never drift from the settled ledger figure.
+
+---
+
+## 9. Blockchain & the vault
+
+### 9.1 `GlobmintVault.sol`
+
+```solidity
+contract GlobmintVault {
+    address public immutable stablecoin;      // e.g. USDC
+    mapping(address => uint256) private _balances;
+    uint256 private _totalDeposits;
+
+    function deposit(uint256 amount) external;            // pull USDC, credit msg.sender
+    function depositFor(address user,...) external;       // pay for another address
+    function depositWithPermit(...) external;             // EIP-2612 single step
+    function withdraw(uint256 amount) external;           // sends ONLY to msg.sender
+    function balanceOf(address user) external view returns (uint256);
+}
+```
+
+Design principles encoded in the contract itself:
+- **No owner / admin.** There is literally no function that moves another user's funds.
+- **Pull deposits.** Users `approve` the vault and call `deposit`; the vault takes USDC.
+- **Withdraw to self** on-chain — the contract-level `withdraw` only releases to `msg.sender`.
+  The app-level withdraw-to-any-address is a backend signer flow that respects the same
+  per-user allowances and limits.
+- CEI (checks-effects-interactions) ordering + SafeMath-style arithmetic guard reentrancy
+  and overflow.
+
+### 9.2 The indexer
+
+```
+vault contract ──Deposited/Withdrawn▸ filter logs (Topics, fromBlock=START_BLOCK)
+                        │
+                        ▼
+        confirmed head = latest - MIN_CONFIRMATIONS     (0 testnet, ≥12 mainnet)
+                        │
+                        ▼ per event: resolve deposit_address → user → ledger credit
+                        │ cursor persisted in indexer_state (resumable, crash-safe)
+```
+
+- Events before the confirmation window are **not** credited — deposits appear only once
+  deep enough (prevents reorg reversals).
+- `GLOBMINT_VAULT_FALLBACK_USER_ID` (testnet only) credits events whose address is not
+  linked to any Globmint user; it must be empty on mainnet.
+
+### 9.3 Withdrawals (backend signer)
+
+- `POST /savings/withdraw{amount(NGN minor), destination, pin}` checks: valid address,
+  verified PIN (throttled), `WITHDRAW_ENABLED`, `MIN ≤ amount ≤ MAX`, UTC daily cap via
+  `SumWithdrawalsSince`, and idempotency replay.
+- It converts to USDC, broadcasts the signer's `transfer(destination, usdc)` to the
+  stablecoin, and records the transaction with `provider_ref = tx_hash`.
+- Env knobs: `GLOBMINT_VAULT_WITHDRAW_{ENABLED,MIN_MINOR,MAX_MINOR,DAILY_CAP_MINOR}`.
+
+### 9.4 Environment variables (blockchain)
+
+| Variable | Purpose |
+|---|---|
+| `GLOBMINT_BLOCKCHAIN_NETWORK` | `mock` / `sepolia` / `mainnet` |
+| `GLOBMINT_BLOCKCHAIN_RPC_URL` | RPC endpoint (Alchemy/Infura/own node) |
+| `GLOBMINT_BLOCKCHAIN_CHAIN_ID` | 11155111 (Sepolia) / 1 (mainnet) |
+| `GLOBMINT_BLOCKCHAIN_MODE` | `mock` (no chain calls) / `real` |
+| `GLOBMINT_STABLECOIN_CONTRACT_ADDRESS` | USDC: Sepolia `0x1c7D4B…C7238`, mainnet `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48` |
+| `GLOBMINT_VAULT_CONTRACT_ADDRESS` / `GLOBMINT_VAULT_ADDRESS` | Deployed vault + the displayed deposit address |
+| `GLOBMINT_VAULT_START_BLOCK` | Indexer anchor |
+| `GLOBMINT_VAULT_MIN_CONFIRMATIONS` | credit window (≥12 forced on mainnet) |
+| `GLOBMINT_STABLECOIN_PRIVATE_KEY` | signer key (never committed) |
+
+> ⚠️ The canonical mainnet USDC is `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48` (note the
+> trailing `8`). A one-character error here would route production deposits to a non-token.
+
+---
+
+## 10. Frontend architecture
+
+### 10.1 Structure
+
+- **Feature-first layout**: `lib/features/<feature>/{data→presentation}`. Each feature owns
+  its `presentation/pages` and widgets; shared APIClient + models live in `lib/shared`.
+- **State**: `flutter_riverpod` provides a single `ProviderScope`. `authServiceProvider`,
+  `balanceServiceProvider`, `vaultStatusProvider`, `accountSummaryProvider`, and
+  `transactionsProvider` model server state; pages `ref.watch` them and invalidate after
+  mutations (e.g. after a withdrawal the vault status and balances refresh).
+- **Routing**: `go_router` in `lib/app/router.dart` with auth-guarded routes. 2FA is a
+  **step inside the login flow**: if `login` returns `requires_two_factor`, the page swaps
+  to an authenticator-code step that calls `verifyTwoFactor(challenge, code)`.
+- **Models**: `freezed` + `json_serializable` for typed, generated equality/serialization.
+- **HTTP**: `ApiClient` resolves the API origin (localhost for dev), adds the bearer token,
+  and surfaces typed `ApiException`s (message + code).
+
+### 10.2 Data flow
+
+```
+Widget ── prodider.watch ──► Service(Repository) ── ApiClient ──► Go API
+   ▲                                                              │
+   └──────── invalidate() after success ◄────── JSON response ────┘
+```
+
+### 10.3 Feature map
+
+| Feature | Highlights |
+|---|---|
+| auth | welcome, login (Password → 2FA step), register, PIN creation, verification |
+| home | dashboard, balance card (NGN available/savings), quick actions, recent activity |
+| pay | transfers, send-to-beneficiary, OTC/withdraw-to-address |
+| savings | add money (**uses `deposit-info` to show the vault + USDC details**), withdraw + review, vault status |
+| activity | full transaction list with status/type badges and destination rendering |
+| profile | security center (**2FA enable/disable**, biometric, alerts), change PIN / password, beneficiaries |
+
+### 10.4 Routing table (`lib/app/router.dart`)
+
+| Route | Page | Auth |
+|---|---|---|
+| `/` | welcome | public |
+| `/login` → `/home` | login (password → 2FA code step) | public → guarded |
+| `/register`, `/create-pin`, `/verification` | onboarding | public |
+| `/home`, `/activity` | dashboard, activity | guarded |
+| `/savings`, `/savings/withdraw`, `/savings/withdraw-review`, `/savings/add-money` | savings flow | guarded |
+| `/pay`, `/pay/send-to-beneficiary` | transfer flow | guarded |
+| `/profile`, `/profile/security`, `/profile/change-pin`, `/profile/change-password` | profile flow | guarded |
+| `/notifications` | in-app alerts | guarded |
+
+`go_router` redirects unauthenticated visits to `/login`; after `go('/home')` the router
+re-reads the auth provider so a 401 mid-session bounces the user back to login cleanly.
+
+### 10.5 Wait — the 2FA step lives inside the login page
+
+The login page is a two-state form. `AuthService.login` returns a `LoginResult` carrying
+`requiresTwoFactor` + `challengeToken`. When 2FA is on, the page swaps its body for an
+authenticator-code field bound to `AuthService.verifyTwoFactor(challengeToken, code)` —
+no separate route, no token leakage before the code is verified.
+
+### 10.6 Web build
+
+`flutter build web --no-tree-shake-icons` produces `build/`; the dev web server is a plain
+`python3 -m http.server 8082` serving that directory. The production frontend should be
+served by the same TLS terminating proxy as the API (CORS-origin-matched).
+
+---
+
+## 11. Data model (Postgres migrations)
+
+| Migration | Adds |
+|---|---|
+| `0001_init` | users, sessions |
+| `0002_ledger` | accounts, transactions, balance ledger |
+| `0003_payments` | bank accounts, transfers |
+| `0004_deposit_address` | user ↔ on-chain wallet link |
+| `0004_seed_rates` | FX rates for USDT/USDC ↔ NGN |
+| `0005_security` | security events, devices, notifications |
+| `0006_indexer_state` | block-cursor + event log for the vault indexer |
+| `0007_beneficiary_addresses` | crypto beneficiaries with wallet addresses |
+| `0008_audit_log` | append-only admin/security audit trail |
+| `0009_pin_hash` | user PIN hashes |
+| `0010_totp` | TOTP secret + enabled flag |
+
+Key tables: `users`, `sessions`, `accounts`, `transactions`, `balance_ledger`,
+`exchange_rates`, `deposit_addresses`, `indexer_state`, `security_events`,
+`audit_log`, `beneficiaries`, `bank_accounts`, `notifications`.
+
+Migrations auto-apply on server boot (idempotent, tracked in a schema_migrations-style
+table). The backup script archives the whole schema + data for point-in-time restores.
+
+---
+
+## 12. Deployment
+
+### 12.1 Local development
+
+```bash
+docker compose up -d db            # Postgres on :5434
+cd backend && go build -o server ./cmd/server && ./server
+cd .. && flutter build web --no-tree-shake-icons
+python3 -m http.server 8082 -d build/web
+```
+
+Demo login (testnet): `demo@globmint.local` / `DemoPass123!`, PIN `123456`.
+
+**Dev & ops tools** (all under `backend/cmd`):
+
+| Tool | Purpose |
+|---|---|
+| `gentestwallet` | Generate a keypair + wallet file; `-verify` cross-checks that the `.env` key matches the file without printing it. |
+| `usdcsend` | One-shot USDC transfer CLI (raw stablecoin movement) — the signer-equivalent for scripts. |
+| `verifychain` | Read-only on-chain sanity checks (vault address, stablecoin, permissions) before/after deploy. |
+| `devsetup` / `devdepositor` (contracts/scripts) | Seed a local persistent hardhat node with USDC and simulate deposits so the indexer can be exercised without a faucet. |
+
+When running with `GLOBMINT_BLOCKCHAIN_MODE=mock` no chain calls happen at all — ideal for
+quick UI iteration; flipping to `real` against Sepolia turns on indexing and signed
+withdrawals with test USDC.
+
+### 12.2 Contract deployment (Sepolia / mainnet)
+
+```bash
+cd backend/contracts
+npx hardhat test                                        # 9 contract tests
+STABLECOIN_ADDRESS=0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238 \
+  npx hardhat run scripts/deploy.js --network sepolia   # mainnet: use 0xA0b8…B48
+```
+
+`deploy.js` writes `deployments/address.json`; point the backend at it with
+`GLOBMINT_VAULT_CONTRACT_ADDRESS` / `GLOBMINT_VAULT_ADDRESS`. `devsetup.js` +
+`devdepositor.js` exercise deposits on the local chain for dev.
+
+### 12.3 Mainnet checklist (real money)
+
+1. Fund deployer + signer wallets.
+2. Rotate the RPC key; never reuse shared testnet keys.
+3. Deploy the vault against mainnet USDC (`…E3606eB48`).
+4. Configure env per §9.4 + the production gate (§7.5).
+5. Whitelist web origins in CORS; host behind HTTPS (Caddy/nginx + certbot).
+6. Cron `scripts/backup.sh` and off-site the archives.
+
+The server will *refuse to run* until every gate item passes — validate the config by
+simply starting it.
+
+### 12.4 Backups
+
+`scripts/backup.sh` (`GLOBMINT_DATABASE_URL=… scripts/backup.sh /var/backups/globmint`):
+custom-format, gzip, integrity-checked, with daily/weekly/monthly retention and a cron
+snippet in its header. Detects a Docker Postgres and streams the dump from the container
+when host `pg_dump` is missing.
+
+---
+
+## 13. Observability
+
+- **`GET /metrics`** — Prometheus text: `http_requests_total{method,path,status}` and
+  `globmint_login_failures_total`. No extra exports; any Prometheus/agent can scrape it.
+- **`GET /health`** and **`GET /live`** — liveness probes for orchestrators.
+- **Request IDs** — every response carries `request_id` for cross-referencing logs with
+  support cases.
+
+---
+
+## 14. Testing & CI
+
+| Suite | Command | Coverage |
+|---|---|---|
+| Go unit | `go test ./internal/domain/...` | money arithmetic, rounding, negatives |
+| Go integration | `go test ./internal/services/...` | real Postgres (docker on :5434): credits/debits, idempotency (incl. concurrent), transfers, conversion, beneficiary CRUD |
+| Solidity | `npx hardhat test` | 9 tests: deposit, depositFor, withdraw, over-withdrawal revert, no-admin isolation, totalDeposits |
+| Flutter | `flutter analyze` + `flutter build web` | static analysis + web compile |
+
+CI (`.github/workflows/ci.yml`) runs all of the above on push/PR: `setup-go` + Postgres
+service for Go tests, Node + `npm ci`/`npm test` for the contracts, and Flutter
+analyze/build. The Go service container mirrors `docker-compose` (port 5434) so the same
+integration tests run in CI as locally.
+
+---
+
+## 15. Operations runbooks
+
+**Starting fresh** — `docker compose up -d db && cd backend && go run ./cmd/server`.
+
+**Signer key rotated** — replace `GLOBMINT_STABLECOIN_PRIVATE_KEY`, restart. Because the
+vault has no owner, user balances are unaffected; only the ability to broadcast future
+withdrawals changes.
+
+**DB restored after loss** — `pg_restore` the latest `backup.sh` archives; sessions,
+ledger, rates, and audit all come back together.
+
+**Confirming the indexer caught up** — the vault-status endpoint reports the confirmed
+balance; check the server log for the processed block cursor vs. the chain head.
+
+**Config change dry-run** — boot a shadow instance against a DB copy and run the smoke flow
+(register → login → balances → quote → withdraw-reject).
+
+---
+
+## 16. Known boundaries & roadmap
+
+- **Mainnet is configured, not yet funded.** All deploy tooling, the production gate, and
+  the runbook are in place; real USDC is not yet flowing (requires the §12.3 steps).
+- **Withdraw-to-any-address is operator-authorized by PIN + limits.** The chain-level
+  `withdraw` remains self-only; the app's signer flow adds off-chain spend controls on top.
+- **FX rates are seeded static values**, not streamed market data; the quote endpoint is
+  the extension point for a price feed.
+- **Future work:** real price feeds, email/SMS notification delivery, a QR-code flow for
+  the TOTP secret, wallet-deep-link deposit flow (WalletConnect/MetaMask), and Prometheus
+  alerting rules wired to `/metrics`.

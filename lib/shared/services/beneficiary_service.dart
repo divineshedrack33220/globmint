@@ -2,7 +2,7 @@ import '../../core/constants/app_constants.dart';
 import '../models/models.dart';
 import 'api_client.dart';
 
-/// Backend-backed beneficiary (saved payee) service.
+/// Backend-backed beneficiary (saved crypto-address contact) service.
 class BeneficiaryService {
   BeneficiaryService(this._api);
 
@@ -18,16 +18,14 @@ class BeneficiaryService {
 
   Future<Beneficiary> create({
     required String name,
-    required String bank,
-    required String accountNumber,
+    required String address,
     bool isFavorite = false,
   }) async {
     final data = await _api.post(
       '${AppConstants.apiV1Prefix}/beneficiaries',
       body: {
         'name': name,
-        'bank': bank,
-        'account_number': accountNumber,
+        'address': address,
         'is_favorite': isFavorite,
       },
     );
@@ -38,26 +36,32 @@ class BeneficiaryService {
     await _api.post('${AppConstants.apiV1Prefix}/beneficiaries/$id/favorite');
   }
 
-  Future<void> remove(String id) async {
-    await _api.delete('${AppConstants.apiV1Prefix}/beneficiaries/$id');
+  /// Updates an existing beneficiary in place via `PATCH /beneficiaries/{id}`.
+  Future<Beneficiary> update({
+    required String id,
+    required String name,
+    required String address,
+    bool isFavorite = false,
+  }) async {
+    final data = await _api.patch(
+      '${AppConstants.apiV1Prefix}/beneficiaries/$id',
+      body: {
+        'name': name,
+        'address': address,
+        'is_favorite': isFavorite,
+      },
+    );
+    return _fromApi((data?['beneficiary'] as Map<String, dynamic>?) ?? {});
   }
 
-  /// Resolves a bank account number to a beneficiary (name + bank), if known.
-  Future<Beneficiary?> resolveAccount(String accountNumber) async {
-    final data = await _api.get(
-      '${AppConstants.apiV1Prefix}/beneficiaries/account/$accountNumber',
-    );
-    if (data == null) return null;
-    final b = data['beneficiary'] as Map<String, dynamic>?;
-    if (b == null) return null;
-    return _fromApi(b);
+  Future<void> remove(String id) async {
+    await _api.delete('${AppConstants.apiV1Prefix}/beneficiaries/$id');
   }
 
   Beneficiary _fromApi(Map<String, dynamic> j) => Beneficiary(
         id: j['id'] as String? ?? '',
         name: j['name'] as String? ?? '',
-        bank: j['bank'] as String? ?? '',
-        accountNumber: j['account_number'] as String? ?? '',
+        address: j['address'] as String? ?? '',
         isFavorite: j['is_favorite'] as bool? ?? false,
       );
 }

@@ -22,6 +22,13 @@ var (
 	ErrRateExpired         = errors.New("exchange rate expired")
 	ErrRateExceeded        = errors.New("amount exceeds rate limits")
 	ErrInvalidAddress      = errors.New("invalid deposit address")
+	ErrInvalidPin          = errors.New("invalid PIN")
+	ErrInvalidCode         = errors.New("invalid verification code")
+	ErrLimitExceeded       = errors.New("limit exceeded")
+	ErrFeatureDisabled     = errors.New("feature disabled")
+	ErrTooManyAttempts     = errors.New("too many attempts, try again later")
+	ErrTwoFactorRequired   = errors.New("two-factor authentication required")
+	ErrTwoFactorInvalid    = errors.New("two-factor challenge expired or invalid")
 )
 
 // ErrorCode maps a domain error to a stable API error code string.
@@ -43,6 +50,20 @@ func ErrorCode(err error) string {
 		return "INSUFFICIENT_BALANCE"
 	case errors.Is(err, ErrInvalidAmount), errors.Is(err, ErrBadRequest), errors.Is(err, ErrUnsupportedCurrency), errors.Is(err, ErrRateExceeded), errors.Is(err, ErrInvalidAddress):
 		return "INVALID_REQUEST"
+	case errors.Is(err, ErrInvalidPin):
+		return "INVALID_PIN"
+	case errors.Is(err, ErrInvalidCode):
+		return "INVALID_CODE"
+	case errors.Is(err, ErrLimitExceeded):
+		return "LIMIT_EXCEEDED"
+	case errors.Is(err, ErrFeatureDisabled):
+		return "FEATURE_DISABLED"
+	case errors.Is(err, ErrTooManyAttempts):
+		return "TOO_MANY_REQUESTS"
+	case errors.Is(err, ErrTwoFactorRequired):
+		return "TWO_FACTOR_REQUIRED"
+	case errors.Is(err, ErrTwoFactorInvalid):
+		return "TWO_FACTOR_INVALID"
 	default:
 		return "INTERNAL_ERROR"
 	}

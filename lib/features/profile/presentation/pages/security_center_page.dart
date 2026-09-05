@@ -1,20 +1,135 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import '../../../../app/providers.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/widgets/app_button.dart';
+import '../../../../core/widgets/app_text_field.dart';
+import '../../../../shared/services/api_client.dart';
 
-class SecurityCenterPage extends StatefulWidget {
+class SecurityCenterPage extends ConsumerStatefulWidget {
   const SecurityCenterPage({super.key});
 
   @override
-  State<SecurityCenterPage> createState() => _SecurityCenterPageState();
+  ConsumerState<SecurityCenterPage> createState() => _SecurityCenterPageState();
 }
 
-class _SecurityCenterPageState extends State<SecurityCenterPage> {
-  bool _twoFactor = true;
+class _SecurityCenterPageState extends ConsumerState<SecurityCenterPage> {
+  bool _twoFactor = false;
+  bool _updatingTwoFactor = false;
   bool _biometric = false;
   bool _loginAlerts = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _twoFactor = ref.read(authServiceProvider).currentUser?.twoFactorEnabled ?? false;
+  }
+
+  Future<void> _toggleTwoFactor(bool enable) async {
+    if (_updatingTwoFactor) return;
+    setState(() => _updatingTwoFactor = true);
+    try {
+      final auth = ref.read(authServiceProvider);
+      if (enable) {
+        final setup = await auth.totpSetup();
+        if (!mounted) return;
+        final code = await _collectCode(context, 'Enable 2FA', setup['secret'] ?? '');
+        if (code == null) return;
+        await auth.enableTwoFactor(code);
+        if (!mounted) return;
+        setState(() => _twoFactor = true);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Two-factor authentication enabled')),
+        );
+      } else {
+        final code = await _collectCode(context, 'Disable 2FA', '');
+        if (!mounted) return;
+        if (code == null) return;
+        final pin = await _collectPin(context);
+        if (pin == null) return;
+        await auth.disableTwoFactor(code: code, pin: pin);
+        if (!mounted) return;
+        setState(() => _twoFactor = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Two-factor authentication disabled')),
+        );
+      }
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+    } finally {
+      if (mounted) setState(() => _updatingTwoFactor = false);
+    }
+  }
+
+  Future<String?> _collectCode(BuildContext context, String title, String secret) async {
+    final controller = TextEditingController();
+    final result = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (secret.isNotEmpty) ...[
+                Text(
+                  'Scan this in your authenticator app (or enter it manually):',
+                  style: context.typography.bodySmall,
+                ),
+                const SizedBox(height: 8),
+                SelectableText(secret, style: context.typography.bodyMedium),
+                const SizedBox(height: 12),
+              ],
+              AppTextField(
+                label: '6-digit code',
+                hint: 'Code from authenticator',
+                controller: controller,
+                keyboardType: TextInputType.number,
+                textInputAction: TextInputAction.done,
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+            child: const Text('Confirm'),
+          ),
+        ],
+      ),
+    );
+    return result;
+  }
+
+  Future<String?> _collectPin(BuildContext context) async {
+    final controller = TextEditingController();
+    return showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Enter your transaction PIN'),
+        content: AppTextField(
+          label: 'PIN',
+          hint: '6-digit PIN',
+          controller: controller,
+          keyboardType: TextInputType.number,
+          obscureText: true,
+          textInputAction: TextInputAction.done,
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+            child: const Text('Confirm'),
+          ),
+        ],
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -75,7 +190,7 @@ class _SecurityCenterPageState extends State<SecurityCenterPage> {
                       title: 'Two-Factor Authentication',
                       subtitle: 'Require a code on new logins',
                       value: _twoFactor,
-                      onChanged: (v) => setState(() => _twoFactor = v),
+                      onChanged: (v) => _toggleTwoFactor(v),
                     ),
                     const Divider(color: AppColors.divider, height: 1, indent: 52),
                     _SwitchTile(

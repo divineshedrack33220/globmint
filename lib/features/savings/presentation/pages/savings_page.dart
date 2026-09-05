@@ -84,9 +84,9 @@ class SavingsPage extends ConsumerWidget {
                   const SizedBox(width: 10),
                   Expanded(
                     child: _ActionCard(
-                      icon: Icons.currency_exchange,
-                      label: 'Convert',
-                      onTap: () => context.push('/savings/convert'),
+                      icon: Icons.bookmark_outline,
+                      label: 'Saved Addresses',
+                      onTap: () => context.push('/profile/beneficiaries'),
                     ),
                   ),
                   const SizedBox(width: 10),

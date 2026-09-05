@@ -379,8 +379,8 @@ func (s *MoneyService) ToggleBeneficiaryFavorite(ctx context.Context, userID, id
 	return s.store.BeneficiaryRepo().ToggleFavorite(ctx, userID, id)
 }
 
-func (s *MoneyService) ResolveAccount(ctx context.Context, userID, accountNumber string) (*domain.Beneficiary, error) {
-	return s.store.BeneficiaryRepo().FindByAccountNumber(ctx, userID, accountNumber)
+func (s *MoneyService) ResolveAccount(ctx context.Context, userID, address string) (*domain.Beneficiary, error) {
+	return s.store.BeneficiaryRepo().FindByAddress(ctx, userID, address)
 }
 
 func (s *MoneyService) CreateBankAccount(ctx context.Context, userID string, a *domain.BankAccount) error {

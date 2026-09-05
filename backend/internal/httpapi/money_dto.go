@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"time"
 
 	"globmint/backend/internal/domain"
@@ -33,10 +34,29 @@ type transferRequest struct {
 	Narration    string  `json:"narration,omitempty"`
 }
 
+// amountString accepts both string and number for the amount field.
+type amountString string
+
+func (a *amountString) UnmarshalJSON(data []byte) error {
+	// Try string first
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		*a = amountString(s)
+		return nil
+	}
+	// Try number (int or float)
+	var n json.Number
+	if err := json.Unmarshal(data, &n); err == nil {
+		*a = amountString(n.String())
+		return nil
+	}
+	return nil
+}
+
 type convertQuoteRequest struct {
-	Amount       string `json:"amount"`
-	FromCurrency string `json:"from_currency"`
-	ToCurrency   string `json:"to_currency"`
+	Amount       interface{} `json:"amount"`
+	FromCurrency string      `json:"from_currency"`
+	ToCurrency   string      `json:"to_currency"`
 }
 
 type convertRequest struct {
@@ -46,17 +66,15 @@ type convertRequest struct {
 }
 
 type beneficiaryRequest struct {
-	Name          string `json:"name"`
-	Bank          string `json:"bank"`
-	AccountNumber string `json:"account_number"`
-	IsFavorite    bool   `json:"is_favorite"`
+	Name       string `json:"name"`
+	Address    string `json:"address"`
+	IsFavorite bool   `json:"is_favorite"`
 }
 
 type beneficiaryUpdateRequest struct {
-	Name          string `json:"name"`
-	Bank          string `json:"bank"`
-	AccountNumber string `json:"account_number"`
-	IsFavorite    bool   `json:"is_favorite"`
+	Name       string `json:"name"`
+	Address    string `json:"address"`
+	IsFavorite bool   `json:"is_favorite"`
 }
 
 type bankAccountRequest struct {
@@ -68,11 +86,10 @@ type bankAccountRequest struct {
 }
 
 type beneficiaryResponse struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	Bank          string `json:"bank"`
-	AccountNumber string `json:"account_number"`
-	IsFavorite    bool   `json:"is_favorite"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Address    string `json:"address"`
+	IsFavorite bool   `json:"is_favorite"`
 }
 
 type bankAccountResponse struct {
@@ -97,11 +114,10 @@ type quoteResponse struct {
 
 func newBeneficiaryResponse(b *domain.Beneficiary) beneficiaryResponse {
 	return beneficiaryResponse{
-		ID:            b.ID,
-		Name:          b.Name,
-		Bank:          b.Bank,
-		AccountNumber: b.AccountNumber,
-		IsFavorite:    b.IsFavorite,
+		ID:         b.ID,
+		Name:       b.Name,
+		Address:    b.Address,
+		IsFavorite: b.IsFavorite,
 	}
 }
 

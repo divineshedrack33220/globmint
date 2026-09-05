@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+jobs:
+  backend:
+    name: Backend (build, vet, test)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: globmint
+          POSTGRES_PASSWORD: globmint_dev
+          POSTGRES_DB: globmint
+        ports:
+          - 5434:5432
+        options: >-
+          --health-cmd "pg_isready -U globmint"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache-dependency-path: backend/go.sum
+      - name: Build
+        working-directory: backend
+        run: go build ./...
+      - name: Vet
+        working-directory: backend
+        run: go vet ./...
+      - name: Test (unit + integration)
+        working-directory: backend
+        env:
+          GLOBMINT_TEST_DATABASE_URL: postgres://globmint:globmint_dev@127.0.0.1:5434/globmint
+        run: go test ./...
+
+  contracts:
+    name: Contracts (hardhat)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend/contracts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: backend/contracts/package-lock.json
+      - run: npm ci
+      - run: npm test
+
+  frontend:
+    name: Frontend (analyze + build web)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter build web --no-tree-shake-icons

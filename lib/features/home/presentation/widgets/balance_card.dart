@@ -32,9 +32,9 @@ class BalanceCard extends StatelessWidget {
         border: Border.all(color: AppColors.border, width: 1),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.5),
-            blurRadius: 40,
-            offset: const Offset(0, 12),
+            color: Colors.black.withValues(alpha: 0.18),
+            blurRadius: 22,
+            offset: const Offset(0, 8),
           ),
         ],
       ),
@@ -54,13 +54,16 @@ class BalanceCard extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 12),
-          Text(
-            amount,
-            style: isHero
-                ? context.typography.amountHero
-                : context.typography.amountLarge,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Text(
+              amount,
+              style: isHero
+                  ? context.typography.amountHero
+                  : context.typography.amountLarge,
+              maxLines: 1,
+            ),
           ),
           if (subtitle != null) ...[
             const SizedBox(height: 4),

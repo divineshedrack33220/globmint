@@ -23,8 +23,7 @@ Beneficiary _$BeneficiaryFromJson(Map<String, dynamic> json) {
 mixin _$Beneficiary {
   String get id => throw _privateConstructorUsedError;
   String get name => throw _privateConstructorUsedError;
-  String get bank => throw _privateConstructorUsedError;
-  String get accountNumber => throw _privateConstructorUsedError;
+  String get address => throw _privateConstructorUsedError;
   bool get isFavorite => throw _privateConstructorUsedError;
 
   /// Serializes this Beneficiary to a JSON map.
@@ -44,13 +43,7 @@ abstract class $BeneficiaryCopyWith<$Res> {
     $Res Function(Beneficiary) then,
   ) = _$BeneficiaryCopyWithImpl<$Res, Beneficiary>;
   @useResult
-  $Res call({
-    String id,
-    String name,
-    String bank,
-    String accountNumber,
-    bool isFavorite,
-  });
+  $Res call({String id, String name, String address, bool isFavorite});
 }
 
 /// @nodoc
@@ -70,8 +63,7 @@ class _$BeneficiaryCopyWithImpl<$Res, $Val extends Beneficiary>
   $Res call({
     Object? id = null,
     Object? name = null,
-    Object? bank = null,
-    Object? accountNumber = null,
+    Object? address = null,
     Object? isFavorite = null,
   }) {
     return _then(
@@ -84,13 +76,9 @@ class _$BeneficiaryCopyWithImpl<$Res, $Val extends Beneficiary>
                 ? _value.name
                 : name // ignore: cast_nullable_to_non_nullable
                       as String,
-            bank: null == bank
-                ? _value.bank
-                : bank // ignore: cast_nullable_to_non_nullable
-                      as String,
-            accountNumber: null == accountNumber
-                ? _value.accountNumber
-                : accountNumber // ignore: cast_nullable_to_non_nullable
+            address: null == address
+                ? _value.address
+                : address // ignore: cast_nullable_to_non_nullable
                       as String,
             isFavorite: null == isFavorite
                 ? _value.isFavorite
@@ -111,13 +99,7 @@ abstract class _$$BeneficiaryImplCopyWith<$Res>
   ) = __$$BeneficiaryImplCopyWithImpl<$Res>;
   @override
   @useResult
-  $Res call({
-    String id,
-    String name,
-    String bank,
-    String accountNumber,
-    bool isFavorite,
-  });
+  $Res call({String id, String name, String address, bool isFavorite});
 }
 
 /// @nodoc
@@ -136,8 +118,7 @@ class __$$BeneficiaryImplCopyWithImpl<$Res>
   $Res call({
     Object? id = null,
     Object? name = null,
-    Object? bank = null,
-    Object? accountNumber = null,
+    Object? address = null,
     Object? isFavorite = null,
   }) {
     return _then(
@@ -150,13 +131,9 @@ class __$$BeneficiaryImplCopyWithImpl<$Res>
             ? _value.name
             : name // ignore: cast_nullable_to_non_nullable
                   as String,
-        bank: null == bank
-            ? _value.bank
-            : bank // ignore: cast_nullable_to_non_nullable
-                  as String,
-        accountNumber: null == accountNumber
-            ? _value.accountNumber
-            : accountNumber // ignore: cast_nullable_to_non_nullable
+        address: null == address
+            ? _value.address
+            : address // ignore: cast_nullable_to_non_nullable
                   as String,
         isFavorite: null == isFavorite
             ? _value.isFavorite
@@ -173,8 +150,7 @@ class _$BeneficiaryImpl implements _Beneficiary {
   const _$BeneficiaryImpl({
     required this.id,
     required this.name,
-    required this.bank,
-    required this.accountNumber,
+    required this.address,
     this.isFavorite = false,
   });
 
@@ -186,16 +162,14 @@ class _$BeneficiaryImpl implements _Beneficiary {
   @override
   final String name;
   @override
-  final String bank;
-  @override
-  final String accountNumber;
+  final String address;
   @override
   @JsonKey()
   final bool isFavorite;
 
   @override
   String toString() {
-    return 'Beneficiary(id: $id, name: $name, bank: $bank, accountNumber: $accountNumber, isFavorite: $isFavorite)';
+    return 'Beneficiary(id: $id, name: $name, address: $address, isFavorite: $isFavorite)';
   }
 
   @override
@@ -205,17 +179,14 @@ class _$BeneficiaryImpl implements _Beneficiary {
             other is _$BeneficiaryImpl &&
             (identical(other.id, id) || other.id == id) &&
             (identical(other.name, name) || other.name == name) &&
-            (identical(other.bank, bank) || other.bank == bank) &&
-            (identical(other.accountNumber, accountNumber) ||
-                other.accountNumber == accountNumber) &&
+            (identical(other.address, address) || other.address == address) &&
             (identical(other.isFavorite, isFavorite) ||
                 other.isFavorite == isFavorite));
   }
 
   @JsonKey(includeFromJson: false, includeToJson: false)
   @override
-  int get hashCode =>
-      Object.hash(runtimeType, id, name, bank, accountNumber, isFavorite);
+  int get hashCode => Object.hash(runtimeType, id, name, address, isFavorite);
 
   /// Create a copy of Beneficiary
   /// with the given fields replaced by the non-null parameter values.
@@ -235,8 +206,7 @@ abstract class _Beneficiary implements Beneficiary {
   const factory _Beneficiary({
     required final String id,
     required final String name,
-    required final String bank,
-    required final String accountNumber,
+    required final String address,
     final bool isFavorite,
   }) = _$BeneficiaryImpl;
 
@@ -248,9 +218,7 @@ abstract class _Beneficiary implements Beneficiary {
   @override
   String get name;
   @override
-  String get bank;
-  @override
-  String get accountNumber;
+  String get address;
   @override
   bool get isFavorite;
 

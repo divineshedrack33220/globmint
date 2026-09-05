@@ -1,32 +1,56 @@
 package httpapi
 
 import (
+	"net"
 	"net/http"
-	"strings"
 	"time"
 
 	"globmint/backend/internal/httpapi/middleware"
 )
 
-// NewHandler builds the full HTTP handler, applying middleware and registering routes.
-func NewHandler(deps *Deps, auth middleware.Authenticator) http.Handler {
+// clientIPKey keys the rate limiter by client IP (without the ephemeral port)
+// so burst accounting actually applies across requests from one browser.
+func clientIPKey(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil {
+		return host
+	}
+	return r.RemoteAddr
+}
+
+// NewHandler builds the full HTTP handler, applying middleware and registering
+// routes. corsOrigins is the explicit browser-origin allowlist (empty = open).
+func NewHandler(deps *Deps, auth middleware.Authenticator, corsOrigins []string) http.Handler {
 	mux := http.NewServeMux()
 
 	// Public
 	mux.HandleFunc("GET /health", deps.handleHealth)
 	mux.HandleFunc("GET /live", deps.handleHealth)     // liveness probe
 	mux.HandleFunc("GET /ready", deps.handleReady)     // readiness probe
+	mux.HandleFunc("GET /metrics", deps.handleMetrics)
 
 	// API v1 routes
 	api := "/api/v1"
 
-	// Auth
-	mux.HandleFunc(api+"/auth/register", deps.handleRegister)
-	mux.HandleFunc(api+"/auth/login", deps.handleLogin)
+	// Auth (rate-limited to slow brute force)
+	mux.Handle("POST "+api+"/auth/register", middleware.RateLimiter(http.HandlerFunc(deps.handleRegister), time.Second, 5, clientIPKey))
+	mux.Handle("POST "+api+"/auth/login", middleware.RateLimiter(http.HandlerFunc(deps.handleLogin), time.Second, 5, clientIPKey))
+	mux.Handle("POST "+api+"/auth/2fa/verify", middleware.RateLimiter(http.HandlerFunc(deps.handleVerify2FA), time.Second, 5, clientIPKey))
 
 	// Authenticated
 	mux.Handle("POST "+api+"/auth/logout", middleware.Auth(auth, http.HandlerFunc(deps.handleLogout)))
+	mux.Handle("POST "+api+"/auth/password", middleware.Auth(auth, http.HandlerFunc(deps.handleChangePassword)))
+	mux.Handle("GET "+api+"/auth/totp/setup", middleware.Auth(auth, http.HandlerFunc(deps.handleGenerateTOTP)))
+	mux.Handle("POST "+api+"/auth/totp/enable", middleware.Auth(auth, http.HandlerFunc(deps.handleEnableTOTP)))
+	mux.Handle("POST "+api+"/auth/totp/disable", middleware.Auth(auth, http.HandlerFunc(deps.handleDisableTOTP)))
 	mux.Handle("GET "+api+"/users/me", middleware.Auth(auth, http.HandlerFunc(deps.handleMe)))
+	mux.Handle("POST "+api+"/pin/verify", middleware.RateLimiter(
+		middleware.Auth(auth, http.HandlerFunc(deps.handleVerifyPin)),
+		time.Second,
+		5,
+		clientIPKey,
+	))
+	mux.Handle("PUT "+api+"/pin", middleware.Auth(auth, http.HandlerFunc(deps.handleSetPin)))
 	mux.Handle("GET "+api+"/balances", middleware.Auth(auth, http.HandlerFunc(deps.handleListBalances)))
 	mux.Handle("GET "+api+"/transactions", middleware.Auth(auth, http.HandlerFunc(deps.handleListTransactions)))
 
@@ -35,25 +59,25 @@ func NewHandler(deps *Deps, auth middleware.Authenticator) http.Handler {
 		middleware.Auth(auth, middleware.Idempotency(http.HandlerFunc(deps.handleDeposit))),
 		time.Second,
 		20,
-		func(r *http.Request) string { return strings.TrimSpace(r.RemoteAddr) },
+		clientIPKey,
 	))
 	mux.Handle("POST "+api+"/money/withdraw", middleware.RateLimiter(
 		middleware.Auth(auth, middleware.Idempotency(http.HandlerFunc(deps.handleWithdraw))),
 		time.Second,
 		20,
-		func(r *http.Request) string { return strings.TrimSpace(r.RemoteAddr) },
+		clientIPKey,
 	))
 	mux.Handle("POST "+api+"/money/transfer", middleware.RateLimiter(
 		middleware.Auth(auth, middleware.Idempotency(http.HandlerFunc(deps.handleTransfer))),
 		time.Second,
 		20,
-		func(r *http.Request) string { return strings.TrimSpace(r.RemoteAddr) },
+		clientIPKey,
 	))
 	mux.Handle("POST "+api+"/money/convert", middleware.RateLimiter(
 		middleware.Auth(auth, middleware.Idempotency(http.HandlerFunc(deps.handleConvert))),
 		time.Second,
 		20,
-		func(r *http.Request) string { return strings.TrimSpace(r.RemoteAddr) },
+		clientIPKey,
 	))
 
 	// Conversions (quotes are read-only, no idempotency needed)
@@ -65,7 +89,7 @@ func NewHandler(deps *Deps, auth middleware.Authenticator) http.Handler {
 	mux.Handle("PATCH "+api+"/beneficiaries/{id}", middleware.Auth(auth, http.HandlerFunc(deps.handleUpdateBeneficiary)))
 	mux.Handle("POST "+api+"/beneficiaries/{id}/favorite", middleware.Auth(auth, http.HandlerFunc(deps.handleToggleBeneficiaryFavorite)))
 	mux.Handle("DELETE "+api+"/beneficiaries/{id}", middleware.Auth(auth, http.HandlerFunc(deps.handleDeleteBeneficiary)))
-	mux.Handle("GET "+api+"/beneficiaries/account/{account_number}", middleware.Auth(auth, http.HandlerFunc(deps.handleResolveAccount)))
+	mux.Handle("GET "+api+"/beneficiaries/address/{address}", middleware.Auth(auth, http.HandlerFunc(deps.handleResolveAccount)))
 
 	// Bank accounts
 	mux.Handle("GET "+api+"/bank-accounts", middleware.Auth(auth, http.HandlerFunc(deps.handleListBankAccounts)))
@@ -76,11 +100,12 @@ func NewHandler(deps *Deps, auth middleware.Authenticator) http.Handler {
 	// Savings (non-custodial on-chain vault)
 	mux.Handle("GET "+api+"/savings/deposit-info", middleware.Auth(auth, http.HandlerFunc(deps.handleGetDepositInfo)))
 	mux.Handle("PUT "+api+"/savings/deposit-address", middleware.Auth(auth, http.HandlerFunc(deps.handleSetDepositAddress)))
+mux.Handle("GET "+api+"/savings/vault-status", middleware.Auth(auth, http.HandlerFunc(deps.handleVaultStatus)))
 	mux.Handle("POST "+api+"/savings/withdraw", middleware.RateLimiter(
 		middleware.Auth(auth, middleware.Idempotency(http.HandlerFunc(deps.handleVaultWithdraw))),
 		time.Second,
 		20,
-		func(r *http.Request) string { return strings.TrimSpace(r.RemoteAddr) },
+		clientIPKey,
 	))
 
 	// Devices (active sessions)
@@ -94,7 +119,7 @@ func NewHandler(deps *Deps, auth middleware.Authenticator) http.Handler {
 	mux.Handle("POST "+api+"/notifications/read-all", middleware.Auth(auth, http.HandlerFunc(deps.handleMarkAllNotificationsRead)))
 	mux.Handle("POST "+api+"/notifications/{id}/read", middleware.Auth(auth, http.HandlerFunc(deps.handleMarkNotificationRead)))
 
-	return middleware.Origin("*")(middleware.Logging(middleware.RequestID(mux)))
+	return middleware.Origin(corsOrigins)(middleware.Logging(middleware.RequestID(mux)))
 }
 
 func (d *Deps) handleHealth(w http.ResponseWriter, r *http.Request) {

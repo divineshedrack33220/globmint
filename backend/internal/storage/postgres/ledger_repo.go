@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"globmint/backend/internal/domain"
 	"globmint/backend/internal/storage"
@@ -99,6 +100,21 @@ func (r *ledgerRepo) SumBalanceByAccount(ctx context.Context, accountID string) 
 	err := r.q.QueryRow(ctx, `
 		SELECT COALESCE(SUM(CASE WHEN movement = 'credit' THEN amount_minor ELSE -amount_minor END), 0)
 		FROM ledger_entries WHERE account_id = $1::uuid`, accountID).Scan(&sum)
+	return sum, mapPgErr(err)
+}
+
+// SumWithdrawalsSince returns the total amount_minor of the user's withdrawal
+// transactions created at or after `since` (used for daily spending caps).
+func (r *ledgerRepo) SumWithdrawalsSince(ctx context.Context, userID string, since time.Time) (int64, error) {
+	var sum int64
+	err := r.q.QueryRow(ctx, `
+		SELECT COALESCE(SUM(amount_minor), 0)
+		FROM transactions
+		WHERE user_id = $1::uuid
+		  AND type = 'withdrawal'
+		  AND status <> 'failed'
+		  AND status <> 'cancelled'
+		  AND created_at >= $2`, userID, since).Scan(&sum)
 	return sum, mapPgErr(err)
 }
 

@@ -8,23 +8,46 @@ import '../../../../core/widgets/app_button.dart';
 import '../../../../core/widgets/app_text_field.dart';
 
 class WithdrawPage extends ConsumerStatefulWidget {
-  const WithdrawPage({super.key});
+  const WithdrawPage({super.key, this.initialAddress});
+
+  final String? initialAddress;
 
   @override
   ConsumerState<WithdrawPage> createState() => _WithdrawPageState();
 }
+
+class _WithdrawNetwork {
+  const _WithdrawNetwork({
+    required this.name,
+    required this.code,
+    required this.available,
+  });
+
+  final String name;
+  final String code;
+  final bool available;
+}
+
+const _networks = <_WithdrawNetwork>[
+  _WithdrawNetwork(name: 'Ethereum (Sepolia)', code: 'ERC-20', available: true),
+  _WithdrawNetwork(name: 'BSC (BEP-20)', code: 'BEP-20', available: false),
+  _WithdrawNetwork(name: 'Tron (TRC-20)', code: 'TRC-20', available: false),
+];
 
 class _WithdrawPageState extends ConsumerState<WithdrawPage> {
   final _formKey = GlobalKey<FormState>();
   final _amountController = TextEditingController();
   final _addressController = TextEditingController();
   bool _loading = false;
+  _WithdrawNetwork _network = _networks.first;
 
   double? _usdcEstimate;
 
   @override
   void initState() {
     super.initState();
+    final initial = widget.initialAddress?.trim() ?? '';
+    if (initial.isNotEmpty) _addressController.text = initial;
     _amountController.addListener(_updateQuote);
   }
 
@@ -55,6 +78,13 @@ class _WithdrawPageState extends ConsumerState<WithdrawPage> {
   }
 
   Future<void> _continue() async {
+    if (!_network.available) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('This network is coming soon. Use Ethereum (Sepolia) for now.')),
+      );
+      return;
+    }
     if (!_formKey.currentState!.validate()) return;
     final amount = double.parse(_amountController.text.replaceAll(',', ''));
     final address = _addressController.text.trim();
@@ -71,6 +101,7 @@ class _WithdrawPageState extends ConsumerState<WithdrawPage> {
       context.push('/savings/withdraw-review', extra: {
         'amount': amount,
         'destination': address,
+        'network': _network.name,
       });
     }
   }
@@ -109,10 +140,29 @@ class _WithdrawPageState extends ConsumerState<WithdrawPage> {
                   ),
                 ],
                 const SizedBox(height: 20),
+                Text('Withdrawal network', style: context.typography.title),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final n in _networks)
+                      _NetworkOption(
+                        network: n,
+                        isSelected: _network.code == n.code,
+                        onTap: n.available
+                            ? () => setState(() => _network = n)
+                            : null,
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 20),
                 Text('Destination crypto address', style: context.typography.title),
                 const SizedBox(height: 6),
                 Text(
-                  'USDC will be sent here on-chain from your vault.',
+                  _network.available
+                      ? 'USDC will be sent here on-chain from your vault.'
+                      : 'This network is not available yet.',
                   style: context.typography.bodySmall,
                 ),
                 const SizedBox(height: 12),
@@ -122,11 +172,11 @@ class _WithdrawPageState extends ConsumerState<WithdrawPage> {
                   validator: (v) {
                     final value = v?.trim() ?? '';
                     if (value.isEmpty) return 'Enter a destination address';
-                    if (!_looksLikeAddress(value)) return 'Enter a valid address (0x…)';
+                    if (value.contains(RegExp(r'\s'))) return 'Address must not contain spaces';
                     return null;
                   },
                   decoration: InputDecoration(
-                    hintText: '0x…',
+                    hintText: 'Paste any crypto address…',
                     border:
                         OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                     filled: true,
@@ -148,12 +198,57 @@ class _WithdrawPageState extends ConsumerState<WithdrawPage> {
       ),
     );
   }
+}
 
-  bool _looksLikeAddress(String value) {
-    final trimmed = value.trim();
-    if (trimmed.length != 42) return false;
-    if (!trimmed.startsWith('0x') && !trimmed.startsWith('0X')) return false;
-    final hex = trimmed.substring(2);
-    return RegExp(r'^[0-9a-fA-F]{40}$').hasMatch(hex);
+class _NetworkOption extends StatelessWidget {
+  const _NetworkOption({
+    required this.network,
+    required this.isSelected,
+    this.onTap,
+  });
+
+  final _WithdrawNetwork network;
+  final bool isSelected;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = isSelected ? AppColors.primary : AppColors.textSecondary;
+    final enabled = onTap != null;
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          color: isSelected ? AppColors.primaryMuted : AppColors.surface,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: isSelected ? AppColors.primary : AppColors.border,
+            width: 1,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              network.name,
+              style: context.typography.labelMedium.copyWith(
+                color: enabled ? color : AppColors.textDisabled,
+              ),
+            ),
+            if (!enabled) ...[
+              const SizedBox(width: 8),
+              Text(
+                'Coming soon',
+                style: context.typography.labelSmall.copyWith(
+                  color: AppColors.textDisabled,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
   }
 }

@@ -76,13 +76,8 @@ class ProfilePage extends ConsumerWidget {
                     onTap: () => context.push('/profile/personal-info'),
                   ),
                   _SettingsTile(
-                    icon: Icons.credit_card,
-                    title: 'Bank Accounts',
-                    onTap: () => context.push('/profile/bank-accounts'),
-                  ),
-                  _SettingsTile(
-                    icon: Icons.people_outline,
-                    title: 'Beneficiaries',
+                    icon: Icons.bookmark_outline,
+                    title: 'Saved Addresses',
                     onTap: () => context.push('/profile/beneficiaries'),
                   ),
                 ],

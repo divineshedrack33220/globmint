@@ -19,12 +19,16 @@ class _LoginPageState extends ConsumerState<LoginPage> {
   final _formKey = GlobalKey<FormState>();
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
+  final _codeController = TextEditingController();
   bool _isLoading = false;
+  bool _needsTwoFactor = false;
+  String _challengeToken = '';
 
   @override
   void dispose() {
     _emailController.dispose();
     _passwordController.dispose();
+    _codeController.dispose();
     super.dispose();
   }
 
@@ -32,9 +36,47 @@ class _LoginPageState extends ConsumerState<LoginPage> {
     if (!_formKey.currentState!.validate()) return;
     setState(() => _isLoading = true);
     try {
-      await ref.read(authServiceProvider).login(
+      final result = await ref.read(authServiceProvider).login(
             _emailController.text.trim(),
             _passwordController.text,
+          );
+      if (!mounted) return;
+      if (result.requiresTwoFactor) {
+        setState(() {
+          _needsTwoFactor = true;
+          _challengeToken = result.challengeToken;
+          _isLoading = false;
+        });
+        return;
+      }
+      context.go('/home');
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() => _isLoading = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.message)),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isLoading = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: $e')),
+      );
+    }
+  }
+
+  Future<void> _handleCode() async {
+    if (_codeController.text.trim().length != 6) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Enter the 6-digit code from your authenticator app.')),
+      );
+      return;
+    }
+    setState(() => _isLoading = true);
+    try {
+      await ref.read(authServiceProvider).verifyTwoFactor(
+            _challengeToken,
+            _codeController.text.trim(),
           );
       if (!mounted) return;
       context.go('/home');
@@ -77,51 +119,70 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                 Text('Welcome back', style: context.typography.display),
                 const SizedBox(height: 8),
                 Text(
-                  'Sign in to access your savings',
+                  _needsTwoFactor ? 'Confirm it\'s you' : 'Sign in to access your savings',
                   style: context.typography.bodyMedium,
                 ),
                 const SizedBox(height: 40),
-                AppTextField(
-                  label: 'Email address',
-                  hint: 'emeka@example.com',
-                  controller: _emailController,
-                  keyboardType: TextInputType.emailAddress,
-                  validator: (v) {
-                    if (v == null || v.isEmpty) return 'Email is required';
-                    if (!v.contains('@')) return 'Enter a valid email';
-                    return null;
-                  },
-                  textInputAction: TextInputAction.next,
-                ),
-                const SizedBox(height: 20),
-                PasswordTextField(
-                  label: 'Password',
-                  hint: 'Enter your password',
-                  controller: _passwordController,
-                  validator: (v) {
-                    if (v == null || v.isEmpty) return 'Password is required';
-                    if (v.length < 6) return 'Password must be at least 6 characters';
-                    return null;
-                  },
-                  textInputAction: TextInputAction.done,
-                ),
-                const SizedBox(height: 12),
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: TextButton(
-                    onPressed: () => context.push('/forgot-password'),
-                    child: Text(
-                      'Forgot password?',
-                      style: context.typography.labelMedium.copyWith(
-                        color: AppColors.primary,
+                if (!_needsTwoFactor) ...[
+                  AppTextField(
+                    label: 'Email address',
+                    hint: 'emeka@example.com',
+                    controller: _emailController,
+                    keyboardType: TextInputType.emailAddress,
+                    validator: (v) {
+                      if (v == null || v.isEmpty) return 'Email is required';
+                      if (!v.contains('@')) return 'Enter a valid email';
+                      return null;
+                    },
+                    textInputAction: TextInputAction.next,
+                  ),
+                  const SizedBox(height: 20),
+                  PasswordTextField(
+                    label: 'Password',
+                    hint: 'Enter your password',
+                    controller: _passwordController,
+                    validator: (v) {
+                      if (v == null || v.isEmpty) return 'Password is required';
+                      if (v.length < 6) return 'Password must be at least 6 characters';
+                      return null;
+                    },
+                    textInputAction: TextInputAction.done,
+                  ),
+                  const SizedBox(height: 12),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton(
+                      onPressed: () => context.push('/forgot-password'),
+                      child: Text(
+                        'Forgot password?',
+                        style: context.typography.labelMedium.copyWith(
+                          color: AppColors.primary,
+                        ),
                       ),
                     ),
                   ),
-                ),
+                ] else ...[
+                  AppTextField(
+                    label: 'Authenticator code',
+                    hint: '6-digit code',
+                    controller: _codeController,
+                    keyboardType: TextInputType.number,
+                    textInputAction: TextInputAction.done,
+                    validator: (v) {
+                      if (v == null || v.length != 6) return 'Enter the 6-digit code';
+                      return null;
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    'Enter the one-time code from your authenticator app (e.g. Google Authenticator).',
+                    style: context.typography.labelMedium,
+                  ),
+                ],
                 const SizedBox(height: 32),
                 AppButton(
-                  text: 'Sign In',
-                  onPressed: _handleLogin,
+                  text: _needsTwoFactor ? 'Verify & Sign In' : 'Sign In',
+                  onPressed: _needsTwoFactor ? _handleCode : _handleLogin,
                   isLoading: _isLoading,
                   isExpanded: true,
                 ),
