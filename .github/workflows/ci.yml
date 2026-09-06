@@ -45,7 +45,7 @@ jobs:
         env:
           GLOBMINT_TEST_DATABASE_URL: postgres://globmint:globmint_dev@127.0.0.1:5434/globmint
         run: go run ./cmd/loadtest -users 8 -duration 4s -max-p95 100ms
-      - name: Load test (chaos: 20% failures + 800ms latency)
+      - name: "Load test (chaos: 20% failures + 800ms latency)"
         working-directory: backend
         env:
           GLOBMINT_TEST_DATABASE_URL: postgres://globmint:globmint_dev@127.0.0.1:5434/globmint
