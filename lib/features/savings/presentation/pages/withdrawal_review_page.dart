@@ -138,10 +138,6 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
     final destination = widget.destination?.trim() ?? '';
     final fee = _withdrawalFee(a);
 
-    final availableAfter = ref.watch(accountSummaryProvider).whenOrNull(
-          data: (s) => s.available.balance - a - fee,
-        );
-
     final network = widget.network?.isNotEmpty == true
         ? widget.network!
         : ref
@@ -203,12 +199,6 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
               ),
               const SizedBox(height: 8),
               const Divider(color: AppColors.divider),
-              const SizedBox(height: 8),
-              _ReviewRow(
-                label: 'Available after',
-                value:
-                    availableAfter != null ? CurrencyFormatter.ngn(availableAfter) : '—',
-              ),
               const SizedBox(height: 8),
               _ReviewRow(
                 label: 'Sent on',

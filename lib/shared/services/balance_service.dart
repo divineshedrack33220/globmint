@@ -10,9 +10,9 @@ class BalanceService {
   final ApiClient _api;
 
   /// Fetches the authenticated user's account balances and derives an
-  /// [AccountSummary]. The savings figure is driven by the on-chain vault
-  /// USDC holdings so it stays consistent everywhere in the app; the exchange
-  /// rate snapshot falls back to the current market rate placeholder.
+  /// [AccountSummary]. All figures are personal ledger balances for this user:
+  /// the shared on-chain vault pool is never merged into anyone's totals (it
+  /// is shown only as labelled on-chain info where relevant).
   Future<AccountSummary> getAccountSummary() async {
     final data = await _api.get('${AppConstants.apiV1Prefix}/balances');
     final list = ((data?['balances'] as List?) ?? const [])
@@ -21,6 +21,7 @@ class BalanceService {
 
     Account? available;
     Account? fallback;
+    Account? savings;
     for (final raw in list) {
       final id = raw['account_id'] as String? ?? '';
       final currency = (raw['currency'] as String? ?? 'NGN').toUpperCase();
@@ -33,45 +34,46 @@ class BalanceService {
       final balance = amountMajor > 0 ? amountMajor : amountMinor / 100;
 
       final kind = (raw['kind'] as String? ?? '').toLowerCase();
-      if (!kind.contains('sav') && currency != AppConstants.savingsCurrency) {
+      if (kind.contains('sav')) {
+        // The user's own savings wallet (ledger). Never replaced with the
+        // shared on-chain pool: personal totals must mirror personal funds.
+        savings ??= Account(id: id, currency: currency, balance: balance);
+        continue;
+      }
+      if (currency != AppConstants.savingsCurrency) {
         fallback ??= Account(id: id, currency: currency, balance: balance);
         // Prefer the NGN available wallet; the API contract lists NGN first,
         // but we must not rely on ordering.
         if (currency == 'NGN') {
-          available = Account(id: id, currency: currency, balance: balance);
-          break;
+          available ??= Account(id: id, currency: currency, balance: balance);
         }
       }
     }
     available ??= fallback ?? Account(id: '', currency: 'NGN', balance: 0);
+    savings ??= Account(id: '', currency: 'NGN', balance: 0);
 
-    final currentRate = _defaultRate();
-    final vaultUsdc = await _vaultUsdcBalance();
-
-    final savings =
-        Account(id: '', currency: AppConstants.savingsCurrency, balance: vaultUsdc);
+    final currentRate = await _liveRate();
+    final totalNgn = available.balance + savings.balance;
 
     return AccountSummary(
       savings: savings,
       available: available,
-      totalNgnEquivalent: available.balance,
-      totalUsdtEquivalent: vaultUsdc,
+      totalNgnEquivalent: totalNgn,
+      totalUsdtEquivalent: currentRate > 0 ? totalNgn / currentRate : 0,
       currentRate: currentRate,
     );
   }
 
-  /// Reads the on-chain vault USDC holdings from the vault-status endpoint and
-  /// returns the numeric part; `0` when unavailable or errored.
-  Future<double> _vaultUsdcBalance() async {
+  /// Live NGN-per-USDC rate from the server book (market feed when reachable,
+  /// seeded otherwise). Falls back to the last-known default when offline.
+  Future<double> _liveRate() async {
     try {
-      final status = await _api.get('${AppConstants.apiV1Prefix}/savings/vault-status');
-      final raw = status?['vault_usdc_balance'] as String? ?? '';
-      final match = RegExp(r'^\s*([\d.]+)').firstMatch(raw);
-      if (match == null || match.group(1) == null) return 0;
-      return double.tryParse(match.group(1)!) ?? 0;
-    } catch (_) {
-      return 0;
-    }
+      final data = await _api
+          .get('${AppConstants.apiV1Prefix}/money/rate?from=USDC&to=NGN');
+      final minor = (data?['rate_minor'] as num?)?.toDouble() ?? 0;
+      if (minor > 0) return minor / 100;
+    } catch (_) {}
+    return _defaultRate();
   }
 
   double _defaultRate() => 1604.50;

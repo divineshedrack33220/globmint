@@ -13,100 +13,114 @@ void main() {
   setUp(() {
     SharedPreferences.setMockInitialValues({});
   });
-  BalanceService serviceWith({
-    required Map<String, dynamic> balances,
-    Map<String, dynamic>? vaultStatus,
-  }) {
+  BalanceService serviceWithRate(
+      {required List<Map<String, dynamic>> balances, int? rateMinor}) {
     final mock = MockClient((request) async {
-      final path = request.url.path;
-      final Object body;
-      if (path == '/api/v1/balances') {
-        body = {'balances': balances['balances']};
-      } else if (path == '/api/v1/savings/vault-status') {
-        body = vaultStatus!;
-      } else {
-        return http.Response('not found', 404);
+      if (request.url.path == '/api/v1/balances') {
+        return http.Response(jsonEncode({'balances': balances}), 200,
+            headers: {'content-type': 'application/json'});
       }
-      return http.Response(jsonEncode(body), 200,
-          headers: {'content-type': 'application/json'});
+      if (request.url.path == '/api/v1/money/rate' && rateMinor != null) {
+        return http.Response(jsonEncode({'rate_minor': rateMinor}), 200,
+            headers: {'content-type': 'application/json'});
+      }
+      return http.Response('not found', 404);
     });
     return BalanceService(ApiClient(httpClient: mock, baseUrl: 'http://x'));
   }
 
-  test('maps balances and the on-chain vault into an account summary', () async {
-    final svc = serviceWith(
-      balances: {
-        'balances': [
-          {
-            'account_id': 'acc-ngn',
-            'currency': 'NGN',
-            'amount': '25000.00',
-            'amount_minor': 2500000,
-            'kind': 'available',
-          },
-          {
-            'account_id': 'acc-usdt',
-            'currency': 'USDT',
-            'amount': '0',
-            'amount_minor': 0,
-            'kind': 'savings',
-          },
-        ],
+  BalanceService serviceWith({required List<Map<String, dynamic>> balances}) {
+    return serviceWithRate(balances: balances, rateMinor: null);
+  }
+
+  test('maps personal ledger rows into available + savings totals', () async {
+    final svc = serviceWith(balances: [
+      {
+        'account_id': 'acc-ngn',
+        'currency': 'NGN',
+        'amount': '25000.00',
+        'amount_minor': 2500000,
+        'kind': 'available',
       },
-      vaultStatus: {'vault_usdc_balance': '8.500000 USDC'},
-    );
+      {
+        'account_id': 'acc-sav',
+        'currency': 'NGN',
+        'amount': '5000.00',
+        'amount_minor': 500000,
+        'kind': 'savings',
+      },
+    ]);
 
     final summary = await svc.getAccountSummary();
 
     expect(summary.available.currency, 'NGN');
     expect(summary.available.balance, 25000.0);
-    expect(summary.savings.currency, 'USDT');
-    expect(summary.savings.balance, 8.5);
-    expect(summary.totalNgnEquivalent, 25000.0);
-    expect(summary.totalUsdtEquivalent, 8.5);
+    expect(summary.savings.balance, 5000.0);
+    expect(summary.totalNgnEquivalent, 30000.0);
+    expect(summary.totalUsdtEquivalent, closeTo(30000.0 / 1604.5, 1e-9));
   });
 
-  test('falls back to zero vault when vault-status is missing', () async {
-    final svc = serviceWith(
-      balances: {
-        'balances': [
-          {
-            'account_id': 'acc-ngn',
-            'currency': 'NGN',
-            'amount': '10.00',
-            'amount_minor': 1000,
-            'kind': 'available',
-          },
-        ],
+  test('empty account summarizes to zero with no vault dependence', () async {
+    // The vault-status endpoint is unreachable here (404): personal totals
+    // must not depend on any on-chain figure.
+    final svc = serviceWith(balances: [
+      {
+        'account_id': 'acc-ngn',
+        'currency': 'NGN',
+        'amount': '0.00',
+        'amount_minor': 0,
+        'kind': 'available',
       },
-      vaultStatus: {},
-    );
+      {
+        'account_id': 'acc-sav',
+        'currency': 'NGN',
+        'amount': '0.00',
+        'amount_minor': 0,
+        'kind': 'savings',
+      },
+    ]);
 
     final summary = await svc.getAccountSummary();
 
+    expect(summary.available.balance, 0);
     expect(summary.savings.balance, 0);
-    expect(summary.totalNgnEquivalent, 10.0);
+    expect(summary.totalNgnEquivalent, 0);
+    expect(summary.totalUsdtEquivalent, 0);
   });
 
-  test('tolerates a failing vault-status call', () async {
-    final svc = serviceWith(
-      balances: {
-        'balances': [
-          {
-            'account_id': 'acc-ngn',
-            'currency': 'NGN',
-            'amount': '5.00',
-            'amount_minor': 500,
-            'kind': 'available',
-          },
-        ],
+  test('falls back to minor units when the major amount is missing', () async {
+    final svc = serviceWith(balances: [
+      {
+        'account_id': 'acc-ngn',
+        'currency': 'NGN',
+        'amount_minor': 500,
+        'kind': 'available',
       },
-      vaultStatus: {'error': 'boom'},
-    );
+    ]);
 
     final summary = await svc.getAccountSummary();
 
-    expect(summary.savings.balance, 0);
     expect(summary.available.balance, 5.0);
+    expect(summary.savings.balance, 0);
+    expect(summary.totalNgnEquivalent, 5.0);
+  });
+
+  test('uses the live server rate when the feed-backed endpoint answers',
+      () async {
+    final svc = serviceWithRate(balances: [
+      {
+        'account_id': 'acc-ngn',
+        'currency': 'NGN',
+        'amount': '1000.00',
+        'amount_minor': 100000,
+        'kind': 'available',
+      },
+    ], rateMinor: 170000);
+
+    final summary = await svc.getAccountSummary();
+
+    expect(summary.currentRate, 1700.0);
+    expect(summary.totalNgnEquivalent, 1000.0);
+    expect(summary.totalUsdtEquivalent, closeTo(1000.0 / 1700.0, 1e-9));
   });
 }

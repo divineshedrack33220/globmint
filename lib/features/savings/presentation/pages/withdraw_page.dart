@@ -50,14 +50,32 @@ class _WithdrawPageState extends ConsumerState<WithdrawPage> {
     final initial = widget.initialAddress?.trim() ?? '';
     if (initial.isNotEmpty) _addressController.text = initial;
     _amountController.addListener(_updateQuote);
+    _addressController.addListener(_onAddressChanged);
   }
 
   @override
   void dispose() {
     _amountController.removeListener(_updateQuote);
+    _addressController.removeListener(_onAddressChanged);
     _amountController.dispose();
     _addressController.dispose();
     super.dispose();
+  }
+
+  void _onAddressChanged() {
+    if (mounted) setState(() {});
+  }
+
+  /// True when the destination is the vault's own address or contract: funds
+  /// would loop back into the vault while still costing the user. The server
+  /// rejects this too; this check warns before submission.
+  bool _isSelfSend(String address) {
+    final lower = address.trim().toLowerCase();
+    if (lower.isEmpty) return false;
+    final info = ref.read(depositInfoProvider).valueOrNull;
+    if (lower == (info?.address ?? '').toLowerCase()) return true;
+    final contract = (info?.vaultContract ?? '').toLowerCase();
+    return contract.isNotEmpty && lower == contract;
   }
 
   void _updateQuote() {
@@ -95,6 +113,14 @@ class _WithdrawPageState extends ConsumerState<WithdrawPage> {
       );
       return;
     }
+    if (_isSelfSend(address)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text(
+                'That is your vault\u2019s own address — funds would go in a circle. Use an external wallet address.')),
+      );
+      return;
+    }
     setState(() => _loading = true);
     await Future.delayed(const Duration(milliseconds: 300));
     if (mounted) {
@@ -109,6 +135,13 @@ class _WithdrawPageState extends ConsumerState<WithdrawPage> {
 
   @override
   Widget build(BuildContext context) {
+    final depositInfo = ref.watch(depositInfoProvider).valueOrNull;
+    final vaultAddress = (depositInfo?.address ?? '').toLowerCase();
+    final vaultContract = (depositInfo?.vaultContract ?? '').toLowerCase();
+    final entered = _addressController.text.trim().toLowerCase();
+    final isSelfSend = entered.isNotEmpty &&
+        (entered == vaultAddress || (vaultContract.isNotEmpty && entered == vaultContract));
+
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(title: const Text('Withdraw')),
@@ -184,6 +217,24 @@ class _WithdrawPageState extends ConsumerState<WithdrawPage> {
                     fillColor: AppColors.surface,
                   ),
                 ),
+                if (isSelfSend) ...[
+                  const SizedBox(height: 8),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Icon(Icons.warning_amber_outlined,
+                          color: Colors.orange, size: 16),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          'That is your vault\u2019s own address — funds would go in a circle and you would still be charged. Use an external wallet address.',
+                          style: context.typography.bodySmall.copyWith(
+                              color: Colors.orange),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
                 const SizedBox(height: 24),
                 const StablecoinRiskDisclosure(),
                 const SizedBox(height: 32),

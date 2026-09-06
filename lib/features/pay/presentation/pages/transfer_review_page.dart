@@ -7,7 +7,6 @@ import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/utils/formatters.dart';
 import '../../../../core/widgets/app_button.dart';
 import '../../../../core/widgets/app_confirmation_modal.dart';
-import '../../../../shared/models/account.dart';
 
 class TransferReviewPage extends ConsumerStatefulWidget {
   const TransferReviewPage({
@@ -81,8 +80,6 @@ class _TransferReviewPageState extends ConsumerState<TransferReviewPage> {
   Widget build(BuildContext context) {
     final a = widget.amount ?? 0;
     final fee = 0.0;
-    final available = ref.watch(accountSummaryProvider).valueOrNull?.available ??
-        const Account(id: '', currency: 'NGN', balance: 0);
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -151,10 +148,6 @@ class _TransferReviewPageState extends ConsumerState<TransferReviewPage> {
                 _ReviewRow(label: 'Note', value: widget.note!),
               ],
               const Divider(color: AppColors.divider, height: 24),
-              _ReviewRow(
-                label: 'Available after',
-                value: CurrencyFormatter.ngn(available.balance - (a + fee)),
-              ),
               const SizedBox(height: 32),
               AppButton(
                 text: 'Send Transfer',

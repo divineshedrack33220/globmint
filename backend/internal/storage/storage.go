@@ -75,6 +75,9 @@ type BankAccountRepository interface {
 // ExchangeRateRepository persists currency conversion rates.
 type ExchangeRateRepository interface {
 	FindByPair(ctx context.Context, base, quote string) (*domain.ExchangeRate, error)
+	// UpdateRate sets rate_minor for an active pair (used by the market-rate
+	// refresher). Returns ErrNotFound when the pair does not exist.
+	UpdateRate(ctx context.Context, base, quote string, rateMinor int64) error
 }
 
 // DepositAddressRepository persists the on-chain deposit address a user links

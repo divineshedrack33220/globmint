@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"log"
 	"net/http"
 
 	"globmint/backend/internal/domain"
@@ -105,9 +106,10 @@ func (d *Deps) handleVaultStatus(w http.ResponseWriter, r *http.Request) {
 	if berr == nil {
 		vaultUsdc = bal
 	} else {
-		// Fall back to the seeded demo balance when the chain is unreachable
-		// (mock mode / no Alchemy key configured).
-		vaultUsdc = "108.000000"
+		// Never invent funds: when the chain is unreachable the honest answer
+		// is zero confirmed holdings, not a demo balance. Clients treat the
+		// vault figure as informational; the personal ledger is authoritative.
+		log.Printf("vault-status: chain balance unavailable, reporting zero: %v", berr)
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"vault_usdc_balance": vaultUsdc,

@@ -1,15 +1,21 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../../../app/providers.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/theme_extensions.dart';
+import '../../../../core/utils/countdown.dart';
 import '../../../../core/utils/formatters.dart';
 import '../../../../shared/models/account.dart';
 import '../../../../shared/models/models.dart';
+import '../widgets/announcement_slot.dart';
 import '../widgets/balance_card.dart';
+import '../widgets/pending_lock_card.dart';
 import '../widgets/quick_actions_row.dart';
-import '../widgets/savings_summary_card.dart';
+import '../widgets/rate_sparkline_card.dart';
 import '../widgets/recent_transactions_list.dart';
 
 class HomePage extends ConsumerStatefulWidget {
@@ -22,37 +28,110 @@ class HomePage extends ConsumerStatefulWidget {
 class _HomePageState extends ConsumerState<HomePage> {
   // Balance/vault/transaction updates are pushed over SSE via
   // ScaffoldWithNavBar; the dashboard needs no local polling timer.
+  bool _obscured = false;
+  DateTime? _lastUpdated;
+  Timer? _ageTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    // Repaints the "updated … ago" freshness text as it ages.
+    _ageTimer = Timer.periodic(const Duration(seconds: 15), (_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _ageTimer?.cancel();
+    super.dispose();
+  }
+
+  void _stamp() {
+    _lastUpdated = DateTime.now();
+  }
+
+  String get _freshness {
+    final at = _lastUpdated;
+    if (at == null) return '';
+    return formatAge(at);
+  }
+
+  Future<void> _refresh() async {
+    ref.invalidate(accountSummaryProvider);
+    ref.invalidate(vaultStatusProvider);
+    ref.invalidate(transactionsProvider);
+    ref.invalidate(pendingElevationsProvider);
+    ref.invalidate(depositInfoProvider);
+    try {
+      await Future.wait([
+        ref.read(accountSummaryProvider.future),
+        ref.read(vaultStatusProvider.future),
+        ref.read(transactionsProvider.future),
+        ref.read(pendingElevationsProvider.future),
+      ]);
+    } catch (_) {
+      // Individual providers surface their own error states.
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     final summaryAsync = ref.watch(accountSummaryProvider);
     final userAsync = ref.watch(currentUserProvider);
+    // Stamp data arrivals so the hero can show how fresh its figures are.
+    // A silent SSE drop therefore reads as an ageing timestamp, never as
+    // silently frozen numbers.
+    ref.listen(accountSummaryProvider, (_, next) {
+      if (next.hasValue) _stamp();
+    });
+    ref.listen(vaultStatusProvider, (_, next) {
+      if (next.hasValue) _stamp();
+    });
+    final vaultAsync = ref.watch(vaultStatusProvider);
+    final vaultUsdc = vaultAsync.valueOrNull == null
+        ? 0.0
+        : CurrencyFormatter.vaultUsdc(
+            vaultAsync.valueOrNull!.vaultUsdcBalance);
+    final network = vaultAsync.valueOrNull?.network ?? '';
+    final networkMode = vaultAsync.valueOrNull?.mode ?? '';
 
     return Scaffold(
       backgroundColor: AppColors.background,
       body: SafeArea(
-        child: SingleChildScrollView(
+        child: RefreshIndicator(
+          onRefresh: _refresh,
+          child: SingleChildScrollView(
+            physics: const AlwaysScrollableScrollPhysics(),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               // Header
               Padding(
                 padding: const EdgeInsets.fromLTRB(24, 24, 24, 0),
-                child: Column(
+                child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      'Welcome back,',
-                      style: context.typography.bodyMedium,
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      userAsync.maybeWhen(
-                        data: (u) => u.firstName,
-                        orElse: () => '...',
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Welcome back,',
+                            style: context.typography.bodyMedium,
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            userAsync.maybeWhen(
+                              data: (u) => u.firstName,
+                              orElse: () => '...',
+                            ),
+                            style: context.typography.headline,
+                          ),
+                        ],
                       ),
-                      style: context.typography.headline,
                     ),
+                    _NetworkChip(network: network, mode: networkMode),
                   ],
                 ),
               ),
@@ -66,7 +145,7 @@ class _HomePageState extends ConsumerState<HomePage> {
                 error: (e, _) => Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 24),
                   child: BalanceCard(
-                    label: 'TOTAL SAVINGS',
+                    label: 'BALANCE',
                     amount: '₦0.00',
                     subtitle: 'Unable to load balance',
                     isHero: true,
@@ -74,32 +153,77 @@ class _HomePageState extends ConsumerState<HomePage> {
                 ),
                 data: (summary) => Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 24),
-                  child: _BalanceSection(summary: summary),
+                  child: _BalanceSection(
+                    summary: summary,
+                    obscured: _obscured,
+                    freshness: _freshness,
+                    onToggleObscure: () =>
+                        setState(() => _obscured = !_obscured),
+                  ),
                 ),
               ),
               const SizedBox(height: 16),
-              // Available Balance
+              // Live rate reference (not a balance).
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 24),
-                child: _AvailableBalanceCard(summaryAsync: summaryAsync),
+                child: Center(
+                  child: Text(
+                    summaryAsync.maybeWhen(
+                      data: (s) =>
+                          '1 USDC = ${CurrencyFormatter.ngn(s.currentRate)}',
+                      orElse: () => '',
+                    ),
+                    style: context.typography.bodySmall.copyWith(
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                ),
               ),
-              const SizedBox(height: 24),
-              // On-chain vault status
+              const SizedBox(height: 16),
+              // Rate trend.
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: RateSparklineCard(
+                  rate: summaryAsync.valueOrNull?.currentRate ?? 0,
+                ),
+              ),
+              // First-run empty state: vault holds nothing yet.
+              if (vaultUsdc <= 0) ...[
+                const SizedBox(height: 16),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 24),
+                  child: _EmptyVaultCta(
+                    onTopUp: () => context.push('/savings/add-money'),
+                  ),
+                ),
+              ],
+              // Pending time-locks (hidden when none).
+              const SizedBox(height: 16),
               const Padding(
                 padding: EdgeInsets.symmetric(horizontal: 24),
-                child: _VaultStatusCard(),
+                child: PendingLockCard(),
+              ),
+              // Operator announcements (hidden when none).
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 24),
+                child: AnnouncementSlot(),
+              ),
+              // 2FA nudge (hidden once enabled).
+              userAsync.maybeWhen(
+                data: (u) => u.twoFactorEnabled
+                    ? const SizedBox.shrink()
+                    : const Padding(
+                        padding:
+                            EdgeInsets.only(left: 24, right: 24, top: 16),
+                        child: _TwoFactorNudge(),
+                      ),
+                orElse: () => const SizedBox.shrink(),
               ),
               const SizedBox(height: 24),
               // Quick Actions
               const Padding(
                 padding: EdgeInsets.symmetric(horizontal: 24),
                 child: QuickActionsRow(),
-              ),
-              const SizedBox(height: 24),
-              // Savings Summary
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 24),
-                child: SavingsSummaryCard(summaryAsync: summaryAsync),
               ),
               const SizedBox(height: 24),
               // Recent Transactions
@@ -110,89 +234,98 @@ class _HomePageState extends ConsumerState<HomePage> {
               const SizedBox(height: 32),
             ],
           ),
+          ),
         ),
       ),
     );
   }
 }
 
-class _BalanceSection extends ConsumerWidget {
-  const _BalanceSection({required this.summary});
+class _BalanceSection extends StatelessWidget {
+  const _BalanceSection({
+    required this.summary,
+    required this.obscured,
+    required this.freshness,
+    required this.onToggleObscure,
+  });
   final AccountSummary summary;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final vault = ref.watch(vaultStatusProvider).valueOrNull;
-    final vaultUsdc = vault == null ? 0.0 : CurrencyFormatter.vaultUsdc(vault.vaultUsdcBalance);
-    final rate = summary.currentRate;
-    final nairaBase = summary.totalNgnEquivalent;
-    final vaultNgn = vaultUsdc * rate;
-    final totalNgn = nairaBase + vaultNgn;
-
-    return BalanceCard(
-      label: 'TOTAL ASSETS',
-      amount: CurrencyFormatter.ngn(totalNgn),
-      subtitle:
-          '${CurrencyFormatter.ngn(nairaBase)} + on-chain ${_fmtUsdc(vaultUsdc)} vault ≈ ${CurrencyFormatter.ngn(vaultNgn)}',
-      isHero: true,
-    );
-  }
-
-  String _fmtUsdc(double v) =>
-      '${v.toStringAsFixed(v == v.roundToDouble() ? 0 : 2)} USDC';
-}
-
-class _AvailableBalanceCard extends StatelessWidget {
-  const _AvailableBalanceCard({required this.summaryAsync});
-  final AsyncValue<AccountSummary> summaryAsync;
+  final bool obscured;
+  final String freshness;
+  final VoidCallback onToggleObscure;
 
   @override
   Widget build(BuildContext context) {
-    final summary = summaryAsync.valueOrNull;
-    final available = summary?.available;
-    final currentRate = summary?.currentRate ?? 0;
+    // Your own money: the personal ledger total (available + savings),
+    // credited only from confirmed on-chain deposits. Your actions move it.
+    final totalNgn = summary.totalNgnEquivalent;
+    final totalUsdc = summary.totalUsdtEquivalent;
+    final updated =
+        freshness.isEmpty ? '' : ' • updated $freshness';
 
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppColors.border, width: 1),
+    return BalanceCard(
+      label: 'BALANCE',
+      amount: obscured ? '₦••••••' : CurrencyFormatter.ngn(totalNgn),
+      subtitle: obscured
+          ? 'Balance hidden'
+          : '≈ ${CurrencyFormatter.usdt(totalUsdc)} USDC$updated',
+      isHero: true,
+      trailing: IconButton(
+        onPressed: onToggleObscure,
+        icon: Icon(
+          obscured ? Icons.visibility_off_outlined : Icons.visibility_outlined,
+          color: AppColors.textSecondary,
+          size: 20,
+        ),
+        tooltip: obscured ? 'Show balance' : 'Hide balance',
+        visualDensity: VisualDensity.compact,
       ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+    );
+  }
+}
+
+/// First-run empty state: shown only while the vault holds nothing.
+class _EmptyVaultCta extends StatelessWidget {
+  const _EmptyVaultCta({required this.onTopUp});
+
+  final VoidCallback onTopUp;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: AppColors.primary,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('Available Balance', style: context.typography.labelMedium),
-              const SizedBox(height: 4),
-              Text(
-                CurrencyFormatter.ngn(available?.balance ?? 0),
-                style: context.typography.amountMedium,
-              ),
-            ],
+          Text(
+            'Your vault is empty',
+            style: context.typography.title
+                .copyWith(color: AppColors.primaryForeground),
           ),
-          Container(
-            width: 4,
-            height: 32,
-            decoration: BoxDecoration(
-              color: AppColors.border,
-              borderRadius: BorderRadius.circular(2),
-            ),
+          const SizedBox(height: 6),
+          Text(
+            'Send USDC to your deposit address and watch it appear here.',
+            style: context.typography.bodySmall
+                .copyWith(color: AppColors.primaryForeground),
           ),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('Exchange Rate', style: context.typography.labelMedium),
-              const SizedBox(height: 4),
-              Text(
-                '₦${currentRate.toStringAsFixed(2)}',
-                style: context.typography.amountMedium.copyWith(
-                  color: AppColors.primary,
+          const SizedBox(height: 14),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton(
+              onPressed: onTopUp,
+              style: OutlinedButton.styleFrom(
+                foregroundColor: AppColors.primaryForeground,
+                side: BorderSide(color: AppColors.primaryForeground),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
                 ),
               ),
-            ],
+              child: const Text('Top up to get started'),
+            ),
           ),
         ],
       ),
@@ -200,95 +333,66 @@ class _AvailableBalanceCard extends StatelessWidget {
   }
 }
 
-/// Live on-chain vault summary: the deposit address, the network it is on, and
-/// the USDC balance currently held on-chain by the vault.
-class _VaultStatusCard extends ConsumerWidget {
-  const _VaultStatusCard();
+/// One-line nudge shown only while two-factor authentication is off.
+class _TwoFactorNudge extends StatelessWidget {
+  const _TwoFactorNudge();
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final status = ref.watch(vaultStatusProvider);
-    final summary = ref.watch(accountSummaryProvider).valueOrNull;
-    final rate = summary?.currentRate ?? 0;
-
-    return status.when(
-      loading: () => const SizedBox.shrink(),
-      error: (_, _) => const SizedBox.shrink(),
-      data: (v) {
-        if (!v.hasAddress) return const SizedBox.shrink();
-        final balance = v.vaultUsdcBalance;
-        final usdc = CurrencyFormatter.vaultUsdc(balance);
-        final vaultNgn = usdc * rate;
-        return Container(
-          width: double.infinity,
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: AppColors.surface,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: AppColors.border, width: 1),
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.border, width: 1),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.shield_outlined,
+              color: AppColors.primary, size: 20),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Protect your account with two-factor authentication',
+              style: context.typography.bodySmall,
+            ),
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.account_balance_wallet,
-                      color: AppColors.primary, size: 20),
-                  const SizedBox(width: 8),
-                  Text('On-chain vault', style: context.typography.labelMedium),
-                  const Spacer(),
-                  _NetworkChip(network: v.network),
-                ],
+          GestureDetector(
+            onTap: () => context.push('/profile/security-center'),
+            child: Text(
+              'Enable',
+              style: context.typography.labelLarge.copyWith(
+                color: AppColors.primary,
               ),
-              const SizedBox(height: 12),
-              Text('Vault USDC balance',
-                  style: context.typography.bodySmall),
-              const SizedBox(height: 2),
-              Text(balance, style: context.typography.amountMedium),
-              const SizedBox(height: 2),
-              Text(
-                '≈ ${CurrencyFormatter.ngn(vaultNgn)}',
-                style: context.typography.bodySmall
-                    .copyWith(color: AppColors.textSecondary),
-              ),
-              const SizedBox(height: 2),
-              Text(
-                '1 USDC = ${CurrencyFormatter.ngn(rate)}',
-                style: context.typography.bodySmall
-                    .copyWith(color: AppColors.textSecondary, fontSize: 12),
-              ),
-              const SizedBox(height: 12),
-              Text('Deposit address', style: context.typography.bodySmall),
-              const SizedBox(height: 2),
-              SelectableText(
-                v.address,
-                style: context.typography.bodySmall.copyWith(
-                    color: AppColors.textSecondary,
-                    fontSize: 12),
-              ),
-            ],
+            ),
           ),
-        );
-      },
+        ],
+      ),
     );
   }
 }
 
+/// Connected-network indicator (chain + test-mode marker).
 class _NetworkChip extends StatelessWidget {
-  const _NetworkChip({required this.network});
+  const _NetworkChip({required this.network, required this.mode});
+
   final String network;
+  final String mode;
 
   @override
   Widget build(BuildContext context) {
-    final label = network.isEmpty ? 'Unknown' : network;
+    final label = network.isEmpty ? 'Offline' : network;
+    final testMode = mode.toLowerCase() == 'mock';
     return Container(
+      margin: const EdgeInsets.only(top: 4),
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
         color: AppColors.primary.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(6),
       ),
       child: Text(
-        label,
+        testMode ? '$label • test' : label,
         style: context.typography.labelSmall.copyWith(
           color: AppColors.primary,
           fontWeight: FontWeight.w600,

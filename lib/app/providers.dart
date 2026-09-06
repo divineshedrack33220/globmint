@@ -97,6 +97,13 @@ final vaultStatusProvider = FutureProvider<VaultStatus>((ref) async {
   return ref.watch(savingsClientProvider).getVaultStatus();
 });
 
+/// Pending time-locked withdrawals awaiting their release window. Refresh
+/// after requesting, cancelling, or sweeping an elevation.
+final pendingElevationsProvider =
+    FutureProvider<List<PendingElevation>>((ref) async {
+  return ref.watch(savingsClientProvider).listPendingElevations();
+});
+
 final devicesProvider = FutureProvider<List<Device>>((ref) async {
   return ref.watch(securityServiceProvider).getDevices();
 });

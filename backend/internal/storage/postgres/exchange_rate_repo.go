@@ -31,3 +31,17 @@ func (r *exchangeRateRepo) FindByPair(ctx context.Context, base, quote string) (
 	}
 	return rate, nil
 }
+
+func (r *exchangeRateRepo) UpdateRate(ctx context.Context, base, quote string, rateMinor int64) error {
+	tag, err := r.q.Exec(ctx, `
+		UPDATE exchange_rates
+		   SET rate_minor=$3, updated_at=now()
+		 WHERE base=$1 AND quote=$2 AND status='active'`, base, quote, rateMinor)
+	if err != nil {
+		return mapPgErr(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}

@@ -87,6 +87,7 @@ func NewHandler(deps *Deps, auth middleware.Authenticator, corsOrigins []string,
 
 	// Conversions (quotes are read-only, no idempotency needed)
 	mux.Handle("POST "+api+"/money/quote", middleware.Auth(auth, http.HandlerFunc(deps.handleQuoteConversion)))
+	mux.Handle("GET "+api+"/money/rate", middleware.Auth(auth, http.HandlerFunc(deps.handleRate)))
 
 	// Beneficiaries
 	mux.Handle("GET "+api+"/beneficiaries", middleware.Auth(auth, http.HandlerFunc(deps.handleListBeneficiaries)))

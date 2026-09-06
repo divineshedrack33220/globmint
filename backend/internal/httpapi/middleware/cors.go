@@ -32,7 +32,7 @@ func Origin(origins []string) func(http.Handler) http.Handler {
 			}
 			if r.Method == http.MethodOptions {
 				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Idempotency-Key, x-access-token")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Idempotency-Key, x-access-token, Cache-Control")
 				w.Header().Set("Access-Control-Max-Age", "86400")
 				if origin != "" && (wildcard || allowed[originHeader]) {
 					w.Header().Set("Access-Control-Allow-Origin", origin)

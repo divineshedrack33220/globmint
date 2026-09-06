@@ -1,0 +1,9 @@
+[
+  {
+    "id": "self-custody-1",
+    "title": "Self-custodial by design",
+    "body": "Your vault has no admin — not even us. Keep your wallet and PIN safe.",
+    "action_label": "Learn more",
+    "action_route": "/legal/faq"
+  }
+]

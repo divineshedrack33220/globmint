@@ -6,7 +6,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../app/providers.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/theme_extensions.dart';
-import '../../../../core/utils/formatters.dart';
 import '../../../../shared/services/savings_client.dart';
 import '../../../../shared/widgets/stablecoin_risk_disclosure.dart';
 
@@ -58,9 +57,6 @@ class _AddMoneyPageState extends ConsumerState<AddMoneyPage> {
 
   @override
   Widget build(BuildContext context) {
-    final summaryAsync = ref.watch(accountSummaryProvider);
-    final availableBalance = summaryAsync.valueOrNull?.available.balance ?? 0;
-
     final deposit = _deposit;
 
     return Scaffold(
@@ -72,31 +68,6 @@ class _AddMoneyPageState extends ConsumerState<AddMoneyPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Available balance (auto-refreshes as deposits arrive).
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: AppColors.surface,
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: AppColors.border, width: 1),
-                ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text('Available Balance', style: context.typography.bodyMedium),
-                    Text(
-                      CurrencyFormatter.ngn(availableBalance),
-                      style: context.typography.amountMedium,
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 24),
-              _VaultHoldingsCard(),
-              const SizedBox(height: 24),
-              const StablecoinRiskDisclosure(),
-              const SizedBox(height: 24),
               // Deposit address card
               Container(
                 width: double.infinity,
@@ -156,7 +127,43 @@ class _AddMoneyPageState extends ConsumerState<AddMoneyPage> {
                               padding: EdgeInsets.all(12),
                               child: CircularProgressIndicator(
                                   color: AppColors.primary)))
-                    else ...[
+                    else if (deposit.address.isEmpty) ...[
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: AppColors.surfaceHighlight,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                              color: AppColors.border, width: 1),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                const Icon(Icons.cloud_off_outlined,
+                                    color: AppColors.textSecondary,
+                                    size: 20),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    'Deposits unavailable',
+                                    style: context.typography.title,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              'This server has no vault address configured, so there is no deposit address to show yet. Deposits open automatically once the vault is deployed and connected.',
+                              style: context.typography.bodySmall.copyWith(
+                                  color: AppColors.textSecondary),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ] else ...[
                       _label(context, 'Deposit address'),
                       const SizedBox(height: 6),
                       _addressBox(context, deposit.address, onCopy: _copyAddress),
@@ -198,6 +205,8 @@ class _AddMoneyPageState extends ConsumerState<AddMoneyPage> {
                   style: context.typography.bodySmall,
                 ),
               ),
+              const SizedBox(height: 24),
+              const StablecoinRiskDisclosure(),
             ],
           ),
         ),
@@ -254,66 +263,4 @@ class _AddMoneyPageState extends ConsumerState<AddMoneyPage> {
       ),
     );
   }
-}
-
-/// Live vault holdings: the on-chain USDC balance converted to NGN at the
-/// current rate, so the account holder always sees what their vault is worth.
-class _VaultHoldingsCard extends ConsumerWidget {
-  const _VaultHoldingsCard();
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final vault = ref.watch(vaultStatusProvider).valueOrNull;
-    final summary = ref.watch(accountSummaryProvider).valueOrNull;
-    final rate = summary?.currentRate ?? 0;
-    final usdc = vault == null ? 0.0 : CurrencyFormatter.vaultUsdc(vault.vaultUsdcBalance);
-    final vaultNgn = usdc * rate;
-
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppColors.primary,
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Icon(Icons.lock_outline,
-                  color: AppColors.primaryForeground, size: 20),
-              const SizedBox(width: 8),
-              Text(
-                'YOUR VAULT',
-                style: context.typography.labelMedium
-                    .copyWith(color: AppColors.primaryForeground),
-              ),
-            ],
-          ),
-          const SizedBox(height: 14),
-          Text(
-            _fmtUsdc(usdc),
-            style: context.typography.headline
-                .copyWith(color: AppColors.primaryForeground),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            '≈ ${CurrencyFormatter.ngn(vaultNgn)}',
-            style: context.typography.amountMedium
-                .copyWith(color: AppColors.primaryForeground),
-          ),
-          const SizedBox(height: 10),
-          Text(
-            '1 USDC = ${CurrencyFormatter.ngn(rate)}',
-            style: context.typography.bodySmall
-                .copyWith(color: AppColors.primaryForeground),
-          ),
-        ],
-      ),
-    );
-  }
-
-  String _fmtUsdc(double v) =>
-      '${v.toStringAsFixed(v == v.roundToDouble() ? 0 : 2)} USDC';
 }

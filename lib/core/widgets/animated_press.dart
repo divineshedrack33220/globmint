@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -50,10 +51,18 @@ class _AnimatedPressState extends State<AnimatedPress> with SingleTickerProvider
   void _onTapDown(TapDownDetails details) {
     if (widget.onTap != null) {
       _controller.forward();
-      if (widget.hapticFeedback) {
+      if (widget.hapticFeedback && _hapticsSupported) {
         HapticFeedback.lightImpact();
       }
     }
+  }
+
+  /// Vibration motors only exist on mobile. Calling vibrate on a desktop
+  /// browser does nothing except log a console intervention, so skip it.
+  bool get _hapticsSupported {
+    if (!kIsWeb) return true;
+    return defaultTargetPlatform == TargetPlatform.android ||
+        defaultTargetPlatform == TargetPlatform.iOS;
   }
 
   void _onTapUp(TapUpDetails details) {

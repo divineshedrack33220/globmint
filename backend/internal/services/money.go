@@ -321,6 +321,12 @@ type Quote struct {
 	MaxMinor     int64
 }
 
+// GetRate returns the current book rate for a pair (live when the market
+// feed is reachable, seeded otherwise).
+func (s *MoneyService) GetRate(ctx context.Context, base, quote string) (*domain.ExchangeRate, error) {
+	return s.store.ExchangeRateRepo().FindByPair(ctx, base, quote)
+}
+
 // QuoteConversion computes a conversion quote for the primary (NGN) pair.
 func (s *MoneyService) QuoteConversion(ctx context.Context, amountMinor int64, fromCurrency, toCurrency string) (*Quote, error) {
 	if amountMinor <= 0 {

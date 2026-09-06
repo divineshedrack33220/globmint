@@ -95,6 +95,27 @@ docker compose up -d --force-recreate server
 
 Never write keys to compose files, repositories, or logs.
 
+## 8. Key custody (the crown jewel)
+
+The signer key moves **all** vault funds — whoever holds it is the vault. This
+applies per environment; test keys (`.wallets/sepolia-testnet.key`, local
+hardhat defaults) are worthless and may live on dev machines, but the mainnet
+signer (`.wallets/mainnet.key`) must be treated as the business itself:
+
+- **Storage:** `0600` file perms, gitignored (verify with
+  `git check-ignore .wallets/mainnet.key`), never in chat/email/tickets/logs.
+- **Offline backup:** two encrypted USB copies in separate physical locations.
+  Example (do this on an air-gapped machine, never paste real output anywhere):
+  `openssl enc -aes-256-cbc -pbkdf2 -in .wallets/mainnet.key -out /mnt/usb1/globmint-mainnet.key.enc`
+  then `shred -u` any plaintext transport copies. Test-decrypt once per quarter.
+- **Access:** named humans only, least privilege; every use logged (who, when,
+  why). No shared copies, no cloud drives, no screenshots.
+- **Separation:** deployer key funds deployments only; day-to-day broadcasts
+  use the signer. If either is suspected compromised: pause withdrawals (the
+  kill switch above), rotate per §7, then reconcile per §5.
+- **Drill:** rehearse §7 on Sepolia twice a year so rotation is routine, not
+  an incident.
+
 ## Escalation
 
 - Platform (indexer, DB, RPC): fix and observe — self-healing by design.

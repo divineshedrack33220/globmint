@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"globmint/backend/internal/domain"
@@ -24,6 +25,7 @@ import (
 // withdraws to any address the user supplies.
 type VaultConfig struct {
 	VaultAddress       string
+	VaultContract      string // on-chain vault contract; withdrawals to it are rejected
 	StablecoinSymbol   string
 	StablecoinDecimals int
 	Mode               string
@@ -84,7 +86,10 @@ type VaultService struct {
 	chain     blockchain.BlockchainService
 	money     *MoneyService
 	cfg       VaultConfig
-	rateMinor int64 // NGN minor units per 1 USDC (kobo per USDC), 0 => fallback
+	// rate holds the NGN minor units per 1 USDC (kobo per USDC) atomically so
+	// the market-rate refresher can update pricing without restarting or
+	// racing the indexer/sweeper workers.
+	rate      atomic.Int64
 
 	mu        sync.Mutex
 	lastBlock uint64
@@ -103,7 +108,7 @@ type VaultService struct {
 
 // NewVaultService builds the vault service. rateMinor is the NGN minor units
 // per 1 USDC (i.e. the value 160450 for 1604.50 NGN/USDC); pass 0 to fall back
-// to 160450.
+// to 160450. The rate can be refreshed live later via SetRateMinor.
 func NewVaultService(store storage.Store, chain blockchain.BlockchainService, money *MoneyService, cfg VaultConfig, rateMinor int64) *VaultService {
 	if rateMinor <= 0 {
 		rateMinor = 160450
@@ -114,15 +119,33 @@ func NewVaultService(store storage.Store, chain blockchain.BlockchainService, mo
 	if cfg.WithdrawElevationDelay <= 0 {
 		cfg.WithdrawElevationDelay = 24 * time.Hour
 	}
-	return &VaultService{
+	v := &VaultService{
 		store:       store,
 		chain:       chain,
 		money:       money,
 		cfg:         cfg,
-		rateMinor:   rateMinor,
 		lastBlock:   cfg.StartBlock,
 		addressUser: map[string]string{},
 	}
+	v.rate.Store(rateMinor)
+	return v
+}
+
+// SetRateMinor updates the live NGN-per-USDC conversion rate (kobo). It is
+// called by the market-rate refresher; non-positive values are ignored so a
+// bad feed can never zero out pricing.
+func (v *VaultService) SetRateMinor(rateMinor int64) {
+	if rateMinor > 0 {
+		v.rate.Store(rateMinor)
+	}
+}
+
+// currentRateMinor returns the live NGN minor units per 1 USDC.
+func (v *VaultService) currentRateMinor() int64 {
+	if r := v.rate.Load(); r > 0 {
+		return r
+	}
+	return 160450
 }
 
 // lockFor returns the per-user serialization lock, creating it on first use.
@@ -349,7 +372,7 @@ func (v *VaultService) handleDeposit(ctx context.Context, t blockchain.TokenTran
 		log.Printf("vault indexer: event log write failed: %v", err)
 	}
 
-	ngnMinor := depositNGNMinor(t.Value, v.rateMinor)
+	ngnMinor := depositNGNMinor(t.Value, v.currentRateMinor())
 	if ngnMinor <= 0 {
 		return errors.New("deposit value below resolution")
 	}
@@ -424,13 +447,22 @@ func (v *VaultService) withdrawalFee(amountNgnMinor int64) int64 {
 // in which case no fee is ever charged.
 func (v *VaultService) WithdrawToAddress(ctx context.Context, userID, destination string, amountNgnMinor int64, key string) (*WithdrawalResult, error) {
 	if v.cfg.Mode == "mock" || v.cfg.VaultAddress == "" {
-		return nil, errors.New("on-chain vault is not enabled")
+		// Surface as a proper 403, not a 500: this deployment cannot move
+		// funds on-chain by configuration, nothing is broken.
+		return nil, domain.ErrFeatureDisabled
 	}
 	if !v.cfg.WithdrawEnabled {
 		return nil, domain.ErrFeatureDisabled
 	}
 	if amountNgnMinor <= 0 {
 		return nil, domain.ErrInvalidAmount
+	}
+	// Never send to our own addresses: a withdrawal to the vault (or its
+	// contract) would loop funds in a circle while still charging the user
+	// the ledger debit + fee. The app also warns, this is the safety net.
+	if strings.EqualFold(destination, v.cfg.VaultAddress) ||
+		(v.cfg.VaultContract != "" && strings.EqualFold(destination, v.cfg.VaultContract)) {
+		return nil, domain.ErrInvalidAddress
 	}
 	if v.cfg.WithdrawMinMinor > 0 && amountNgnMinor < v.cfg.WithdrawMinMinor {
 		return nil, domain.ErrInvalidAmount
@@ -536,7 +568,7 @@ func (v *VaultService) executeWithdrawal(ctx context.Context, userID, destinatio
 		return nil, domain.ErrInsufficientBalance
 	}
 
-	usdcBase := withdrawUSDCBase(amountNgnMinor, v.rateMinor)
+	usdcBase := withdrawUSDCBase(amountNgnMinor, v.currentRateMinor())
 	if usdcBase <= 0 {
 		return nil, domain.ErrInvalidAmount
 	}

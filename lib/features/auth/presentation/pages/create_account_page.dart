@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -23,6 +24,10 @@ class _CreateAccountPageState extends ConsumerState<CreateAccountPage> {
   final _phoneController = TextEditingController();
   final _passwordController = TextEditingController();
   bool _isLoading = false;
+  late final _termsRecognizer = TapGestureRecognizer()
+    ..onTap = () => context.push('/legal/terms');
+  late final _privacyRecognizer = TapGestureRecognizer()
+    ..onTap = () => context.push('/legal/privacy');
 
   @override
   void dispose() {
@@ -31,6 +36,8 @@ class _CreateAccountPageState extends ConsumerState<CreateAccountPage> {
     _emailController.dispose();
     _phoneController.dispose();
     _passwordController.dispose();
+    _termsRecognizer.dispose();
+    _privacyRecognizer.dispose();
     super.dispose();
   }
 
@@ -159,6 +166,31 @@ class _CreateAccountPageState extends ConsumerState<CreateAccountPage> {
                   onPressed: _handleCreateAccount,
                   isLoading: _isLoading,
                   isExpanded: true,
+                ),
+                const SizedBox(height: 16),
+                Text.rich(
+                  TextSpan(
+                    style: context.typography.bodySmall.copyWith(
+                      color: AppColors.textSecondary,
+                    ),
+                    children: [
+                      const TextSpan(
+                          text: 'By creating an account you agree to our '),
+                      TextSpan(
+                        text: 'Terms of Service',
+                        style: const TextStyle(color: AppColors.primary),
+                        recognizer: _termsRecognizer,
+                      ),
+                      const TextSpan(text: ' and '),
+                      TextSpan(
+                        text: 'Privacy Policy',
+                        style: const TextStyle(color: AppColors.primary),
+                        recognizer: _privacyRecognizer,
+                      ),
+                      const TextSpan(text: '.'),
+                    ],
+                  ),
+                  textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: 24),
                 Row(

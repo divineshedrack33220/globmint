@@ -1,11 +1,20 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/widgets/app_button.dart';
 import '../../../../core/widgets/staggered_modal.dart';
+import '../../../legal/data/legal_documents.dart';
 
 class HelpCenterSheet extends StatelessWidget {
-  const HelpCenterSheet({super.key});
+  const HelpCenterSheet({super.key, this.onViewAllFaqs});
+
+  /// Open the full FAQ page (the sheet cannot push routes itself).
+  final VoidCallback? onViewAllFaqs;
+
+  /// Curated subset of the canonical FAQ (see LegalDocuments.faq): the
+  /// questions new users ask most. The full list lives on /legal/faq.
+  static const _featured = [0, 2, 4, 5, 7, 12];
 
   void _showContactSupport(BuildContext context) {
     showDialog<void>(
@@ -35,31 +44,24 @@ class HelpCenterSheet extends StatelessWidget {
                 title: 'Email us',
                 subtitle: 'support@globemint.app',
                 onTap: () {
+                  Clipboard.setData(
+                      const ClipboardData(text: 'support@globemint.app'));
                   Navigator.pop(dialogContext);
                   ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('support@globemint.app copied')),
+                    const SnackBar(
+                        content: Text('support@globemint.app copied')),
                   );
                 },
               ),
               const SizedBox(height: 12),
               _ContactOption(
-                icon: Icons.chat_outlined,
-                title: 'Live chat',
-                subtitle: 'Instant replies, 24/7',
-                onTap: () {
-                  Navigator.pop(dialogContext);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Support chat opening...')),
-                  );
-                },
-              ),
-              const SizedBox(height: 12),
-              _ContactOption(
-                icon: Icons.info_outline,
+                icon: Icons.quiz_outlined,
                 title: 'FAQ',
-                subtitle: 'Browse the help center',
+                subtitle: 'Browse all frequently asked questions',
                 onTap: () {
                   Navigator.pop(dialogContext);
+                  Navigator.pop(context);
+                  onViewAllFaqs?.call();
                 },
               ),
               const SizedBox(height: 20),
@@ -79,30 +81,7 @@ class HelpCenterSheet extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final faqs = [
-      _FAQ(
-        'How do I add money to my account?',
-        'Go to Home → Quick Actions → Add Money. Enter the amount in NGN or USDT, confirm, and the funds will appear in your available balance instantly.',
-      ),
-      _FAQ(
-        'How do I convert NGN to USDT?',
-        'Use the "Save" quick action or go to Savings → Convert. Enter the NGN amount, review the exchange rate and fee, then confirm. The USDT goes directly to your savings.',
-      ),
-      _FAQ(
-        'How long do withdrawals take?',
-        'Withdrawals to your linked bank account are processed within 5 minutes. You\'ll receive a notification when the transfer is complete.',
-      ),
-      _FAQ(
-        'What are the fees?',
-        'Conversions: 1.5% fee. Bank transfers: ₦10 flat fee. Withdrawals: 1% fee. Adding money: free. All fees are shown before you confirm.',
-      ),
-      _FAQ(
-        'Is my money safe?',
-        'This is a prototype demo app. No real money moves. In a production version, funds would be held by licensed partners with bank-grade encryption.',
-      ),
-      _FAQ(
-        'How do I contact support?',
-        'Email: support@globemint.app | In-app chat: tap the help icon on any screen. Response time: under 24 hours.',
-      ),
+      for (final i in _featured) _FAQ(LegalDocuments.faq[i].question, LegalDocuments.faq[i].answer),
     ];
 
     return StaggeredBottomSheet(
@@ -120,11 +99,17 @@ class HelpCenterSheet extends StatelessWidget {
           _FAQTile(faq: faqs[i]),
         const SizedBox(height: 16),
         AppButton(
-          text: 'Contact Support',
+          text: 'View all FAQs',
           onPressed: () {
             Navigator.pop(context);
-            _showContactSupport(context);
+            onViewAllFaqs?.call();
           },
+          variant: AppButtonVariant.secondary,
+        ),
+        const SizedBox(height: 12),
+        AppButton(
+          text: 'Contact Support',
+          onPressed: () => _showContactSupport(context),
           variant: AppButtonVariant.secondary,
         ),
         const SizedBox(height: 16),

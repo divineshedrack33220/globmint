@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"globmint/backend/internal/domain"
 	"globmint/backend/internal/domain/money"
@@ -135,6 +136,33 @@ func (d *Deps) handleTransfer(w http.ResponseWriter, r *http.Request) {
 	}
 	d.publish(user.ID, "all")
 	writeJSON(w, http.StatusOK, map[string]any{"transaction": newTransactionResponse(txn)})
+}
+
+// handleRate returns the current book rate for a pair (live when the market
+// feed is reachable, seeded otherwise). Read-only.
+func (d *Deps) handleRate(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	if user == nil {
+		writeError(w, r, domain.ErrUnauthenticated, "")
+		return
+	}
+	base := normalizeCurrency(r.URL.Query().Get("from"))
+	quote := normalizeCurrency(r.URL.Query().Get("to"))
+	if base == "" || quote == "" {
+		writeError(w, r, domain.ErrInvalidAmount, "")
+		return
+	}
+	rate, err := d.Money.GetRate(r.Context(), base, quote)
+	if err != nil {
+		writeError(w, r, err, "")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"base":       rate.Base,
+		"quote":      rate.Quote,
+		"rate_minor": rate.Rate,
+		"updated_at": rate.UpdatedAt.UTC().Format(time.RFC3339),
+	})
 }
 
 // handleQuoteConversion returns a live quote without moving funds.

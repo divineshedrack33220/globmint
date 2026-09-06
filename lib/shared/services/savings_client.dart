@@ -132,4 +132,63 @@ class SavingsClient {
     if (data == null) throw ApiException(0, 'Empty response from server');
     return data['tx_hash'] as String? ?? '';
   }
+
+  /// Lists the user's pending time-locked (elevated) withdrawals.
+  Future<List<PendingElevation>> listPendingElevations() async {
+    final data = await _api.get('${AppConstants.apiV1Prefix}/savings/withdraw');
+    final list = (data?['elevations'] as List?) ?? const [];
+    return list
+        .whereType<Map<String, dynamic>>()
+        .map(PendingElevation.fromJson)
+        .toList();
+  }
+
+  /// Cancels a pending elevation before its release time. Returns true when
+  /// the server confirms the cancellation.
+  Future<bool> cancelElevation(String id) async {
+    final data = await _api.post(
+      '${AppConstants.apiV1Prefix}/savings/withdraw/$id/cancel',
+    );
+    return data?['cancelled'] == true;
+  }
+}
+
+/// A time-locked (elevated) withdrawal waiting for its release time. Amounts
+/// arrive in NGN minor units (kobo) and are exposed in major units.
+class PendingElevation {
+  const PendingElevation({
+    required this.id,
+    required this.destination,
+    required this.amountNgn,
+    required this.feeNgn,
+    required this.status,
+    required this.releaseAfter,
+  });
+
+  final String id;
+  final String destination;
+  final double amountNgn;
+  final double feeNgn;
+  final String status;
+  final DateTime releaseAfter;
+
+  /// Time left until broadcast. Negative when already due.
+  Duration get remaining => releaseAfter.difference(DateTime.now());
+
+  factory PendingElevation.fromJson(Map<String, dynamic> j) {
+    DateTime release;
+    try {
+      release = DateTime.parse(j['release_after'] as String? ?? '');
+    } catch (_) {
+      release = DateTime.fromMillisecondsSinceEpoch(0);
+    }
+    return PendingElevation(
+      id: j['id'] as String? ?? '',
+      destination: j['destination'] as String? ?? '',
+      amountNgn: ((j['amount_ngn_minor'] as num?) ?? 0) / 100,
+      feeNgn: ((j['fee_ngn_minor'] as num?) ?? 0) / 100,
+      status: j['status'] as String? ?? 'pending',
+      releaseAfter: release,
+    );
+  }
 }

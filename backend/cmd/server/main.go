@@ -16,6 +16,7 @@ import (
 	"globmint/backend/internal/httpapi"
 	"globmint/backend/internal/httpapi/middleware"
 	"globmint/backend/internal/infrastructure/blockchain"
+	"globmint/backend/internal/infrastructure/rates"
 	"globmint/backend/internal/services"
 	"globmint/backend/internal/storage/postgres"
 )
@@ -83,9 +84,21 @@ func main() {
 	if er, rerr := store.ExchangeRateRepo().FindByPair(ctx, "USDT", "NGN"); rerr == nil {
 		rateMinor = er.Rate
 	}
+	// Live market rate (fail-soft): prefer the feed at boot, keep the seeded
+	// value when it is unreachable.
+	rateProvider := rates.New(nil, 5*time.Minute)
+	if live, lerr := rateProvider.NGNPerUSDCKobo(ctx); lerr == nil && live > 0 {
+		log.Printf("market rate: live feed NGN/USDC kobo = %d", live)
+		rateMinor = live
+		if serr := services.SyncMarketRate(ctx, store.ExchangeRateRepo(), live); serr != nil {
+			log.Printf("market rate: book sync failed (keeping previous rows): %v", serr)
+		}
+	} else {
+		log.Printf("market rate: feed unreachable, using seeded rate %d (%v)", rateMinor, lerr)
+	}
 	vaultSvc := services.NewVaultService(store, chainSvc, moneySvc, services.VaultConfig{
 		VaultAddress:                     vaultAddress,
-		StablecoinSymbol:                 cfg.Blockchain.Stablecoin,
+		VaultContract:                    cfg.Blockchain.VaultContract,		StablecoinSymbol:                 cfg.Blockchain.Stablecoin,
 		StablecoinDecimals:               cfg.Blockchain.StablecoinDecimals,
 		Mode:                             cfg.Blockchain.Mode,
 		PollInterval:                     8 * time.Second,
@@ -136,6 +149,7 @@ func main() {
 		log.Println("indexer-only mode: running indexer + elevation sweeper")
 		go vaultSvc.RunIndexer(ctx)
 		go vaultSvc.RunElevationSweeper(ctx)
+		go runMarketRateRefresher(ctx, store, vaultSvc)
 		<-ctx.Done()
 		log.Println("indexer-only mode: stopped")
 		return
@@ -143,6 +157,7 @@ func main() {
 
 	go vaultSvc.RunIndexer(ctx)
 	go vaultSvc.RunElevationSweeper(ctx)
+	go runMarketRateRefresher(ctx, store, vaultSvc)
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
@@ -166,4 +181,31 @@ func main() {
 		log.Printf("graceful shutdown: %v", err)
 	}
 	log.Println("globmint backend stopped")
+}
+
+// runMarketRateRefresher refreshes the NGN-per-USDC rate every 5 minutes from
+// the market feed. Every failure is fail-soft (log only): vault conversions,
+// quotes, and clients keep pricing from the last good value.
+func runMarketRateRefresher(ctx context.Context, store *postgres.Store, vaultSvc *services.VaultService) {
+	provider := rates.New(nil, 5*time.Minute)
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			live, err := provider.NGNPerUSDCKobo(ctx)
+			if err != nil || live <= 0 {
+				log.Printf("market rate: refresh failed, keeping last good value: %v", err)
+				continue
+			}
+			vaultSvc.SetRateMinor(live)
+			if err := services.SyncMarketRate(ctx, store.ExchangeRateRepo(), live); err != nil {
+				log.Printf("market rate: book sync failed: %v", err)
+			} else {
+				log.Printf("market rate: updated to %d kobo/USDC", live)
+			}
+		}
+	}
 }

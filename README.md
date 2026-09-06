@@ -324,7 +324,10 @@ must handle both shapes; a `pending` elevation is cancellable until `release_aft
 1. **RequestID** — assigns/echoes a `request_id`, derived with a salt so it can't be spoofed.
 2. **Logging** — method, path, status, duration, request_id.
 3. **CORS** — allowlist from `GLOBMINT_CORS_ORIGINS`; `*` = allow all (dev), explicit
-   origin list for production; answers preflight `OPTIONS` with 204.
+   origin list for production; answers preflight `OPTIONS` with 204. Allowed headers
+   cover `Content-Type, Authorization, Idempotency-Key, x-access-token` plus
+   `Cache-Control`, which the browser EventSource client sends on the SSE stream
+   (`no-cache` keeps proxies from buffering events).
 4. **RateLimiter** — per-IP token bucket (`clientIPKey` strips the ephemeral port so bursts
    count across a browser session). Applied to login, register, 2FA-verify, PIN verify,
    and money endpoints. Default burst buckets: 5 (auth) / 20 (money), overridable via
@@ -718,12 +721,13 @@ flowchart LR
 
 | Feature | Highlights |
 |---|---|
-| auth | welcome, login (Password → 2FA step), register, PIN creation, verification |
-| home | dashboard, balance card (NGN available/savings), quick actions, recent activity |
+| auth | welcome, login (Password → 2FA step), register with Terms/Privacy consent links, PIN creation, verification |
+| home | dashboard, **one balance only: your own money** (personal ledger total + USDT equivalent), live rate line, quick actions, recent activity |
 | pay | transfers, send-to-beneficiary, OTC/withdraw-to-address |
-| savings | add money (**uses `deposit-info` to show the vault + USDC details**), withdraw + review (fee preview: amount, 0.2% fee, total charged, USDC received), vault status |
+| savings | add money (deposit address + watch-only note + risk disclosure; "deposits unavailable" empty-state without a vault), withdraw + review (fee preview: amount, 0.2% fee, total charged, USDC received) |
 | activity | full transaction list with status/type badges and destination rendering |
-| profile | security center (**2FA enable/disable**, biometric, alerts), change PIN / password, beneficiaries |
+| profile | security center (**2FA enable/disable**, biometric, alerts), change PIN / password, beneficiaries, FAQ + Privacy Policy + Terms of Service pages |
+| legal | sectioned Privacy/Terms reader + expandable FAQ (`lib/features/legal`), served on public `/legal/*` routes |
 
 ### 10.4 Routing table (`lib/app/router.dart`)
 
@@ -731,11 +735,12 @@ flowchart LR
 |---|---|---|
 | `/` | welcome | public |
 | `/login` → `/home` | login (password → 2FA code step) | public → guarded |
-| `/register`, `/create-pin`, `/verification` | onboarding | public |
+| `/create-account`, `/create-pin`, `/verify` | onboarding | public |
+| `/legal/privacy`, `/legal/terms`, `/legal/faq` | Privacy Policy, Terms of Service, FAQ | public |
 | `/home`, `/activity` | dashboard, activity | guarded |
 | `/savings`, `/savings/withdraw`, `/savings/withdraw-review`, `/savings/add-money` | savings flow | guarded |
 | `/pay`, `/pay/send-to-beneficiary` | transfer flow | guarded |
-| `/profile`, `/profile/security`, `/profile/change-pin`, `/profile/change-password` | profile flow | guarded |
+| `/profile`, `/profile/security-center`, `/profile/change-pin`, `/profile/change-password` | profile flow | guarded |
 | `/notifications` | in-app alerts | guarded |
 
 `go_router` redirects unauthenticated visits to `/login`; after `go('/home')` the router
@@ -753,6 +758,18 @@ no separate route, no token leakage before the code is verified.
 `flutter build web --no-tree-shake-icons` produces `build/`; the dev web server is a plain
 `python3 -m http.server 8082` serving that directory. The production frontend should be
 served by the same TLS terminating proxy as the API (CORS-origin-matched).
+
+### 10.7 One-balance rule
+
+The app displays exactly one balance: the homepage `BALANCE` hero, which tracks
+the user's own money — the personal ledger total (available + savings), credited
+only from confirmed on-chain deposits — with its USDT equivalent beneath. Your
+actions move it: deposits raise it, withdrawals/fees lower it. The shared vault
+pool's health is an operator concern and lives in the monitoring dashboard, not
+in anyone's personal display. Review screens show only their own transaction
+figures (amount, fee, total, received), and activity shows only per-transaction
+amounts. Rationale: a personal balance must respond to personal actions; pool
+figures cannot, so they are never merged into what the user sees as theirs.
 
 ---
 
@@ -814,7 +831,10 @@ Demo login (testnet): `demo@globmint.local` / `DemoPass123!`, PIN `123456`.
 
 When running with `GLOBMINT_BLOCKCHAIN_MODE=mock` no chain calls happen at all — ideal for
 quick UI iteration; flipping to `real` against Sepolia turns on indexing and signed
-withdrawals with test USDC.
+withdrawals with test USDC. Mock-mode API behavior is explicit, not simulated: withdrawals
+are rejected with `403 FEATURE_DISABLED`, `vault-status` reports `0` (never a fabricated
+balance) when the chain is unreachable, and Top Up shows a "deposits unavailable" notice
+while no vault address is configured.
 
 ### 12.2 Contract deployment (Sepolia / mainnet)
 

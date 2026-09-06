@@ -2,6 +2,8 @@ package services
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -179,6 +181,31 @@ func TestWithdraw_Elevated_Cancel_NoFee(t *testing.T) {
 	}
 	if used != 0 {
 		t.Errorf("withdrawn total after cancel = %d, want 0", used)
+	}
+}
+
+// TestWithdraw_RejectsVaultSelfSend: withdrawing to the vault's own address
+// (or its contract) would loop funds in a circle while debiting the user, so
+// it is rejected before anything moves or is charged.
+func TestWithdraw_RejectsVaultSelfSend(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	u := newTestUser(t, st, "vault-selfsend@example.com")
+	fundNGN(t, st, u.ID, 50_000_000, "fund-selfsend-"+uniqueKey("k"))
+	v := newFeeVault(t, st, u.ID, 0)
+	v.cfg.VaultContract = "0xC0n7rac7000000000000000000000000000000001"
+
+	for _, dest := range []string{vaultAddr, strings.ToUpper(vaultAddr), v.cfg.VaultContract} {
+		_, err := v.WithdrawToAddress(ctx, u.ID, dest, 5_000_000, "wd-self-"+uniqueKey("k"))
+		if !errors.Is(err, domain.ErrInvalidAddress) {
+			t.Errorf("destination %s: err = %v, want ErrInvalidAddress", dest, err)
+		}
+	}
+	if bal := availNGN(t, st, u.ID); bal != 50_000_000 {
+		t.Errorf("balance = %d, want 50000000 (nothing debited)", bal)
+	}
+	if delta := platformFeeDelta(t, st, func() {}); delta != 0 {
+		t.Errorf("platform fee delta = %d, want 0", delta)
 	}
 }
 

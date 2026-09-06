@@ -14,14 +14,8 @@ class SavingsDetailsPage extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final summaryAsync = ref.watch(accountSummaryProvider);
     final txnsAsync = ref.watch(transactionsProvider);
     final depositAsync = ref.watch(depositInfoProvider);
-
-    final savings = summaryAsync.valueOrNull?.savings ??
-        Account(id: '', currency: 'USDT', balance: 0);
-    final rate = summaryAsync.valueOrNull?.currentRate ?? 0;
-    final hasData = summaryAsync.hasValue;
 
     final txns = (txnsAsync.valueOrNull ?? const <Transaction>[])
         .where((t) => t.type.name == 'conversion' || t.type.name == 'savings')
@@ -37,36 +31,6 @@ class SavingsDetailsPage extends ConsumerWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(20),
-                decoration: BoxDecoration(
-                  color: AppColors.surfaceElevated,
-                  borderRadius: BorderRadius.circular(24),
-                  border: Border.all(color: AppColors.border, width: 1),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('TOTAL SAVINGS', style: context.typography.labelMedium),
-                    const SizedBox(height: 6),
-                    if (summaryAsync.isLoading && !hasData)
-                      Text('—', style: context.typography.amountHeroHighlight)
-                    else ...[
-                      Text(
-                        CurrencyFormatter.usdt(savings.balance),
-                        style: context.typography.amountHeroHighlight,
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        '≈ ${CurrencyFormatter.ngn(savings.balance * rate)}',
-                        style: context.typography.bodySmall,
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-              const SizedBox(height: 16),
               Row(
                 children: [
                   Expanded(

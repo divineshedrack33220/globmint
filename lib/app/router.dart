@@ -32,6 +32,9 @@ import '../../features/profile/presentation/pages/devices_page.dart';
 import '../../features/profile/presentation/pages/security_activity_page.dart';
 import '../../features/profile/presentation/pages/change_pin_page.dart';
 import '../../features/profile/presentation/pages/change_password_page.dart';
+import '../../features/legal/data/legal_documents.dart';
+import '../../features/legal/presentation/pages/legal_document_page.dart';
+import '../../features/legal/presentation/pages/faq_page.dart';
 import '../../features/notifications/presentation/pages/notifications_page.dart';
 
 final GlobalKey<NavigatorState> _rootNavigatorKey = GlobalKey<NavigatorState>();
@@ -283,6 +286,37 @@ final GoRouter appRouter = GoRouter(
       parentNavigatorKey: _rootNavigatorKey,
       pageBuilder: (context, state) => _buildPageWithTransition(
         context, state, const NotificationsPage(), isFullScreenDialog: true),
+    ),
+    // Legal documents (public: readable before and without an account)
+    GoRoute(
+      path: '/legal/privacy',
+      parentNavigatorKey: _rootNavigatorKey,
+      pageBuilder: (context, state) => _buildPageWithTransition(
+        context,
+        state,
+        const LegalDocumentPage(
+          title: 'Privacy Policy',
+          sections: LegalDocuments.privacyPolicy,
+        ),
+        isFullScreenDialog: true),
+    ),
+    GoRoute(
+      path: '/legal/terms',
+      parentNavigatorKey: _rootNavigatorKey,
+      pageBuilder: (context, state) => _buildPageWithTransition(
+        context,
+        state,
+        const LegalDocumentPage(
+          title: 'Terms of Service',
+          sections: LegalDocuments.termsOfService,
+        ),
+        isFullScreenDialog: true),
+    ),
+    GoRoute(
+      path: '/legal/faq',
+      parentNavigatorKey: _rootNavigatorKey,
+      pageBuilder: (context, state) => _buildPageWithTransition(
+        context, state, const FaqPage(), isFullScreenDialog: true),
     ),
     StatefulShellRoute.indexedStack(
       builder: (context, state, navigationShell) {

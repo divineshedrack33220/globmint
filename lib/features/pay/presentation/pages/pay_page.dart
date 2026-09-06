@@ -7,26 +7,17 @@ import '../../../../core/theme/radius_tokens.dart';
 import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/utils/formatters.dart';
 
-/// Vault payout hub: shows the on-chain vault holdings and routes every
-/// payout through the vault — deposit USDC in, or withdraw USDC out to any
-/// address.
+/// Payout hub: spend from your own balance — withdraw USDC to any address,
+/// top up, or pay out. The single balance mirrors the homepage: your own
+/// money (personal ledger total), never the shared pool.
 class PayPage extends ConsumerWidget {
   const PayPage({super.key});
 
-  static final _numReg = RegExp(r'^\s*([\d.]+)');
-
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final vault = ref.watch(vaultStatusProvider).valueOrNull;
     final summary = ref.watch(accountSummaryProvider).valueOrNull;
-    final rate = summary?.currentRate ?? 0;
-
-    final rawBalance = vault?.vaultUsdcBalance ?? '0.000000 USDC';
-    final match = _numReg.firstMatch(rawBalance);
-    final usdc = match == null || match.group(1) == null
-        ? 0.0
-        : double.tryParse(match.group(1)!) ?? 0.0;
-    final vaultNgn = usdc * rate;
+    final totalNgn = summary?.totalNgnEquivalent ?? 0;
+    final totalUsdc = summary?.totalUsdtEquivalent ?? 0;
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -38,7 +29,7 @@ class PayPage extends ConsumerWidget {
             children: [
               Text('Pay', style: context.typography.display),
               const SizedBox(height: 24),
-              // Vault balance hero
+              // Balance hero (same figure as the homepage).
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.all(20),
@@ -51,26 +42,19 @@ class PayPage extends ConsumerWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'VAULT BALANCE',
+                      'BALANCE',
                       style: context.typography.labelMedium.copyWith(
                         color: AppColors.textSecondary,
                       ),
                     ),
                     const SizedBox(height: 8),
-                    Text(rawBalance, style: context.typography.amountHero),
+                    Text(CurrencyFormatter.ngn(totalNgn),
+                        style: context.typography.amountHero),
                     const SizedBox(height: 4),
                     Text(
-                      '≈ ${CurrencyFormatter.ngn(vaultNgn)}',
+                      '≈ ${CurrencyFormatter.usdt(totalUsdc)} USDC',
                       style: context.typography.bodySmall.copyWith(
                         color: AppColors.textSecondary,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      '1 USDC = ${CurrencyFormatter.ngn(rate)}',
-                      style: context.typography.bodySmall.copyWith(
-                        color: AppColors.textSecondary,
-                        fontSize: 12,
                       ),
                     ),
                   ],

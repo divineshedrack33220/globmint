@@ -9,7 +9,6 @@ import '../../../../core/widgets/app_confirmation_modal.dart';
 import '../../../../core/widgets/animated_press.dart';
 import '../../../../shared/models/models.dart';
 import 'help_center_sheet.dart';
-import 'terms_privacy_sheet.dart';
 
 class ProfilePage extends ConsumerWidget {
   const ProfilePage({super.key});
@@ -113,9 +112,25 @@ class ProfilePage extends ConsumerWidget {
                     onTap: () => _showHelpCenter(context),
                   ),
                   _SettingsTile(
+                    icon: Icons.quiz_outlined,
+                    title: 'FAQ',
+                    onTap: () => context.push('/legal/faq'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              _SettingsSection(
+                title: 'Legal',
+                children: [
+                  _SettingsTile(
                     icon: Icons.description_outlined,
-                    title: 'Terms & Privacy',
-                    onTap: () => _showTermsPrivacy(context),
+                    title: 'Privacy Policy',
+                    onTap: () => context.push('/legal/privacy'),
+                  ),
+                  _SettingsTile(
+                    icon: Icons.gavel_outlined,
+                    title: 'Terms of Service',
+                    onTap: () => context.push('/legal/terms'),
                   ),
                 ],
               ),
@@ -154,16 +169,9 @@ class ProfilePage extends ConsumerWidget {
       context: context,
       backgroundColor: Colors.transparent,
       isScrollControlled: true,
-      builder: (_) => const HelpCenterSheet(),
-    );
-  }
-
-  void _showTermsPrivacy(BuildContext context) {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      isScrollControlled: true,
-      builder: (_) => const TermsPrivacySheet(),
+      builder: (_) => HelpCenterSheet(
+        onViewAllFaqs: () => context.push('/legal/faq'),
+      ),
     );
   }
 

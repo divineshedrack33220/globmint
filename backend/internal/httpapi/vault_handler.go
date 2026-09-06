@@ -19,6 +19,7 @@ type elevationResponse struct {
 	ID              string `json:"id"`
 	Destination     string `json:"destination"`
 	AmountNgnMinor  int64  `json:"amount_ngn_minor"`
+	FeeNgnMinor     int64  `json:"fee_ngn_minor"`
 	Status          string `json:"status"`
 	ReleaseAfter    string `json:"release_after"`
 	BroadcastTxHash string `json:"broadcast_tx_hash,omitempty"`
@@ -29,6 +30,7 @@ func toElevationResponse(e *domain.WithdrawalElevation) elevationResponse {
 		ID:              e.ID,
 		Destination:     e.Destination,
 		AmountNgnMinor:  e.AmountNgnMinor,
+		FeeNgnMinor:     e.FeeMinor,
 		Status:          string(e.Status),
 		ReleaseAfter:    e.ReleaseAfter.UTC().Format(time.RFC3339),
 		BroadcastTxHash: e.BroadcastTxHash,

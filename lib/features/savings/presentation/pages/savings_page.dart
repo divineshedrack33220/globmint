@@ -15,13 +15,6 @@ class SavingsPage extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final summaryAsync = ref.watch(accountSummaryProvider);
-    final summary = summaryAsync.valueOrNull;
-    final savings = summary?.savings;
-    final savingsBalance = savings?.balance ?? 0;
-    final usdtBalance = savings?.balance ?? 0;
-    final rate = summary?.currentRate ?? 0;
-
     final txnsAsync = ref.watch(transactionsProvider);
     final allTxns = txnsAsync.valueOrNull ?? const <Transaction>[];
     final txns = List<Transaction>.from(allTxns)
@@ -39,38 +32,6 @@ class SavingsPage extends ConsumerWidget {
             children: [
               Text('Savings', style: context.typography.display),
               const SizedBox(height: 20),
-              // Savings Balance Card
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(20),
-                decoration: BoxDecoration(
-                  color: AppColors.surfaceElevated,
-                  borderRadius: BorderRadius.circular(24),
-                  border: Border.all(color: AppColors.border, width: 1),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'SAVINGS BALANCE',
-                      style: context.typography.labelMedium.copyWith(
-                        color: AppColors.textSecondary,
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      CurrencyFormatter.ngn(savingsBalance * (rate == 0 ? 1604.5 : rate)),
-                      style: context.typography.amountHero,
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      '≈ ${CurrencyFormatter.usdt(usdtBalance)}',
-                      style: context.typography.bodySmall,
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 16),
               // Actions
               Row(
                 children: [
