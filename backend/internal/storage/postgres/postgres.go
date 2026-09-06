@@ -128,6 +128,7 @@ func (s *Store) NotificationRepo() storage.NotificationRepository { return NewNo
 func (s *Store) IndexerStateRepo() storage.IndexerStateRepository { return NewIndexerStateRepo(s.q) }
 func (s *Store) IndexerEventRepo() storage.IndexerEventRepository { return NewIndexerEventRepo(s.q) }
 func (s *Store) ElevationRepo() storage.ElevationRepository { return NewElevationRepo(s.q) }
+func (s *Store) UserSaltsRepo() storage.UserSaltsRepository { return NewUserSaltsRepo(s.q) }
 
 // TryAcquireIndexerLeadership grabs a session-level Postgres advisory lock on
 // a dedicated connection so exactly one indexer instance scans at a time. The

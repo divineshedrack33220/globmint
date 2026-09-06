@@ -57,6 +57,11 @@ class VaultStatus {
     required this.chainId,
     required this.mode,
     required this.vaultUsdcBalance,
+    this.withdrawMinMinor = 0,
+    this.withdrawMaxMinor = 0,
+    this.withdrawDailyCapMinor = 0,
+    this.elevationThresholdMinor = 0,
+    this.elevationDelaySeconds = 0,
   });
 
   final String address;
@@ -70,11 +75,21 @@ class VaultStatus {
   final String mode;
   final String vaultUsdcBalance;
 
+  /// Operator-configured withdrawal guards in NGN minor units (kobo).
+  /// Zero means that guard is disabled. Absent on older servers.
+  final int withdrawMinMinor;
+  final int withdrawMaxMinor;
+  final int withdrawDailyCapMinor;
+  final int elevationThresholdMinor;
+  final int elevationDelaySeconds;
+
   bool get hasAddress => address.isNotEmpty && address != '0x0000000000000000000000000000000000000000';
 
   factory VaultStatus.fromJson(Map<String, dynamic> j) {
     final info =
         (j['deposit_info'] as Map<String, dynamic>?) ?? j; // tolerate flat shape
+    final limits = (j['withdraw_limits'] as Map<String, dynamic>?) ??
+        const <String, dynamic>{};
     return VaultStatus(
       address: info['address'] as String? ?? '',
       vaultContract: info['vault_contract'] as String? ?? '',
@@ -86,6 +101,13 @@ class VaultStatus {
       chainId: (info['chain_id'] as num?)?.toInt() ?? 0,
       mode: info['mode'] as String? ?? '',
       vaultUsdcBalance: j['vault_usdc_balance'] as String? ?? '0',
+      withdrawMinMinor: (limits['min_minor'] as num?)?.toInt() ?? 0,
+      withdrawMaxMinor: (limits['max_minor'] as num?)?.toInt() ?? 0,
+      withdrawDailyCapMinor: (limits['daily_cap_minor'] as num?)?.toInt() ?? 0,
+      elevationThresholdMinor:
+          (limits['elevation_threshold_minor'] as num?)?.toInt() ?? 0,
+      elevationDelaySeconds:
+          (limits['elevation_delay_seconds'] as num?)?.toInt() ?? 0,
     );
   }
 }

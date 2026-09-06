@@ -84,6 +84,7 @@ func (d *Deps) handleSetDepositAddress(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, toDepositInfoResponse(info))
 }
+
 // handleVaultStatus returns the authenticated user's vault on-chain status
 // and deposit info.
 func (d *Deps) handleVaultStatus(w http.ResponseWriter, r *http.Request) {
@@ -111,8 +112,16 @@ func (d *Deps) handleVaultStatus(w http.ResponseWriter, r *http.Request) {
 		// vault figure as informational; the personal ledger is authoritative.
 		log.Printf("vault-status: chain balance unavailable, reporting zero: %v", berr)
 	}
+	limits := d.Vault.WithdrawLimits()
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"vault_usdc_balance": vaultUsdc,
 		"deposit_info":       info,
+		"withdraw_limits": map[string]interface{}{
+			"min_minor":                 limits.MinMinor,
+			"max_minor":                 limits.MaxMinor,
+			"daily_cap_minor":           limits.DailyCapMinor,
+			"elevation_threshold_minor": limits.ThresholdMinor,
+			"elevation_delay_seconds":   limits.ElevationDelaySeconds,
+		},
 	})
 }

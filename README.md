@@ -266,6 +266,26 @@ no floats, no negative balances, ratio multiplication that rounds deterministica
 (`MulRatioRounds`), and a correct `String()` for display. Unit tests cover rounding and
 negatives.
 
+### 5.4 Privacy model
+
+The vault contract (V2) supports two balance-mapping modes:
+
+- **Privacy mode off (default):** Balances are stored against raw `address` in `_balances`.
+  This is the legacy mode; all existing behaviour is preserved exactly. The contract
+  has no owner/admin and no function can seize another user's funds.
+
+- **Privacy mode on (`GLOBMINT_PRIVACY_MODE=true`):** Balances are stored against
+  `keccak256(user, salt)` commitments in `_privateBalances`. A per-user random `salt`
+  is generated when the user links their deposit address and stored in the
+  `user_salts` Postgres table. External observers cannot query a user's balance by
+  looking up their address on a block explorer. The commitment key is
+  `keccak256(abi.encodePacked(user, salt))`, which is deterministic only when the
+  salt is known (held by the backend + user).
+
+Both mappings coexist in the contract for zero-downtime migration. When privacy mode
+is off, `_privateBalances` is effectively a no-op (zero-valued salt → deterministic
+commitment); when on, the backend routes all balance reads through the commitment path.
+
 ---
 
 ## 6. Backend architecture
@@ -463,6 +483,10 @@ The gate returns a list of every missing item so operators fix the whole config 
 - The vault contract has **no owner, no admin, no seizable balances** (see §9).
 - The backend never holds user private keys; users always initiate deposits.
 - No banking rails exist anywhere in the codebase by design.
+- **Privacy:** When `GLOBMINT_PRIVACY_MODE=true`, balances are hidden from block
+  explorers via commitment-based storage. Users are strongly encouraged to use a
+  dedicated wallet address for Globe Mint that is not linked to their identity. The
+  app UI includes a privacy notice during onboarding.
 
 ### 7.7 Threat model (who can do what)
 
@@ -475,6 +499,7 @@ The gate returns a list of every missing item so operators fix the whole config 
 | Insider / operator | Read the DB | Seize user USDC: vault has no owner/admin functions |
 | Reorg attacker (mainnet) | — | Get a deposit credited early: confirmations window ≥ 12 |
 | CSRF / cross-site | — | Call the API: no cookies, bearer-in-header, CORS-allowlisted origins |
+| Blockchain observer | View raw addresses + balances on a block explorer (privacy mode off) | Query a user's balance by address when privacy mode is on (commitment-based) |
 
 The boundaries above are enforced at three layers simultaneously: the contract (money can
 only move per its rules), the service layer (limits, PIN, throttling, idempotency), and the
@@ -551,6 +576,19 @@ Reciprocal pair `{amount: "100", from_currency: "USDT", to_currency: "NGN"}` use
 reverse rate (USDT→NGN ≈ 1604.50), mirroring the seed so round-trips don't invent money.
 All multiplications happen in integer minor units through `Money.MulRatioRounds`, so the
 floating-point quote preview can never drift from the settled ledger figure.
+
+### 8.5 Currency selector
+
+The homepage balance hero and all display formats support switching between three
+currencies via a dropdown in the app bar:
+
+- **NGN** (₦) — Nigerian naira, the default set during onboarding.
+- **USD** — US dollars (no symbol, USD suffix).
+- **USDT** — USDT/USDC equivalent (USDT suffix).
+
+The selected currency is persisted per-user and applied to the `BALANCE` hero,
+the `≈ USDT` subtitle, and all `CurrencyFormatter` outputs (`ngn`, `usd`, `usdt`,
+`usd`). The fallback default after onboarding is NGN.
 
 ---
 
@@ -671,6 +709,11 @@ request time and stored on the row, but nothing is debited until release.
 | `GLOBMINT_WITHDRAW_FEE_BPS` | withdrawal fee rate in basis points (default `20` = 0.2%; `0` disables fees) |
 | `GLOBMINT_WITHDRAW_FEE_MIN_MINOR` | minimum withdrawal fee in kobo (default `1000` = ₦10) |
 | `GLOBMINT_WITHDRAW_FEE_CAP_MINOR` | maximum withdrawal fee in kobo (default `10000` = ₦100) |
+| `GLOBMINT_PRIVACY_MODE` | `false` (default) or `true`. When `true`, the vault uses
+  commitment-based balance storage (`_privateBalances`) and the backend derives
+  commitments from `user_salts`. When `false`, raw-address mapping is used exactly
+  as before. New users linking a deposit address receive a fresh random salt; the
+  one-off migration `0013_privacy_salts.sql` populates existing rows. |
 
 > ⚠️ The canonical mainnet USDC is `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48` (note the
 > trailing `8`). A one-character error here would route production deposits to a non-token.
@@ -722,7 +765,7 @@ flowchart LR
 | Feature | Highlights |
 |---|---|
 | auth | welcome, login (Password → 2FA step), register with Terms/Privacy consent links, PIN creation, verification |
-| home | dashboard, **one balance only: your own money** (personal ledger total + USDT equivalent), live rate line, quick actions, recent activity |
+| home | dashboard, **one balance only: your own money** (personal ledger total + USDT equivalent), **currency selector** (NGN/USD/USDT), live rate line, quick actions, recent activity |
 | pay | transfers, send-to-beneficiary, OTC/withdraw-to-address |
 | savings | add money (deposit address + watch-only note + risk disclosure; "deposits unavailable" empty-state without a vault), withdraw + review (fee preview: amount, 0.2% fee, total charged, USDC received) |
 | activity | full transaction list with status/type badges and destination rendering |
@@ -790,6 +833,7 @@ figures cannot, so they are never merged into what the user sees as theirs.
 | `0010_totp` | TOTP secret + enabled flag |
 | `0011_indexer_events_and_elevations` | `indexer_events` replay log `(tx_hash, log_index)` PK + `withdrawal_elevations` time-lock table with the one-pending-per-content unique index |
 | `0012_withdrawal_fees` | `withdrawal_elevations.fee_minor` + seeded platform fee owner/account |
+| `0013_privacy_salts` | `user_salts` table (`user_id`, `salt BYTEA`) + `deposit_addresses.salt` column; enables `GLOBMINT_PRIVACY_MODE=true` |
 
 Key tables: `users`, `sessions`, `accounts`, `transactions`, `balance_ledger`,
 `exchange_rates`, `deposit_addresses`, `indexer_state`, `indexer_events`,

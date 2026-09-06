@@ -80,6 +80,15 @@ type ExchangeRateRepository interface {
 	UpdateRate(ctx context.Context, base, quote string, rateMinor int64) error
 }
 
+// UserSaltsRepository persists per-user random salts for commitment-based
+// balance privacy. When GLOBMINT_PRIVACY_MODE is enabled, each user's salt
+// is stored here so the backend can derive keccak256(user, salt) commitments.
+type UserSaltsRepository interface {
+	Upsert(ctx context.Context, userID string, salt []byte) error
+	FindByUser(ctx context.Context, userID string) ([]byte, error)
+	Delete(ctx context.Context, userID string) error
+}
+
 // DepositAddressRepository persists the on-chain deposit address a user links
 // to their account for non-custodial vault deposits.
 type DepositAddressRepository interface {
@@ -168,6 +177,10 @@ type Store interface {
 	IndexerStateRepo() IndexerStateRepository
 	IndexerEventRepo() IndexerEventRepository
 	ElevationRepo() ElevationRepository
+	// UserSaltsRepository persists per-user random salts for commitment-based
+	// balance privacy. When GLOBMINT_PRIVACY_MODE is enabled, each user's salt
+	// is stored here so the backend can derive keccak256(user, salt) commitments.
+	UserSaltsRepo() UserSaltsRepository
 	// TryAcquireIndexerLeadership attempts a Postgres session-level advisory
 	// lock so only one indexer instance scans at a time. On success it returns
 	// a release func and ok=true; the caller must hold the lock for the whole

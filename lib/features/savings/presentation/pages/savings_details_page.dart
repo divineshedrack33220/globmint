@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../../../app/providers.dart';
+import '../../../../core/enums/transaction_type.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/utils/formatters.dart';
@@ -18,7 +19,11 @@ class SavingsDetailsPage extends ConsumerWidget {
     final depositAsync = ref.watch(depositInfoProvider);
 
     final txns = (txnsAsync.valueOrNull ?? const <Transaction>[])
-        .where((t) => t.type.name == 'conversion' || t.type.name == 'savings')
+        .where((t) =>
+            t.type == TransactionType.conversion ||
+            t.type == TransactionType.savings ||
+            t.type == TransactionType.deposit ||
+            t.type == TransactionType.withdrawal)
         .toList()
       ..sort((a, b) => b.date.compareTo(a.date));
 
@@ -180,6 +185,33 @@ class SavingsDetailsPage extends ConsumerWidget {
     }
 
     return txns.map((tx) {
+      final IconData icon;
+      final String title;
+      final String amountText;
+      switch (tx.type) {
+        case TransactionType.deposit:
+          icon = Icons.arrow_downward;
+          title = 'Vault deposit';
+          amountText = '+${_money(tx.amount, tx.currency)}';
+        case TransactionType.withdrawal:
+          icon = Icons.arrow_upward;
+          title = 'Vault withdrawal';
+          amountText = '−${_money(tx.amount, tx.currency)}';
+        case TransactionType.conversion:
+          icon = Icons.currency_exchange;
+          final from =
+              (tx.fromCurrency?.isNotEmpty ?? false) ? tx.fromCurrency! : '—';
+          final to =
+              (tx.toCurrency?.isNotEmpty ?? false) ? tx.toCurrency! : '—';
+          title = 'Converted $from → $to';
+          amountText = _money(tx.convertedAmount ?? tx.amount,
+              to == '—' ? tx.currency : to);
+        case TransactionType.savings:
+        default:
+          icon = Icons.savings;
+          title = 'Savings move';
+          amountText = _money(tx.amount, tx.currency);
+      }
       return Padding(
         padding: const EdgeInsets.symmetric(vertical: 6),
         child: ListTile(
@@ -192,14 +224,13 @@ class SavingsDetailsPage extends ConsumerWidget {
               color: AppColors.primaryMuted,
               borderRadius: BorderRadius.circular(10),
             ),
-            child: const Icon(Icons.currency_exchange,
-                color: AppColors.primary, size: 18),
+            child: Icon(icon, color: AppColors.primary, size: 18),
           ),
-          title: Text('Converted NGN → USDT', style: context.typography.labelLarge),
+          title: Text(title, style: context.typography.labelLarge),
           subtitle: Text(DateFormatter.date(tx.date),
               style: context.typography.bodySmall),
           trailing: Text(
-            CurrencyFormatter.usdt(tx.convertedAmount ?? tx.amount),
+            amountText,
             style: context.typography.labelLarge.copyWith(
               color: AppColors.success,
             ),
@@ -207,5 +238,10 @@ class SavingsDetailsPage extends ConsumerWidget {
         ),
       );
     }).toList();
+  }
+
+  String _money(double amount, String currency) {
+    if (currency == 'NGN') return CurrencyFormatter.ngn(amount);
+    return '${amount.toStringAsFixed(2)} $currency';
   }
 }

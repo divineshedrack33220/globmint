@@ -43,6 +43,7 @@ class _WithdrawPageState extends ConsumerState<WithdrawPage> {
   _WithdrawNetwork _network = _networks.first;
 
   double? _usdcEstimate;
+  String? _savedAddress;
 
   @override
   void initState() {
@@ -51,6 +52,7 @@ class _WithdrawPageState extends ConsumerState<WithdrawPage> {
     if (initial.isNotEmpty) _addressController.text = initial;
     _amountController.addListener(_updateQuote);
     _addressController.addListener(_onAddressChanged);
+    _loadSavedAddress();
   }
 
   @override
@@ -62,20 +64,31 @@ class _WithdrawPageState extends ConsumerState<WithdrawPage> {
     super.dispose();
   }
 
+  Future<void> _loadSavedAddress() async {
+    final depositInfo = ref.read(depositInfoProvider).valueOrNull;
+    if (depositInfo != null) {
+      final saved = depositInfo.address;
+      setState(() => _savedAddress = saved.isNotEmpty ? saved : null);
+    }
+  }
+
   void _onAddressChanged() {
     if (mounted) setState(() {});
   }
 
-  /// True when the destination is the vault's own address or contract: funds
-  /// would loop back into the vault while still costing the user. The server
-  /// rejects this too; this check warns before submission.
+  /// True when the destination is the vault's own address, the saved address,
+  /// or the contract: funds would loop back into the vault while still costing
+  /// the user. The server rejects this too; this check warns before submission.
   bool _isSelfSend(String address) {
     final lower = address.trim().toLowerCase();
     if (lower.isEmpty) return false;
     final info = ref.read(depositInfoProvider).valueOrNull;
-    if (lower == (info?.address ?? '').toLowerCase()) return true;
-    final contract = (info?.vaultContract ?? '').toLowerCase();
-    return contract.isNotEmpty && lower == contract;
+    final vaultAddr = (info?.address ?? '').toLowerCase();
+    final vaultContract = (info?.vaultContract ?? '').toLowerCase();
+    if (lower == vaultAddr) return true;
+    if (lower == _savedAddress?.toLowerCase()) return true;
+    if (vaultContract.isNotEmpty && lower == vaultContract) return true;
+    return false;
   }
 
   void _updateQuote() {
@@ -106,7 +119,7 @@ class _WithdrawPageState extends ConsumerState<WithdrawPage> {
     }
     if (!_formKey.currentState!.validate()) return;
     final amount = double.parse(_amountController.text.replaceAll(',', ''));
-    final address = _addressController.text.trim();
+    final address = _savedAddress ?? _addressController.text.trim();
     if (address.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Enter a destination crypto address')),
@@ -200,6 +213,13 @@ class _WithdrawPageState extends ConsumerState<WithdrawPage> {
                   style: context.typography.bodySmall,
                 ),
                 const SizedBox(height: 12),
+                if (_savedAddress != null) ...[
+                  _SavedAddressChip(
+                    address: _savedAddress!,
+                    onRemoved: () => setState(() => _savedAddress = null),
+                  ),
+                  const SizedBox(height: 12),
+                ],
                 TextFormField(
                   controller: _addressController,
                   style: context.typography.bodyMedium,
@@ -210,11 +230,20 @@ class _WithdrawPageState extends ConsumerState<WithdrawPage> {
                     return null;
                   },
                   decoration: InputDecoration(
-                    hintText: 'Paste any crypto address…',
+                    hintText: _savedAddress != null
+                        ? 'Paste or edit another address…'
+                        : 'Paste any crypto address…',
                     border:
                         OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                     filled: true,
                     fillColor: AppColors.surface,
+                    suffixIcon: _savedAddress != null
+                        ? IconButton(
+                            icon: const Icon(Icons.close),
+                            tooltip: 'Remove saved address',
+                            onPressed: () => setState(() => _savedAddress = null),
+                          )
+                        : null,
                   ),
                 ),
                 if (isSelfSend) ...[
@@ -249,6 +278,53 @@ class _WithdrawPageState extends ConsumerState<WithdrawPage> {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _SavedAddressChip extends StatelessWidget {
+  const _SavedAddressChip({
+    required this.address,
+    required this.onRemoved,
+  });
+
+  final String address;
+  final VoidCallback onRemoved;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: AppColors.primaryMuted,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: AppColors.primary, width: 1),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(
+            Icons.save_alt_outlined,
+            color: AppColors.primary,
+            size: 18,
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              address,
+              style: context.typography.labelMedium.copyWith(
+                color: AppColors.primary,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.close, size: 16, color: AppColors.textSecondary),
+            tooltip: 'Remove',
+            onPressed: onRemoved,
+          ),
+        ],
       ),
     );
   }

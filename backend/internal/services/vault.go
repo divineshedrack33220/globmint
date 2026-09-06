@@ -82,14 +82,14 @@ type WithdrawalResult struct {
 // VaultService runs the deposit indexer and executes withdrawals on the
 // custodial vault. NGN<->USDC is converted using the seeded (USDT, NGN) rate.
 type VaultService struct {
-	store     storage.Store
-	chain     blockchain.BlockchainService
-	money     *MoneyService
-	cfg       VaultConfig
+	store storage.Store
+	chain blockchain.BlockchainService
+	money *MoneyService
+	cfg   VaultConfig
 	// rate holds the NGN minor units per 1 USDC (kobo per USDC) atomically so
 	// the market-rate refresher can update pricing without restarting or
 	// racing the indexer/sweeper workers.
-	rate      atomic.Int64
+	rate atomic.Int64
 
 	mu        sync.Mutex
 	lastBlock uint64
@@ -637,6 +637,29 @@ func shortAddress(address string) string {
 		return address
 	}
 	return address[:6] + "…" + address[len(address)-4:]
+}
+
+// WithdrawLimits describes the operator-configured withdrawal guards.
+type WithdrawLimits struct {
+	MinMinor       int64
+	MaxMinor       int64
+	DailyCapMinor  int64
+	ThresholdMinor int64
+	// ElevationDelaySeconds is how long an elevated withdrawal waits before
+	// broadcast (0 when the time-lock is disabled).
+	ElevationDelaySeconds int64
+}
+
+// WithdrawLimits exposes the withdrawal guards so clients can display them
+// (daily-cap usage, time-lock threshold) before submission.
+func (v *VaultService) WithdrawLimits() WithdrawLimits {
+	return WithdrawLimits{
+		MinMinor:              v.cfg.WithdrawMinMinor,
+		MaxMinor:              v.cfg.WithdrawMaxMinor,
+		DailyCapMinor:         v.cfg.WithdrawDailyCapMinor,
+		ThresholdMinor:        v.cfg.WithdrawElevationThresholdMinor,
+		ElevationDelaySeconds: int64(v.cfg.WithdrawElevationDelay / time.Second),
+	}
 }
 
 // FindElevation returns a user's elevation by id (for the cancel/list APIs).

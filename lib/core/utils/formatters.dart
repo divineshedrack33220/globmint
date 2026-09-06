@@ -23,6 +23,9 @@ abstract final class CurrencyFormatter {
 
   static String usdt(double amount) => '${_usdtFormat.format(amount)} USDT';
 
+  /// Formats amount in US dollars (no symbol by default, appends "USD" suffix).
+  static String usd(double amount) => '${_usdtFormat.format(amount)} USD';
+
   static String ngnCompact(double amount) => _ngnCompact.format(amount);
 
   static String ngnWithSign(double amount) {

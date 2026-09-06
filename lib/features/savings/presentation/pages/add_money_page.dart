@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 import '../../../../app/providers.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/theme_extensions.dart';
@@ -167,6 +168,32 @@ class _AddMoneyPageState extends ConsumerState<AddMoneyPage> {
                       _label(context, 'Deposit address'),
                       const SizedBox(height: 6),
                       _addressBox(context, deposit.address, onCopy: _copyAddress),
+                      const SizedBox(height: 16),
+                      Center(
+                        child: Column(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(16),
+                              ),
+                              child: QrImageView(
+                                data: deposit.address,
+                                version: QrVersions.auto,
+                                size: 168,
+                                backgroundColor: Colors.white,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              'Scan with your wallet to fill the address',
+                              style: context.typography.bodySmall.copyWith(
+                                  color: AppColors.textSecondary),
+                            ),
+                          ],
+                        ),
+                      ),
                       const SizedBox(height: 12),
                       Wrap(
                         spacing: 16,
