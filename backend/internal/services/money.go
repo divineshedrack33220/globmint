@@ -3,6 +3,8 @@ package services
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log"
 
 	"globmint/backend/internal/domain"
 	"globmint/backend/internal/domain/money"
@@ -19,12 +21,48 @@ func NewMoneyService(store store) *MoneyService {
 	return &MoneyService{store: store}
 }
 
+// notify files an inbox notification. Best-effort by design: inbox failures
+// must never fail money movement, so errors are only logged.
+func (s *MoneyService) notify(ctx context.Context, userID string, category domain.NotificationCategory, title, body string) {
+	if err := s.store.NotificationRepo().Create(ctx, &domain.Notification{
+		UserID:   userID,
+		Category: category,
+		Title:    title,
+		Body:     body,
+	}); err != nil {
+		log.Printf("money: notify %s %s: %v", userID, category, err)
+	}
+}
+
+// formatMinor renders integer minor units as "₦1,234.56"-style majors without
+// floating point. Unknown currencies fall back to a "CODE 1.23" rendering.
+func formatMinor(minor int64, currency string) string {
+	symbol := currency + " "
+	if currency == "NGN" {
+		symbol = "₦"
+	}
+	abs := minor
+	if abs < 0 {
+		abs = -abs
+	}
+	return fmt.Sprintf("%s%d.%02d", symbol, abs/100, abs%100)
+}
+
 // Deposit credits the user's available account in the given currency.
 func (s *MoneyService) Deposit(ctx context.Context, userID, currency string, amountMinor int64, key string) (*domain.Transaction, error) {
 	if currency == "" {
 		currency = "NGN"
 	}
-	return s.Ledger().Credit(ctx, LedgerMoveRequest{
+	// Explicit replay check first so a retried deposit is returned without a
+	// second inbox notification (the unique index remains the hard guard).
+	if key != "" {
+		if existing, err := s.store.LedgerRepo().FindTransactionByIDempotencyKey(ctx, key); err == nil {
+			return existing, nil
+		} else if !errors.Is(err, domain.ErrNotFound) {
+			return nil, err
+		}
+	}
+	txn, err := s.Ledger().Credit(ctx, LedgerMoveRequest{
 		UserID:         userID,
 		AccountKind:    domain.AccountKindAvailable,
 		Currency:       currency,
@@ -32,6 +70,13 @@ func (s *MoneyService) Deposit(ctx context.Context, userID, currency string, amo
 		AmountMinor:    amountMinor,
 		IdempotencyKey: key,
 	})
+	if err != nil {
+		return nil, err
+	}
+	s.notify(ctx, userID, domain.NotificationCategoryDeposit,
+		"Money received",
+		formatMinor(amountMinor, currency)+" arrived in your available balance.")
+	return txn, nil
 }
 
 // Withdraw debits the user's available account toward an external destination.
@@ -40,7 +85,22 @@ func (s *MoneyService) Withdraw(ctx context.Context, req LedgerMoveRequest, key 
 		req.Currency = "NGN"
 	}
 	req.IdempotencyKey = key
-	return s.Ledger().Debit(ctx, req)
+	// Explicit replay check first (see Deposit): no duplicate notifications.
+	if key != "" {
+		if existing, err := s.store.LedgerRepo().FindTransactionByIDempotencyKey(ctx, key); err == nil {
+			return existing, nil
+		} else if !errors.Is(err, domain.ErrNotFound) {
+			return nil, err
+		}
+	}
+	txn, err := s.Ledger().Debit(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	s.notify(ctx, req.UserID, domain.NotificationCategoryWithdrawal,
+		"Withdrawal sent",
+		formatMinor(req.AmountMinor, req.Currency)+" sent from your available balance.")
+	return txn, nil
 }
 
 // WithdrawExternal debits the user's available account for an out-of-system
@@ -305,6 +365,19 @@ func (s *MoneyService) Transfer(ctx context.Context, req TransferRequest) (*doma
 			return existing, nil
 		}
 	}
+	if err != nil {
+		return result, err
+	}
+	dest := string(req.ToKind)
+	if dest == "" {
+		dest = req.Destination
+	}
+	if dest == "" {
+		dest = "external account"
+	}
+	s.notify(ctx, req.UserID, domain.NotificationCategoryTransfer,
+		"Transfer completed",
+		formatMinor(req.AmountMinor, req.Currency)+" moved to "+dest+".")
 	return result, err
 }
 
@@ -468,6 +541,13 @@ func (s *MoneyService) Convert(ctx context.Context, userID string, amountMinor i
 			return existing, nil
 		}
 	}
+	if err != nil {
+		return result, err
+	}
+	s.notify(ctx, userID, domain.NotificationCategoryConversion,
+		"Conversion completed",
+		formatMinor(quote.InputAmount, fromCurrency)+" → "+
+			formatMinor(quote.OutputAmount, toCurrency)+".")
 	return result, err
 }
 

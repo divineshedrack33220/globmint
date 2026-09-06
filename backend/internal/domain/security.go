@@ -32,6 +32,7 @@ type NotificationCategory string
 const (
 	NotificationCategoryGeneral    NotificationCategory = "general"
 	NotificationCategoryDeposit    NotificationCategory = "deposit"
+	NotificationCategoryWithdrawal NotificationCategory = "withdrawal"
 	NotificationCategoryTransfer   NotificationCategory = "transfer"
 	NotificationCategoryConversion NotificationCategory = "conversion"
 	NotificationCategorySecurity   NotificationCategory = "security"

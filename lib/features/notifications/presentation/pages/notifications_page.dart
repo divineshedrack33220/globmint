@@ -1,11 +1,72 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import '../../../../app/providers.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/utils/formatters.dart';
 import '../../../../core/widgets/animated_press.dart';
 import '../../../../shared/models/models.dart';
+
+/// Icon + colors per notification category. Shared by the list tile and the
+/// detail sheet so both always agree.
+(IconData, Color, Color) notificationStyle(String category) {
+  final Color bg;
+  final Color color;
+  late final IconData icon;
+  switch (category) {
+    case 'deposit':
+      icon = Icons.arrow_downward;
+      color = const Color(0xFF22C55E);
+      bg = const Color(0xFF052E16);
+    case 'withdrawal':
+      icon = Icons.arrow_upward;
+      color = const Color(0xFFF87171);
+      bg = const Color(0xFF450A0A);
+    case 'transfer':
+      icon = Icons.send;
+      color = const Color(0xFF60A5FA);
+      bg = const Color(0xFF172554);
+    case 'conversion':
+      icon = Icons.currency_exchange;
+      color = const Color(0xFFFFD21F);
+      bg = const Color(0xFF4A4000);
+    case 'security':
+      icon = Icons.shield_outlined;
+      color = const Color(0xFFF59E0B);
+      bg = const Color(0xFF451A03);
+    default:
+      icon = Icons.account_balance_wallet_outlined;
+      color = const Color(0xFFFFD21F);
+      bg = const Color(0xFF4A4000);
+  }
+  return (icon, color, bg);
+}
+
+String notificationCategoryLabel(String category) {
+  switch (category) {
+    case 'deposit':
+      return 'Deposit';
+    case 'withdrawal':
+      return 'Withdrawal';
+    case 'transfer':
+      return 'Transfer';
+    case 'conversion':
+      return 'Conversion';
+    case 'security':
+      return 'Security';
+    default:
+      return 'General';
+  }
+}
+
+/// Categories tied to money movement: their summary offers a jump to Activity.
+bool notificationHasActivity(String category) {
+  return category == 'deposit' ||
+      category == 'withdrawal' ||
+      category == 'transfer' ||
+      category == 'conversion';
+}
 
 class NotificationsPage extends ConsumerStatefulWidget {
   const NotificationsPage({super.key});
@@ -23,6 +84,17 @@ class _NotificationsPageState extends ConsumerState<NotificationsPage> {
     } catch (_) {
       // best-effort; ignore network/state failures
     }
+  }
+
+  Future<void> _openSummary(AppNotification n) async {
+    await _markRead(n);
+    if (!mounted) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (_) => _NotificationSummarySheet(notification: n),
+    );
   }
 
   Future<void> _markAll() async {
@@ -116,7 +188,7 @@ class _NotificationsPageState extends ConsumerState<NotificationsPage> {
                       final n = notifications[index];
                       return _NotificationTile(
                         notification: n,
-                        onTap: () => _markRead(n),
+                        onTap: () => _openSummary(n),
                       );
                     },
                   ),
@@ -136,34 +208,8 @@ class _NotificationTile extends StatelessWidget {
   final AppNotification notification;
   final VoidCallback onTap;
 
-  (IconData, Color, Color) get _style {
-    final Color bg;
-    final Color color;
-    late final IconData icon;
-    switch (notification.category) {
-      case 'deposit':
-        icon = Icons.arrow_downward;
-        color = const Color(0xFF22C55E);
-        bg = const Color(0xFF052E16);
-      case 'transfer':
-        icon = Icons.send;
-        color = const Color(0xFF60A5FA);
-        bg = const Color(0xFF172554);
-      case 'conversion':
-        icon = Icons.currency_exchange;
-        color = const Color(0xFFFFD21F);
-        bg = const Color(0xFF4A4000);
-      case 'security':
-        icon = Icons.shield_outlined;
-        color = const Color(0xFFF59E0B);
-        bg = const Color(0xFF451A03);
-      default:
-        icon = Icons.account_balance_wallet_outlined;
-        color = const Color(0xFFFFD21F);
-        bg = const Color(0xFF4A4000);
-    }
-    return (icon, color, bg);
-  }
+  (IconData, Color, Color) get _style =>
+      notificationStyle(notification.category);
 
   @override
   Widget build(BuildContext context) {
@@ -221,6 +267,97 @@ class _NotificationTile extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Full summary of one notification: icon, category, title, timestamp, and
+/// the complete message. Money notifications add a jump to Activity.
+class _NotificationSummarySheet extends StatelessWidget {
+  const _NotificationSummarySheet({required this.notification});
+
+  final AppNotification notification;
+
+  @override
+  Widget build(BuildContext context) {
+    final (icon, color, iconBg) = notificationStyle(notification.category);
+    return Container(
+      decoration: const BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      padding: const EdgeInsets.fromLTRB(24, 12, 24, 32),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Center(
+            child: Container(
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: AppColors.border,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
+          Row(
+            children: [
+              Container(
+                width: 48,
+                height: 48,
+                decoration: BoxDecoration(
+                  color: iconBg,
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Icon(icon, color: color, size: 24),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      notificationCategoryLabel(notification.category),
+                      style: context.typography.labelSmall.copyWith(color: color),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      DateFormatter.full(notification.date),
+                      style: context.typography.bodySmall.copyWith(
+                        color: AppColors.textSecondary,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                onPressed: () => Navigator.pop(context),
+                icon: const Icon(Icons.close, color: AppColors.textSecondary),
+                visualDensity: VisualDensity.compact,
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Text(notification.title, style: context.typography.headline),
+          const SizedBox(height: 8),
+          Text(notification.body, style: context.typography.bodyMedium),
+          if (notificationHasActivity(notification.category)) ...[
+            const SizedBox(height: 20),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton(
+                onPressed: () {
+                  Navigator.pop(context);
+                  context.push('/activity');
+                },
+                child: const Text('View activity'),
+              ),
+            ),
+          ],
+        ],
       ),
     );
   }

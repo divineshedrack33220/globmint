@@ -604,6 +604,10 @@ func (v *VaultService) executeWithdrawal(ctx context.Context, userID, destinatio
 		return nil, fmt.Errorf("on-chain sent (%s) but ledger debit failed: %w", txHash, err)
 	}
 	observability.Default.Withdrawal()
+	// Inbox: the user asked to be told whenever money arrives or leaves.
+	v.money.notify(ctx, userID, domain.NotificationCategoryWithdrawal,
+		"Withdrawal broadcast",
+		formatMinor(amountNgnMinor, "NGN")+" (≈"+major+" USDC) sent to "+shortAddress(destination)+".")
 	if v.Hub != nil {
 		v.Hub.Publish(events.Event{
 			Type: "data.changed", UserID: userID, Kind: "all",
@@ -625,6 +629,14 @@ func (v *VaultService) hasSufficientNGN(ctx context.Context, userID string, amou
 		return false, err
 	}
 	return bal >= amountNgnMinor, nil
+}
+
+// shortAddress renders 0x1234…abcd for inbox display.
+func shortAddress(address string) string {
+	if len(address) <= 12 {
+		return address
+	}
+	return address[:6] + "…" + address[len(address)-4:]
 }
 
 // FindElevation returns a user's elevation by id (for the cancel/list APIs).
