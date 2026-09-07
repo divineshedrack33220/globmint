@@ -13,6 +13,7 @@ import '../../../../shared/models/account.dart';
 import '../../../../shared/models/models.dart';
 import '../widgets/announcement_slot.dart';
 import '../widgets/balance_card.dart';
+import '../widgets/currency_flag_selector.dart';
 import '../widgets/pending_lock_card.dart';
 import '../widgets/quick_actions_row.dart';
 import '../widgets/rate_sparkline_card.dart';
@@ -29,6 +30,7 @@ class _HomePageState extends ConsumerState<HomePage> {
   // Balance/vault/transaction updates are pushed over SSE via
   // ScaffoldWithNavBar; the dashboard needs no local polling timer.
   bool _obscured = false;
+  DisplayCurrency _displayCurrency = DisplayCurrency.ngn;
   DateTime? _lastUpdated;
   Timer? _ageTimer;
 
@@ -157,8 +159,11 @@ class _HomePageState extends ConsumerState<HomePage> {
                     summary: summary,
                     obscured: _obscured,
                     freshness: _freshness,
+                    currency: _displayCurrency,
                     onToggleObscure: () =>
                         setState(() => _obscured = !_obscured),
+                    onCurrencyChanged: (c) =>
+                        setState(() => _displayCurrency = c),
                   ),
                 ),
               ),
@@ -187,6 +192,13 @@ class _HomePageState extends ConsumerState<HomePage> {
                   rate: summaryAsync.valueOrNull?.currentRate ?? 0,
                 ),
               ),
+              const SizedBox(height: 24),
+              // Quick Actions (right under the rate chart).
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 24),
+                child: QuickActionsRow(),
+              ),
+              const SizedBox(height: 16),
               // First-run empty state: vault holds nothing yet.
               if (vaultUsdc <= 0) ...[
                 const SizedBox(height: 16),
@@ -220,12 +232,6 @@ class _HomePageState extends ConsumerState<HomePage> {
                 orElse: () => const SizedBox.shrink(),
               ),
               const SizedBox(height: 24),
-              // Quick Actions
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 24),
-                child: QuickActionsRow(),
-              ),
-              const SizedBox(height: 24),
               // Recent Transactions
               const Padding(
                 padding: EdgeInsets.symmetric(horizontal: 24),
@@ -246,12 +252,16 @@ class _BalanceSection extends StatelessWidget {
     required this.summary,
     required this.obscured,
     required this.freshness,
+    required this.currency,
     required this.onToggleObscure,
+    required this.onCurrencyChanged,
   });
   final AccountSummary summary;
   final bool obscured;
   final String freshness;
+  final DisplayCurrency currency;
   final VoidCallback onToggleObscure;
+  final ValueChanged<DisplayCurrency> onCurrencyChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -262,12 +272,31 @@ class _BalanceSection extends StatelessWidget {
     final updated =
         freshness.isEmpty ? '' : ' • updated $freshness';
 
+    final (amount, subtitle) = switch (currency) {
+      DisplayCurrency.ngn => (
+          obscured ? '₦••••••' : CurrencyFormatter.ngn(totalNgn),
+          obscured
+              ? 'Balance hidden'
+              : '≈ ${CurrencyFormatter.usdc(totalUsdc)}$updated',
+        ),
+      DisplayCurrency.usd => (
+          obscured ? r'$••••••' : CurrencyFormatter.usdWithSymbol(totalUsdc),
+          obscured
+              ? 'Balance hidden'
+              : '≈ ${CurrencyFormatter.ngn(totalNgn)}$updated',
+        ),
+      DisplayCurrency.usdc => (
+          obscured ? '•••••• USDC' : CurrencyFormatter.usdc(totalUsdc),
+          obscured
+              ? 'Balance hidden'
+              : '≈ ${CurrencyFormatter.ngn(totalNgn)}$updated',
+        ),
+    };
+
     return BalanceCard(
       label: 'BALANCE',
-      amount: obscured ? '₦••••••' : CurrencyFormatter.ngn(totalNgn),
-      subtitle: obscured
-          ? 'Balance hidden'
-          : '≈ ${CurrencyFormatter.usdt(totalUsdc)} USDC$updated',
+      amount: amount,
+      subtitle: subtitle,
       isHero: true,
       trailing: IconButton(
         onPressed: onToggleObscure,
@@ -278,6 +307,10 @@ class _BalanceSection extends StatelessWidget {
         ),
         tooltip: obscured ? 'Show balance' : 'Hide balance',
         visualDensity: VisualDensity.compact,
+      ),
+      footer: CurrencyFlagSelector(
+        current: currency,
+        onChanged: onCurrencyChanged,
       ),
     );
   }

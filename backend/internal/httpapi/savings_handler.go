@@ -20,6 +20,7 @@ type depositInfoResponse struct {
 	Network            string `json:"network"`
 	ChainID            int64  `json:"chain_id"`
 	Mode               string `json:"mode"`
+	PrivacyEnabled     bool   `json:"privacy_enabled"`
 }
 
 func toDepositInfoResponse(info *services.DepositInfo) depositInfoResponse {
@@ -33,6 +34,7 @@ func toDepositInfoResponse(info *services.DepositInfo) depositInfoResponse {
 		Network:            info.Network,
 		ChainID:            info.ChainID,
 		Mode:               info.Mode,
+		PrivacyEnabled:     info.PrivacyEnabled,
 	}
 }
 

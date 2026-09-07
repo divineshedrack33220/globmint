@@ -8,6 +8,7 @@ import '../../../../core/theme/radius_tokens.dart';
 import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/utils/formatters.dart';
 import '../../../../core/widgets/animated_press.dart';
+import '../../../../core/widgets/empty_state.dart';
 import '../../../../core/widgets/section_header.dart';
 import '../../../../shared/models/transaction.dart';
 
@@ -42,9 +43,10 @@ class RecentTransactionsList extends ConsumerWidget {
             final sorted = List<Transaction>.from(transactions)
               ..sort((a, b) => b.date.compareTo(a.date));
             if (sorted.isEmpty) {
-              return const SizedBox(
-                height: 80,
-                child: Center(child: Text('No recent activity')),
+              return const EmptyState(
+                icon: Icons.receipt_long_outlined,
+                title: 'No recent activity',
+                description: 'Your transactions will appear here',
               );
             }
             return Container(

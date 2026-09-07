@@ -6,6 +6,7 @@ import '../../../../core/enums/transaction_type.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/utils/formatters.dart';
+import '../../../../core/widgets/empty_state.dart';
 import '../../../../core/widgets/status_badge.dart';
 import '../../../../core/widgets/animated_press.dart';
 import '../../../../shared/models/transaction.dart';
@@ -171,12 +172,15 @@ class _SavingsPageState extends ConsumerState<SavingsPage> {
               const SizedBox(height: 12),
               if (txns.isEmpty)
                 Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 40),
-                  child: Center(
-                    child: Text(
-                      'No savings activity yet',
-                      style: context.typography.bodyMedium,
-                    ),
+                  padding: const EdgeInsets.symmetric(vertical: 24),
+                  child: EmptyState(
+                    icon: _filter == _ActivityFilter.all
+                        ? Icons.savings_outlined
+                        : Icons.filter_list_off,
+                    title: 'No savings activity yet',
+                    description: _filter == _ActivityFilter.all
+                        ? 'Deposits, withdrawals and conversions will appear here'
+                        : 'Nothing here yet in this category',
                   ),
                 )
               else

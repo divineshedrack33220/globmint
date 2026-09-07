@@ -114,6 +114,7 @@ func main() {
 		WithdrawFeeBPS:                   cfg.WithdrawFeeBPS,
 		WithdrawFeeMinMinor:              cfg.WithdrawFeeMinMinor,
 		WithdrawFeeCapMinor:              cfg.WithdrawFeeCapMinor,
+		PrivacyMode:                      cfg.PrivacyMode,
 	}, rateMinor)
 
 	// Fan-out hub for SSE push; shared by the money handlers and the vault

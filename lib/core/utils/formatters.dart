@@ -13,6 +13,12 @@ abstract final class CurrencyFormatter {
     decimalDigits: 2,
   );
 
+  static final NumberFormat _usdSymbolFormat = NumberFormat.currency(
+    locale: 'en_US',
+    symbol: r'$',
+    decimalDigits: 2,
+  );
+
   static final NumberFormat _ngnCompact = NumberFormat.compactCurrency(
     locale: 'en_NG',
     symbol: '₦',
@@ -25,6 +31,12 @@ abstract final class CurrencyFormatter {
 
   /// Formats amount in US dollars (no symbol by default, appends "USD" suffix).
   static String usd(double amount) => '${_usdtFormat.format(amount)} USD';
+
+  /// Formats amount with the dollar sign, e.g. `$1,234.56`.
+  static String usdWithSymbol(double amount) => _usdSymbolFormat.format(amount);
+
+  /// Formats a USDC amount like `1,234.56 USDC`.
+  static String usdc(double amount) => '${_usdtFormat.format(amount)} USDC';
 
   static String ngnCompact(double amount) => _ngnCompact.format(amount);
 

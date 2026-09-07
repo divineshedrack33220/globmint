@@ -26,6 +26,21 @@ type TokenTransfer struct {
 	BlockNumber uint64
 }
 
+// VaultDeposit is a decoded GlobmintVault deposit event. It carries either a
+// raw user address (the legacy `Deposited(bytes32,address,uint256)` event,
+// emitted when privacy mode is OFF) or only a keccak256(user, salt) commitment
+// (the privacy `DepositedPrivate(bytes32,uint256)` event). In privacy mode the
+// User field is "" and the indexer must resolve the commitment via the
+// user_salts table.
+type VaultDeposit struct {
+	Commitment  string // keccak256(user, salt); always present for both variants
+	User        string // raw user address (legacy mode); "" in privacy mode
+	Amount      *big.Int
+	TxHash      string
+	LogIndex    uint64
+	BlockNumber uint64
+}
+
 // BlockchainService defines the interface for blockchain operations.
 type BlockchainService interface {
 	GetBalance(ctx context.Context, address string) (string, error)
@@ -40,6 +55,13 @@ type BlockchainService interface {
 	// `fromBlock`..`toBlock` (inclusive) where `to` equals `address` (or all
 	// addresses when `address` is empty).
 	FilterTokenTransfers(ctx context.Context, fromBlock, toBlock uint64, address string) ([]TokenTransfer, error)
+	// FilterVaultDeposits returns decoded GlobmintVault deposit events from the
+	// given vault contract over a block range. Both the privacy-mode event
+	// (`DepositedPrivate(bytes32 indexed commitment, uint256 amount)`) and the
+	// legacy event (`Deposited(bytes32 indexed commitment, address indexed
+	// user, uint256 amount)`) are decoded. Callers resolve commitments to users
+	// when the event carries no raw address.
+	FilterVaultDeposits(ctx context.Context, fromBlock, toBlock uint64, vaultContract string) ([]VaultDeposit, error)
 	// LatestBlock returns the current head block number.
 	LatestBlock(ctx context.Context) (uint64, error)
 }
@@ -53,6 +75,7 @@ type MockBlockchainService struct {
 	mu       sync.Mutex
 	balances map[string]string
 	transfers []TokenTransfer
+	vaultDeposits []VaultDeposit
 	latest    uint64
 	headErr   error
 	filterErr error
@@ -146,6 +169,32 @@ func (m *MockBlockchainService) AddTransfer(t TokenTransfer) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.transfers = append(m.transfers, t)
+}
+
+// AddVaultDeposit seeds a synthetic GlobmintVault deposit event (mock-only, for
+// tests). Pass User="" to simulate a privacy-mode event carrying only the
+// commitment, or User=<address> for a legacy raw-address event.
+func (m *MockBlockchainService) AddVaultDeposit(d VaultDeposit) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.vaultDeposits = append(m.vaultDeposits, d)
+}
+
+// FilterVaultDeposits returns any vault deposits seeded via AddVaultDeposit
+// within the requested block range (mock-only, for tests).
+func (m *MockBlockchainService) FilterVaultDeposits(ctx context.Context, fromBlock, toBlock uint64, vaultContract string) ([]VaultDeposit, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.filterErr != nil {
+		return nil, m.filterErr
+	}
+	var out []VaultDeposit
+	for _, d := range m.vaultDeposits {
+		if d.BlockNumber >= fromBlock && d.BlockNumber <= toBlock {
+			out = append(out, d)
+		}
+	}
+	return out, nil
 }
 
 // LatestBlock returns the configured head block number for mock mode.
@@ -469,6 +518,78 @@ func (s *EthereumService) FilterTokenTransfers(ctx context.Context, fromBlock, t
 		start = end + 1
 	}
 	return out, nil
+}
+
+// FilterVaultDeposits returns decoded GlobmintVault deposit events from the
+// vault contract over a block range. Both the privacy event
+// `DepositedPrivate(bytes32 indexed commitment, uint256 amount)` and the
+// legacy `Deposited(bytes32 indexed commitment, address indexed user, uint256
+// amount)` are decoded. Privacy-mode events have an empty User field; the
+// indexer resolves the commitment via the user_salts table.
+func (s *EthereumService) FilterVaultDeposits(ctx context.Context, fromBlock, toBlock uint64, vaultContract string) ([]VaultDeposit, error) {
+	if vaultContract == "" {
+		return nil, nil
+	}
+	vault := common.HexToAddress(vaultContract)
+	// topic0 for Deposited(bytes32,address,uint256) and DepositedPrivate(bytes32,uint256)
+	legacyTopic0 := common.HexToHash("0x87d4c0b5e30d6808bc8a94ba1c4d839b29d664151551a31753387ee9ef48429b")
+	privateTopic0 := common.HexToHash("0x7a4336eceb7d2f2153fd7bb67a16180b75c5a3e7b373e843abb237e2e9c05a8e")
+
+	out := make([]VaultDeposit, 0)
+	start := fromBlock
+	for start <= toBlock {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		end := start + maxLogsBlockRange - 1
+		if end > toBlock {
+			end = toBlock
+		}
+		query := ethereum.FilterQuery{
+			FromBlock: new(big.Int).SetUint64(start),
+			ToBlock:   new(big.Int).SetUint64(end),
+			Addresses: []common.Address{vault},
+			Topics:    [][]common.Hash{{legacyTopic0, privateTopic0}},
+		}
+		logs, err := s.client.FilterLogs(ctx, query)
+		if err != nil {
+			return nil, fmt.Errorf("filter vault deposits (%d..%d): %w", start, end, err)
+		}
+		for _, l := range logs {
+			if len(l.Topics) < 2 || len(l.Data) < 32 {
+				continue
+			}
+			d, ok := decodeVaultDeposit(&l)
+			if ok {
+				out = append(out, *d)
+			}
+		}
+		if end >= toBlock {
+			break
+		}
+		start = end + 1
+	}
+	return out, nil
+}
+
+// decodeVaultDeposit decodes a vault Deposit log line. Legacy events carry the
+// user as the second indexed topic; privacy events do not.
+func decodeVaultDeposit(l *types.Log) (*VaultDeposit, bool) {
+	legacyTopic0 := common.HexToHash("0x87d4c0b5e30d6808bc8a94ba1c4d839b29d664151551a31753387ee9ef48429b")
+	d := &VaultDeposit{
+		Commitment:  l.Topics[1].Hex(),
+		Amount:      new(big.Int).SetBytes(l.Data[:32]),
+		TxHash:      l.TxHash.Hex(),
+		LogIndex:    uint64(l.Index),
+		BlockNumber: l.BlockNumber,
+	}
+	if l.Topics[0] == legacyTopic0 {
+		if len(l.Topics) < 3 {
+			return nil, false
+		}
+		d.User = common.HexToAddress(l.Topics[2].Hex()).Hex()
+	}
+	return d, true
 }
 
 // parseMajorToBase parses a decimal major-unit string (e.g. "1.50") into base

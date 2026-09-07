@@ -487,6 +487,11 @@ The gate returns a list of every missing item so operators fix the whole config 
   explorers via commitment-based storage. Users are strongly encouraged to use a
   dedicated wallet address for Globe Mint that is not linked to their identity. The
   app UI includes a privacy notice during onboarding.
+  - Full privacy security review (raw-address leak inventory, threat model,
+    salt-rotation incident response, ZK roadmap):
+    [`docs/security_privacy.md`](docs/security_privacy.md).
+  - Pre-release gate: [`docs/privacy_test_plan.md`](docs/privacy_test_plan.md)
+    and the `## Privacy Testing Checklist` below.
 
 ### 7.7 Threat model (who can do what)
 
@@ -1022,3 +1027,34 @@ same behaviour through the real HTTP endpoints.
   the TOTP secret, wallet-deep-link deposit flow (WalletConnect/MetaMask), and multi-chain
   UX once the L2 groundwork (§9.4) is exercised on a testnet. The app surfaces the Circle
   USDC risk disclosure and watch-only clarity before any real money moves.
+- **Privacy withdrawal linkage is accepted for v1.** The salt proof proves
+  commitment ownership without a ZK circuit, but the withdrawal transaction
+  ultimately pays the user's own address, so an on-chain observer can correlate
+  a commitment with the address that withdrew from it (see
+  `docs/security_privacy.md` §2.1). A ZK withdrawal proof is the roadmap item
+  that removes the link without changing the balance model.
+
+---
+
+## Privacy Testing Checklist
+
+Every privacy-mode launch gate runs:
+[`docs/privacy_test_plan.md`](docs/privacy_test_plan.md). The automated
+portion is already covered by existing suites:
+
+- **Contract:** `backend/contracts$ npx hardhat test` — 18 tests (incl.
+  `GlobmintVaultV2.test.js` boot-mode revert behavior, commitment credits,
+  wrong-salt reverts, toggle-preserves-balances, cross-user drain block).
+- **Backend:** `backend$ go test ./...` — incl. savings privacy integration
+  (salt created on link, no leak in JSON, relink preserves salt, legacy mode
+  adds no salt) and vault privacy integration (matched commitment credited,
+  unlinked commitment ignored, legacy raw event still resolves, crash-replay
+  idempotent).
+- **Flutter:** `flutter test` — incl. `PrivacyNotice` full/compact render and
+  conditional badge on the add-money screen.
+
+Manual launch-gate checklist: **A. Contract → B. Backend queries → C. Security
+review → D. Flutter → E. End-to-end smoke → F. Launch gate** in the doc above.
+The one item that is inherently manual and cannot be unit-tested: watching the
+explorer logs of a real privacy-mode deposit and confirming **no raw user
+address appears in any emitted event**.

@@ -11,6 +11,7 @@ class BalanceCard extends StatelessWidget {
     this.amountColor,
     this.subtitle,
     this.trailing,
+    this.footer,
     this.isHero = false,
   });
 
@@ -19,6 +20,7 @@ class BalanceCard extends StatelessWidget {
   final Color? amountColor;
   final String? subtitle;
   final Widget? trailing;
+  final Widget? footer;
   final bool isHero;
 
   @override
@@ -72,6 +74,13 @@ class BalanceCard extends StatelessWidget {
               style: context.typography.bodySmall.copyWith(
                 color: amountColor ?? AppColors.textSecondary,
               ),
+            ),
+          ],
+          if (footer != null) ...[
+            const SizedBox(height: 14),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: footer!,
             ),
           ],
         ],

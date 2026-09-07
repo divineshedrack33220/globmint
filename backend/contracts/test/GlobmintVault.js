@@ -50,12 +50,20 @@ describe("GlobmintVault", function () {
 
   describe("depositFor", function () {
     it("credits a different user's balance", async function () {
-      // bob pays and approves; alice receives credit
+      // bob pays and approves; alice receives credit (privacy-compatible API)
       await usdc.mint(bob.address, ONE * 10n);
       await usdc.connect(bob).approve(await vault.getAddress(), ONE * 10n);
-      await vault.connect(bob)["depositFor(address,uint256)"](alice.address, ONE * 3n);
+      await vault.connect(bob)["depositFor(address,bytes32,uint256)"](
+        alice.address,
+        ethers.ZeroHash,
+        ONE * 3n
+      );
 
-      expect(await vault.balanceOf(alice.address)).to.equal(ONE * 3n);
+      const commitment = ethers.solidityPackedKeccak256(
+        ["address", "bytes32"],
+        [alice.address, ethers.ZeroHash]
+      );
+      expect(await vault.balanceOfCommitment(commitment)).to.equal(ONE * 3n);
       expect(await vault.balanceOf(bob.address)).to.equal(0);
     });
   });
@@ -76,7 +84,7 @@ describe("GlobmintVault", function () {
       await fundAndAllow(alice, ONE * 2n);
       await vault.connect(alice).deposit(ONE);
       await expect(vault.connect(alice).withdraw(ONE * 2n)).to.be.revertedWith(
-        "insufficient balance"
+        "insufficient private balance"
       );
     });
   });
@@ -94,7 +102,7 @@ describe("GlobmintVault", function () {
 
       // bob tries to withdraw — reverts because bob has no balance
       await expect(vault.connect(bob).withdraw(ONE)).to.be.revertedWith(
-        "insufficient balance"
+        "insufficient private balance"
       );
       // alice's balance is untouched
       expect(await vault.balanceOf(alice.address)).to.equal(ONE * 5n);

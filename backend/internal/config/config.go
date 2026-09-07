@@ -47,6 +47,12 @@ type Config struct {
 	// reach before the indexer credits the ledger (protects against reorgs).
 	VaultMinConfirmations uint64
 
+	// PrivacyMode toggles commitment-based (salt-hashed) vault balances. When
+	// true, the backend stores a random salt per user, derives deposit
+	// commitments as keccak256(address, salt), and never exposes raw-address
+	// balances. Env: GLOBMINT_PRIVACY_MODE.
+	PrivacyMode bool
+
 	// RateLimitAuthBurst / RateLimitMoneyBurst override the per-IP token-bucket
 	// budgets (auth: 5/s, money: 20/s). Raise them for load testing only.
 	RateLimitAuthBurst  int
@@ -108,6 +114,7 @@ func Load() Config {
 		WithdrawFeeMinMinor: int64Env("GLOBMINT_WITHDRAW_FEE_MIN_MINOR", 1000),
 		WithdrawFeeCapMinor: int64Env("GLOBMINT_WITHDRAW_FEE_CAP_MINOR", 10000),
 		VaultMinConfirmations:      uint64Env("GLOBMINT_VAULT_MIN_CONFIRMATIONS", 0),
+		PrivacyMode:                boolEnv("GLOBMINT_PRIVACY_MODE", false),
 		RateLimitAuthBurst:         intEnv("GLOBMINT_RATE_LIMIT_AUTH_BURST", 5),
 		RateLimitMoneyBurst:        intEnv("GLOBMINT_RATE_LIMIT_MONEY_BURST", 20),
 		ChaosFailureRate:           float64Env("GLOBMINT_CHAOS_FAILURE_RATE", 0),

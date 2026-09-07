@@ -8,6 +8,7 @@ import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/widgets/app_button.dart';
 import '../../../../core/widgets/app_text_field.dart';
 import '../../../../shared/services/api_client.dart';
+import '../../../../shared/widgets/privacy_notice.dart';
 
 class CreateAccountPage extends ConsumerStatefulWidget {
   const CreateAccountPage({super.key});
@@ -100,6 +101,8 @@ class _CreateAccountPageState extends ConsumerState<CreateAccountPage> {
                   style: context.typography.bodyMedium,
                 ),
                 const SizedBox(height: 32),
+                const PrivacyNotice(compact: true),
+                const SizedBox(height: 20),
                 Row(
                   children: [
                     Expanded(

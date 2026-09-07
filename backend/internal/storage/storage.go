@@ -87,6 +87,10 @@ type UserSaltsRepository interface {
 	Upsert(ctx context.Context, userID string, salt []byte) error
 	FindByUser(ctx context.Context, userID string) ([]byte, error)
 	Delete(ctx context.Context, userID string) error
+	// ListLinks returns every user with a stored salt, joined with their linked
+	// deposit address, so the indexer can resolve commitment-based deposits
+	// (keccak256(address, salt)) back to users in privacy mode.
+	ListLinks(ctx context.Context) ([]domain.UserSaltLink, error)
 }
 
 // DepositAddressRepository persists the on-chain deposit address a user links

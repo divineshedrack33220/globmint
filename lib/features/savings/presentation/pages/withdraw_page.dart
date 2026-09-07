@@ -6,6 +6,7 @@ import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/widgets/app_button.dart';
 import '../../../../core/widgets/app_text_field.dart';
+import '../../../../shared/models/models.dart';
 import '../../../../shared/widgets/stablecoin_risk_disclosure.dart';
 
 class WithdrawPage extends ConsumerStatefulWidget {
@@ -76,9 +77,9 @@ class _WithdrawPageState extends ConsumerState<WithdrawPage> {
     if (mounted) setState(() {});
   }
 
-  /// True when the destination is the vault's own address, the saved address,
-  /// or the contract: funds would loop back into the vault while still costing
-  /// the user. The server rejects this too; this check warns before submission.
+  /// True when the destination is the vault's own address or the contract:
+  /// funds would loop back into the vault while still costing the user. The
+  /// server rejects this too; this check warns before submission.
   bool _isSelfSend(String address) {
     final lower = address.trim().toLowerCase();
     if (lower.isEmpty) return false;
@@ -86,9 +87,35 @@ class _WithdrawPageState extends ConsumerState<WithdrawPage> {
     final vaultAddr = (info?.address ?? '').toLowerCase();
     final vaultContract = (info?.vaultContract ?? '').toLowerCase();
     if (lower == vaultAddr) return true;
-    if (lower == _savedAddress?.toLowerCase()) return true;
     if (vaultContract.isNotEmpty && lower == vaultContract) return true;
     return false;
+  }
+
+  /// Suggestable saved destinations: the user's own saved addresses that
+  /// carry a name. An address without a name is deliberately excluded.
+  List<Beneficiary> _suggestions(List<Beneficiary> beneficiaries) {
+    final typed = _addressController.text.trim().toLowerCase();
+    return beneficiaries
+        .where((b) => b.name.trim().isNotEmpty)
+        .where((b) =>
+            typed.isEmpty ||
+            b.name.toLowerCase().contains(typed) ||
+            b.address.toLowerCase().contains(typed))
+        .toList();
+  }
+
+  void _pickAddress(Beneficiary b) {
+    setState(() {
+      _addressController.text = b.address;
+      _savedAddress = b.address;
+    });
+  }
+
+  void _clearSaved() {
+    setState(() {
+      _savedAddress = null;
+      _addressController.clear();
+    });
   }
 
   void _updateQuote() {
@@ -149,6 +176,11 @@ class _WithdrawPageState extends ConsumerState<WithdrawPage> {
   @override
   Widget build(BuildContext context) {
     final depositInfo = ref.watch(depositInfoProvider).valueOrNull;
+    final beneficiariesAsync = ref.watch(beneficiariesProvider);
+    final beneficiaries =
+        beneficiariesAsync.valueOrNull ?? const <Beneficiary>[];
+    final suggestions = _suggestions(beneficiaries);
+    final suggestionsActive = suggestions.isNotEmpty;
     final vaultAddress = (depositInfo?.address ?? '').toLowerCase();
     final vaultContract = (depositInfo?.vaultContract ?? '').toLowerCase();
     final entered = _addressController.text.trim().toLowerCase();
@@ -213,12 +245,30 @@ class _WithdrawPageState extends ConsumerState<WithdrawPage> {
                   style: context.typography.bodySmall,
                 ),
                 const SizedBox(height: 12),
-                if (_savedAddress != null) ...[
-                  _SavedAddressChip(
-                    address: _savedAddress!,
-                    onRemoved: () => setState(() => _savedAddress = null),
+                if (suggestionsActive) ...[
+                  Text('Saved addresses', style: context.typography.labelLarge),
+                  const SizedBox(height: 8),
+                  ...suggestions.map(
+                    (b) => Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: _SavedAddressChip(
+                        name: b.name,
+                        address: b.address,
+                        isSelected: _savedAddress == b.address,
+                        onTap: () => _pickAddress(b),
+                        onRemoved: _clearSaved,
+                      ),
+                    ),
                   ),
-                  const SizedBox(height: 12),
+                  if (_savedAddress == null) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      'Suggestions come from your saved addresses.',
+                      style: context.typography.bodySmall.copyWith(
+                        color: AppColors.textSecondary,
+                      ),
+                    ),
+                  ],
                 ],
                 TextFormField(
                   controller: _addressController,
@@ -241,7 +291,7 @@ class _WithdrawPageState extends ConsumerState<WithdrawPage> {
                         ? IconButton(
                             icon: const Icon(Icons.close),
                             tooltip: 'Remove saved address',
-                            onPressed: () => setState(() => _savedAddress = null),
+                            onPressed: _clearSaved,
                           )
                         : null,
                   ),
@@ -285,46 +335,89 @@ class _WithdrawPageState extends ConsumerState<WithdrawPage> {
 
 class _SavedAddressChip extends StatelessWidget {
   const _SavedAddressChip({
+    required this.name,
     required this.address,
+    required this.isSelected,
+    required this.onTap,
     required this.onRemoved,
   });
 
+  final String name;
   final String address;
+  final bool isSelected;
+  final VoidCallback onTap;
   final VoidCallback onRemoved;
+
+  String get _label {
+    if (address.length <= 22) return address;
+    return '${address.substring(0, 10)}…${address.substring(address.length - 6)}';
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        color: AppColors.primarySubtle,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: AppColors.primary, width: 1),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const Icon(
-            Icons.save_alt_outlined,
-            color: AppColors.primary,
-            size: 18,
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: isSelected ? AppColors.primarySubtle : AppColors.surface,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: isSelected ? AppColors.primary : AppColors.border,
+            width: 1,
           ),
-          const SizedBox(width: 6),
-          Expanded(
-            child: Text(
-              address,
-              style: context.typography.labelMedium.copyWith(
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 36,
+              height: 36,
+              decoration: BoxDecoration(
+                color: isSelected
+                    ? AppColors.primarySubtle
+                    : AppColors.primaryOverlay,
+                borderRadius: BorderRadius.circular(9),
+              ),
+              child: Icon(
+                isSelected ? Icons.check : Icons.bookmark_outline,
                 color: AppColors.primary,
-                overflow: TextOverflow.ellipsis,
+                size: 18,
               ),
             ),
-          ),
-          IconButton(
-            icon: const Icon(Icons.close, size: 16, color: AppColors.textSecondary),
-            tooltip: 'Remove',
-            onPressed: onRemoved,
-          ),
-        ],
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    name,
+                    style: context.typography.labelMedium.copyWith(
+                      color: AppColors.textPrimary,
+                      fontWeight: FontWeight.w600,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    _label,
+                    style: context.typography.labelSmall.copyWith(
+                      color: AppColors.textSecondary,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
+            ),
+            IconButton(
+              icon: const Icon(Icons.close, size: 16, color: AppColors.textSecondary),
+              tooltip: 'Clear',
+              onPressed: onRemoved,
+            ),
+          ],
+        ),
       ),
     );
   }

@@ -11,6 +11,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
+
 	"globmint/backend/internal/domain"
 	"globmint/backend/internal/domain/fees"
 	"globmint/backend/internal/events"
@@ -59,6 +62,11 @@ type VaultConfig struct {
 	WithdrawFeeBPS      int
 	WithdrawFeeMinMinor int64
 	WithdrawFeeCapMinor int64
+	// PrivacyMode switches the vault to commitment-based balances. When true
+	// the indexer credits deposits via the contract's privacy `DepositedPrivate`
+	// events (resolved through keccak256(address, salt) and the user_salts
+	// table) and never relies on a raw sender address. Env: GLOBMINT_PRIVACY_MODE.
+	PrivacyMode bool
 }
 
 // indexerLeaderKey is the Postgres advisory-lock key that gates single-leader
@@ -280,17 +288,33 @@ func (v *VaultService) scan(ctx context.Context) error {
 		return err
 	}
 
+	// Privacy mode credits deposits from the vault's own `DepositedPrivate`
+	// events (which carry only a keccak256(user, salt) commitment) instead of
+	// raw USDC transfers, so senders never need to be linked wallet addresses.
+	vaultDeposits, err := v.chain.FilterVaultDeposits(ctx, scanFrom, toBlock, v.cfg.VaultContract)
+	if err != nil {
+		return err
+	}
+
 	// Confirmations are per-block: the cursor advances past the highest block
-	// that produced a confirmed transfer (or the full window when none did).
+	// that produced a confirmed event (or the full window when none did).
 	newCursor := scanFrom
 	for _, t := range tsf {
 		if t.BlockNumber >= newCursor {
 			newCursor = t.BlockNumber + 1
 		}
 	}
+	for _, d := range vaultDeposits {
+		if d.BlockNumber >= newCursor {
+			newCursor = d.BlockNumber + 1
+		}
+	}
 	// Credit deposits in parallel: independent users are processed by up to
 	// indexerWorkers goroutines, and per-user ledger writes are serialized.
 	v.processTransfers(ctx, tsf)
+	if v.cfg.PrivacyMode {
+		v.processVaultDeposits(ctx, vaultDeposits)
+	}
 
 	advanced := false
 	v.mu.Lock()
@@ -341,6 +365,135 @@ func (v *VaultService) processTransfers(ctx context.Context, transfers []blockch
 	}
 	close(jobs)
 	wg.Wait()
+}
+
+// processVaultDeposits fans confirmed privacy-mode vault deposits out to the
+// worker pool. Only commitment-resolved events (those reaching a user) are
+// credited; unlinked commitments are ignored, never credited to a fallback.
+func (v *VaultService) processVaultDeposits(ctx context.Context, deposits []blockchain.VaultDeposit) {
+	if len(deposits) == 0 {
+		return
+	}
+	commitments, err := v.commitmentUserMap(ctx)
+	if err != nil {
+		log.Printf("vault indexer: load commitment map: %v", err)
+		return
+	}
+	workers := indexerWorkers
+	if len(deposits) < workers {
+		workers = len(deposits)
+	}
+	jobs := make(chan blockchain.VaultDeposit, len(deposits))
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for d := range jobs {
+				if err := v.handleVaultDeposit(ctx, d, commitments); err != nil {
+					log.Printf("vault indexer: vault deposit %s ignored: %v", d.TxHash, err)
+				}
+			}
+		}()
+	}
+	for _, d := range deposits {
+		jobs <- d
+	}
+	close(jobs)
+	wg.Wait()
+}
+
+// commitmentUserMap builds keccak256(address, salt) -> userID for every user
+// with a stored salt and a linked deposit address, so privacy-mode deposits can
+// be resolved without any raw-address lookup by external observers.
+func (v *VaultService) commitmentUserMap(ctx context.Context) (map[string]string, error) {
+	links, err := v.store.UserSaltsRepo().ListLinks(ctx)
+	if err != nil {
+		return nil, err
+	}
+	m := make(map[string]string, len(links))
+	for _, l := range links {
+		if l.Address == "" || len(l.Salt) == 0 {
+			continue
+		}
+		m[vaultCommitment(l.Address, l.Salt)] = l.UserID
+	}
+	return m, nil
+}
+
+// vaultCommitment reproduces the contract's commitment
+// keccak256(abi.encodePacked(address, salt)) with the stored 16-byte salt
+// right-aligned into the 32-byte word (uint256 semantics). This is the exact
+// encoding the backend's salt-aware deposit path uses on-chain.
+func vaultCommitment(address string, salt []byte) string {
+	addr := common.HexToAddress(address)
+	word := make([]byte, 32)
+	copy(word[32-len(salt):], salt)
+	return crypto.Keccak256Hash(addr.Bytes(), word).Hex()
+}
+
+// handleVaultDeposit credits the NGN balance of the user whose deposit
+// commitment resolves through the vault's privacy event. Legacy events (raw
+// user present) are resolved through the deposit-address link. Unlinked
+// commitments are never credited to a fallback user — doing so would risk
+// crediting the wrong account.
+func (v *VaultService) handleVaultDeposit(ctx context.Context, d blockchain.VaultDeposit, commitments map[string]string) error {
+	if d.Amount == nil || d.Amount.Sign() <= 0 {
+		return nil
+	}
+	userID := ""
+	if d.User != "" {
+		var err error
+		userID, err = v.senderUserID(ctx, d.User)
+		if err != nil {
+			return err
+		}
+	} else {
+		userID = commitments[d.Commitment]
+	}
+	if userID == "" {
+		return errors.New("commitment not linked to a user")
+	}
+
+	if err := v.store.IndexerEventRepo().Insert(ctx, &domain.IndexerEvent{
+		TxHash:      d.TxHash,
+		LogIndex:    d.LogIndex,
+		BlockNumber: d.BlockNumber,
+		EventType:   "deposited",
+		From:        d.Commitment,
+		To:          v.cfg.VaultContract,
+		ValueBase:   d.Amount.Int64(),
+	}); err != nil {
+		log.Printf("vault indexer: event log write failed: %v", err)
+	}
+
+	ngnMinor := depositNGNMinor(d.Amount, v.currentRateMinor())
+	if ngnMinor <= 0 {
+		return errors.New("deposit value below resolution")
+	}
+
+	lock := v.lockFor(userID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	// Distinct key from the transfer path so the two never collide on the same
+	// deposit. tx hash + log index keeps privacy guarantees intact.
+	key := "vault-deposit-vault-" + d.TxHash + ":" + fmt.Sprint(d.LogIndex)
+	if _, err := v.money.Deposit(ctx, userID, "NGN", ngnMinor, key); err != nil {
+		if errors.Is(err, domain.ErrConflict) {
+			return nil
+		}
+		return err
+	}
+	if v.Hub != nil {
+		v.Hub.Publish(events.Event{
+			Type: "data.changed", UserID: userID, Kind: "all",
+			At: time.Now().UTC().Format(time.RFC3339),
+		})
+	}
+	log.Printf("vault indexer: credited %d kobo to %s (vault deposit %s, %s USDC)",
+		ngnMinor, userID, d.TxHash, baseToMajorString(d.Amount, v.cfg.StablecoinDecimals))
+	return nil
 }
 
 // handleDeposit credits the NGN balance of the user whose linked wallet (the

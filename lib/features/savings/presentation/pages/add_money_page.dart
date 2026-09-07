@@ -8,6 +8,7 @@ import '../../../../app/providers.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/theme_extensions.dart';
 import '../../../../shared/services/savings_client.dart';
+import '../../../../shared/widgets/privacy_notice.dart';
 import '../../../../shared/widgets/stablecoin_risk_disclosure.dart';
 
 /// Personal savings vault. You top it up by sending USDC on-chain to the
@@ -119,6 +120,13 @@ class _AddMoneyPageState extends ConsumerState<AddMoneyPage> {
                       ],
                     ),
                     const SizedBox(height: 16),
+                    if (deposit != null && deposit.privacyEnabled) ...[
+                      const Align(
+                        alignment: Alignment.centerLeft,
+                        child: PrivacyBadge(),
+                      ),
+                      const SizedBox(height: 12),
+                    ],
                     if (deposit == null && _depositError)
                       Text('Deposit details are unavailable right now.',
                           style: context.typography.bodySmall)
@@ -223,6 +231,10 @@ class _AddMoneyPageState extends ConsumerState<AddMoneyPage> {
                 ),
               ),
               const SizedBox(height: 24),
+              if (deposit?.privacyEnabled == true) ...[
+                const PrivacyNotice(),
+                const SizedBox(height: 24),
+              ],
               Center(
                 child: Text(
                   deposit?.network != null && deposit!.network.isNotEmpty

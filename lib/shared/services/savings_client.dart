@@ -16,6 +16,7 @@ class DepositInfo {
     required this.network,
     required this.chainId,
     required this.mode,
+    this.privacyEnabled = false,
   });
 
   final String address;
@@ -27,6 +28,11 @@ class DepositInfo {
   final String network;
   final int chainId;
   final String mode;
+
+  /// When true the vault uses commitment-based balances: deposits are matched
+  /// via keccak256(address, salt) and the raw address never appears in on-chain
+  /// deposit events.
+  final bool privacyEnabled;
 
   bool get hasAddress => address.isNotEmpty && address != '0x0000000000000000000000000000000000000000';
 
@@ -40,6 +46,7 @@ class DepositInfo {
         network: j['network'] as String? ?? '',
         chainId: (j['chain_id'] as num?)?.toInt() ?? 0,
         mode: j['mode'] as String? ?? '',
+        privacyEnabled: j['privacy_enabled'] == true,
       );
 }
 
@@ -57,6 +64,7 @@ class VaultStatus {
     required this.chainId,
     required this.mode,
     required this.vaultUsdcBalance,
+    this.privacyEnabled = false,
     this.withdrawMinMinor = 0,
     this.withdrawMaxMinor = 0,
     this.withdrawDailyCapMinor = 0,
@@ -74,6 +82,9 @@ class VaultStatus {
   final int chainId;
   final String mode;
   final String vaultUsdcBalance;
+
+  /// When true the vault uses commitment-based (salt-hashed) balances.
+  final bool privacyEnabled;
 
   /// Operator-configured withdrawal guards in NGN minor units (kobo).
   /// Zero means that guard is disabled. Absent on older servers.
@@ -100,6 +111,7 @@ class VaultStatus {
       network: info['network'] as String? ?? '',
       chainId: (info['chain_id'] as num?)?.toInt() ?? 0,
       mode: info['mode'] as String? ?? '',
+      privacyEnabled: info['privacy_enabled'] == true,
       vaultUsdcBalance: j['vault_usdc_balance'] as String? ?? '0',
       withdrawMinMinor: (limits['min_minor'] as num?)?.toInt() ?? 0,
       withdrawMaxMinor: (limits['max_minor'] as num?)?.toInt() ?? 0,

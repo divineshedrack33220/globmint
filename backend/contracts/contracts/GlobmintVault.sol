@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import "./SafeMath.sol";
+
 /**
  * @title GlobmintVault
  * @notice Non-custodial, per-user stablecoin savings vault.
@@ -174,7 +176,7 @@ contract GlobmintVault {
      * @dev Internal helper: keccak256(abi.encodePacked(user, salt)).
      *      When salt is zero (privacy off), keccak256(user || 0) is deterministic.
      */
-    function commitmentKey(address user) internal pure returns (bytes32) {
+    function commitmentKey(address user) internal view returns (bytes32) {
         return keccak256(abi.encodePacked(user, _zeroSalt));
     }
 }

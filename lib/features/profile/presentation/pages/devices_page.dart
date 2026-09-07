@@ -6,6 +6,7 @@ import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/utils/formatters.dart';
 import '../../../../core/widgets/app_button.dart';
+import '../../../../core/widgets/empty_state.dart';
 import '../../../../shared/models/models.dart';
 
 class DevicesPage extends ConsumerStatefulWidget {
@@ -77,13 +78,12 @@ class _DevicesPageState extends ConsumerState<DevicesPage> {
                 ),
                 data: (devices) {
                   if (devices.isEmpty) {
-                    return Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 40),
-                      child: Center(
-                        child: Text(
-                          'No active devices.',
-                          style: context.typography.bodyMedium,
-                        ),
+                    return const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 32),
+                      child: EmptyState(
+                        icon: Icons.devices_other_outlined,
+                        title: 'No active devices',
+                        description: 'Devices signed in to your account will show here',
                       ),
                     );
                   }

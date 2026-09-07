@@ -2,6 +2,8 @@ package services
 
 import (
 	"context"
+	"crypto/rand"
+	"errors"
 
 	"globmint/backend/internal/config"
 	"globmint/backend/internal/domain"
@@ -21,6 +23,8 @@ type SavingsConfig struct {
 	Network            string
 	ChainID            int64
 	Mode               string
+	// PrivacyMode enables commitment-based (salt-hashed) vault balances.
+	PrivacyMode bool
 }
 
 // SavingsService manages the per-user on-chain deposit address used for
@@ -48,6 +52,10 @@ type DepositInfo struct {
 	Network            string `json:"network"`
 	ChainID            int64  `json:"chain_id"`
 	Mode               string `json:"mode"`
+	// PrivacyEnabled reports whether commitment-based (salt-hashed) balances
+	// are active. When true, clients must use the salt-aware vault entry points
+	// and the raw address never appears in deposit events.
+	PrivacyEnabled bool `json:"privacy_enabled"`
 }
 
 // GetDepositInfo returns the on-chain deposit address (vault) along with the
@@ -63,12 +71,19 @@ func (s *SavingsService) GetDepositInfo(ctx context.Context, userID string) (*De
 		Network:            s.cfg.Network,
 		ChainID:            s.cfg.ChainID,
 		Mode:               s.cfg.Mode,
+		PrivacyEnabled:     s.cfg.PrivacyMode,
 	}
 	return info, nil
 }
 
 // SetDepositAddress links (or re-links) the user's own wallet address. It
 // rejects addresses already claimed by another user and validates the format.
+//
+// Privacy mode: on the very first link the backend generates a fresh 16-byte
+// random salt for the user (stored in user_salts) from which deposit
+// commitments (keccak256(address, salt)) are derived. Re-linking the address
+// within privacy mode PRESERVES the existing salt so a commitment already
+// funded on-chain stays resolvable; the salt is never returned to the client.
 func (s *SavingsService) SetDepositAddress(ctx context.Context, userID, address string) (*DepositInfo, error) {
 	addr, err := domain.ValidateDepositAddress(address)
 	if err != nil {
@@ -87,7 +102,31 @@ func (s *SavingsService) SetDepositAddress(ctx context.Context, userID, address 
 	if err := s.store.DepositAddressRepo().Set(ctx, &domain.DepositAddress{UserID: userID, Address: addr}); err != nil {
 		return nil, err
 	}
+
+	if s.cfg.PrivacyMode {
+		if err := s.ensureUserSalt(ctx, userID); err != nil {
+			return nil, err
+		}
+	}
 	return s.GetDepositInfo(ctx, userID)
+}
+
+// ensureUserSalt generates and stores a fresh random salt on first use and
+// never overwrites an existing one, so an already-funded commitment keeps
+// resolving to the same user after a re-link.
+func (s *SavingsService) ensureUserSalt(ctx context.Context, userID string) error {
+	existing, err := s.store.UserSaltsRepo().FindByUser(ctx, userID)
+	if err == nil && len(existing) > 0 {
+		return nil
+	}
+	if err != nil && !errors.Is(err, domain.ErrNotFound) {
+		return err
+	}
+	salt := make([]byte, 16)
+	if _, err := rand.Read(salt); err != nil {
+		return err
+	}
+	return s.store.UserSaltsRepo().Upsert(ctx, userID, salt)
 }
 
 // FromConfig derives a SavingsConfig from the app configuration.
@@ -102,5 +141,6 @@ func FromConfig(cfg config.Config) SavingsConfig {
 		Network:            cfg.Blockchain.Network,
 		ChainID:            cfg.Blockchain.ChainID,
 		Mode:               cfg.Blockchain.Mode,
+		PrivacyMode:        cfg.PrivacyMode,
 	}
 }
