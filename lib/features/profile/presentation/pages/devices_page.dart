@@ -136,7 +136,7 @@ class _DevicesPageState extends ConsumerState<DevicesPage> {
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
-                  color: AppColors.primaryMuted,
+                  color: AppColors.primarySubtle,
                   borderRadius: BorderRadius.circular(16),
                   border: Border.all(color: AppColors.primary.withValues(alpha: 0.3)),
                 ),
@@ -207,7 +207,7 @@ class _DeviceTile extends StatelessWidget {
               width: 44,
               height: 44,
               decoration: BoxDecoration(
-                color: AppColors.primaryMuted,
+                color: AppColors.primarySubtle,
                 borderRadius: BorderRadius.circular(12),
               ),
               child: Icon(_icon, color: AppColors.primary, size: 22),
@@ -227,7 +227,7 @@ class _DeviceTile extends StatelessWidget {
                         Container(
                           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                           decoration: BoxDecoration(
-                            color: AppColors.primaryMuted,
+                            color: AppColors.primarySubtle,
                             borderRadius: BorderRadius.circular(6),
                           ),
                           child: Text('THIS', style: context.typography.labelSmall.copyWith(color: AppColors.primary, fontSize: 9)),

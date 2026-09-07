@@ -281,7 +281,7 @@ class _SwitchTile extends StatelessWidget {
       secondary: Icon(icon, color: AppColors.textSecondary, size: 20),
       title: Text(title, style: context.typography.bodyLarge),
       subtitle: Text(subtitle, style: context.typography.bodySmall),
-      activeTrackColor: AppColors.primaryMuted,
+      activeTrackColor: AppColors.primarySubtle,
       activeThumbColor: AppColors.primary,
       inactiveThumbColor: AppColors.textTertiary,
       inactiveTrackColor: AppColors.surfaceHighlight,

@@ -201,11 +201,11 @@ class _TransactionTile extends StatelessWidget {
       case TransactionType.withdrawal:
         return AppColors.destructiveMuted;
       case TransactionType.conversion:
-        return AppColors.primaryMuted;
+        return AppColors.primarySubtle;
       case TransactionType.transfer:
         return AppColors.infoMuted;
       case TransactionType.savings:
-        return AppColors.primaryMuted;
+        return AppColors.primarySubtle;
       case TransactionType.fee:
         return AppColors.warningMuted;
       case TransactionType.adjustment:

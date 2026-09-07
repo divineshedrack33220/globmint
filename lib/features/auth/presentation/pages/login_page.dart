@@ -141,11 +141,11 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                     label: 'Password',
                     hint: 'Enter your password',
                     controller: _passwordController,
-                    validator: (v) {
-                      if (v == null || v.isEmpty) return 'Password is required';
-                      if (v.length < 6) return 'Password must be at least 6 characters';
-                      return null;
-                    },
+validator: (v) {
+                    if (v == null || v.isEmpty) return 'Password is required';
+                    if (v.length < 8) return 'At least 8 characters';
+                    return null;
+                  },
                     textInputAction: TextInputAction.done,
                   ),
                   const SizedBox(height: 12),

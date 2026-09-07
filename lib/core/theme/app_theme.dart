@@ -91,6 +91,51 @@ abstract final class AppTheme {
         elevation: 0,
         selectedLabelStyle: TextStyle(fontSize: 10, fontWeight: FontWeight.w500),
         unselectedLabelStyle: TextStyle(fontSize: 10, fontWeight: FontWeight.w500),
+        // Subtle highlight for selected item
+        selectedIconTheme: IconThemeData(
+          color: AppColors.primary,
+          opacity: 0.9,
+        ),
+        unselectedIconTheme: IconThemeData(
+          color: AppColors.textTertiary,
+          opacity: 0.7,
+        ),
+      ),
+      // Button themes with subtle highlights
+      elevatedButtonTheme: ElevatedButtonThemeData(
+        style: ElevatedButton.styleFrom(
+          backgroundColor: AppColors.primary,
+          foregroundColor: AppColors.textOnPrimary,
+          disabledBackgroundColor: AppColors.border,
+          disabledForegroundColor: AppColors.textDisabled,
+          elevation: 0,
+          shadowColor: AppColors.primaryHighlight,
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(AppRadius.md),
+          ),
+        ),
+      ),
+      outlinedButtonTheme: OutlinedButtonThemeData(
+        style: OutlinedButton.styleFrom(
+          foregroundColor: AppColors.primary,
+          disabledForegroundColor: AppColors.textDisabled,
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(AppRadius.md),
+          ),
+          side: BorderSide(
+            color: AppColors.primary,
+            width: 1.5,
+          ),
+        ),
+      ),
+      textButtonTheme: TextButtonThemeData(
+        style: TextButton.styleFrom(
+          foregroundColor: AppColors.primary,
+          disabledForegroundColor: AppColors.textDisabled,
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        ),
       ),
       dividerTheme: const DividerThemeData(
         color: AppColors.divider,

@@ -245,7 +245,7 @@ class _FilterChip extends StatelessWidget {
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
           decoration: BoxDecoration(
-            color: selected ? AppColors.primaryMuted : AppColors.surface,
+            color: selected ? AppColors.primarySubtle : AppColors.surface,
             borderRadius: BorderRadius.circular(20),
             border: Border.all(
               color: selected ? AppColors.primary : AppColors.border,
@@ -356,7 +356,7 @@ class _SavingTile extends StatelessWidget {
         width: 40,
         height: 40,
         decoration: BoxDecoration(
-          color: AppColors.primaryMuted,
+          color: AppColors.primarySubtle,
           borderRadius: BorderRadius.circular(10),
         ),
         child: Icon(icon, color: color, size: 18),

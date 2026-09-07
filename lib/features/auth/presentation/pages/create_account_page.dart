@@ -23,6 +23,7 @@ class _CreateAccountPageState extends ConsumerState<CreateAccountPage> {
   final _emailController = TextEditingController();
   final _phoneController = TextEditingController();
   final _passwordController = TextEditingController();
+  final _confirmController = TextEditingController();
   bool _isLoading = false;
   late final _termsRecognizer = TapGestureRecognizer()
     ..onTap = () => context.push('/legal/terms');
@@ -36,6 +37,7 @@ class _CreateAccountPageState extends ConsumerState<CreateAccountPage> {
     _emailController.dispose();
     _phoneController.dispose();
     _passwordController.dispose();
+    _confirmController.dispose();
     _termsRecognizer.dispose();
     _privacyRecognizer.dispose();
     super.dispose();
@@ -151,11 +153,23 @@ class _CreateAccountPageState extends ConsumerState<CreateAccountPage> {
                 const SizedBox(height: 20),
                 PasswordTextField(
                   label: 'Password',
-                  hint: 'At least 6 characters',
+                  hint: 'At least 8 characters',
                   controller: _passwordController,
                   validator: (v) {
                     if (v == null || v.isEmpty) return 'Password is required';
-                    if (v.length < 6) return 'At least 6 characters';
+                    if (v.length < 8) return 'At least 8 characters';
+                    return null;
+                  },
+                  textInputAction: TextInputAction.next,
+                ),
+                const SizedBox(height: 20),
+                PasswordTextField(
+                  label: 'Confirm password',
+                  hint: 'Re-enter password',
+                  controller: _confirmController,
+                  validator: (v) {
+                    if (v == null || v.isEmpty) return 'Confirm your password';
+                    if (v != _passwordController.text) return 'Passwords do not match';
                     return null;
                   },
                   textInputAction: TextInputAction.done,

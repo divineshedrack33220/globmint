@@ -115,7 +115,7 @@ class _TransferReviewPageState extends ConsumerState<TransferReviewPage> {
                         children: [
                           Container(
                             width: 36, height: 36,
-                            decoration: BoxDecoration(color: AppColors.primaryMuted, borderRadius: BorderRadius.circular(9)),
+                            decoration: BoxDecoration(color: AppColors.primarySubtle, borderRadius: BorderRadius.circular(9)),
                             child: const Icon(Icons.person, color: AppColors.primary, size: 20),
                           ),
                           const SizedBox(width: 10),

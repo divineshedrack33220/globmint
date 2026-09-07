@@ -214,7 +214,7 @@ class _ContactOption extends StatelessWidget {
                 width: 40,
                 height: 40,
                 decoration: BoxDecoration(
-                  color: AppColors.primaryMuted,
+                  color: AppColors.primarySubtle,
                   borderRadius: BorderRadius.circular(10),
                 ),
                 child: Icon(icon, color: AppColors.primary, size: 20),

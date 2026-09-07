@@ -25,7 +25,7 @@ class TransferResultPage extends StatelessWidget {
     final isSuccess = type == TransferResultType.success;
     final icon = isSuccess ? Icons.check : (type == TransferResultType.processing ? Icons.hourglass_top : Icons.error_outline);
     final color = isSuccess ? AppColors.success : (type == TransferResultType.processing ? AppColors.primary : AppColors.destructive);
-    final muted = isSuccess ? AppColors.successMuted : (type == TransferResultType.processing ? AppColors.primaryMuted : AppColors.destructiveMuted);
+    final muted = isSuccess ? AppColors.successMuted : (type == TransferResultType.processing ? AppColors.primarySubtle : AppColors.destructiveMuted);
     final title = isSuccess ? 'Transfer Successful' : (type == TransferResultType.processing ? 'Processing Transfer' : 'Transfer Failed');
     final subtitle = isSuccess
         ? 'Sent to ${accountName ?? 'Beneficiary'}'

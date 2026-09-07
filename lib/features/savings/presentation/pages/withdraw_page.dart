@@ -297,7 +297,7 @@ class _SavedAddressChip extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
-        color: AppColors.primaryMuted,
+        color: AppColors.primarySubtle,
         borderRadius: BorderRadius.circular(20),
         border: Border.all(color: AppColors.primary, width: 1),
       ),
@@ -351,7 +351,7 @@ class _NetworkOption extends StatelessWidget {
         duration: const Duration(milliseconds: 200),
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         decoration: BoxDecoration(
-          color: isSelected ? AppColors.primaryMuted : AppColors.surface,
+          color: isSelected ? AppColors.primarySubtle : AppColors.surface,
           borderRadius: BorderRadius.circular(12),
           border: Border.all(
             color: isSelected ? AppColors.primary : AppColors.border,

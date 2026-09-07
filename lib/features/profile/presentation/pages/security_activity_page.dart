@@ -188,13 +188,13 @@ class SecurityActivityPage extends ConsumerWidget {
       case 'register':
         return (Icons.person_add_alt_1, AppColors.success, AppColors.successMuted);
       case 'pin_change':
-        return (Icons.lock_reset, AppColors.primary, AppColors.primaryMuted);
+        return (Icons.lock_reset, AppColors.primary, AppColors.primarySubtle);
       case 'password':
         return (Icons.password, AppColors.success, AppColors.successMuted);
       case 'logout':
-        return (Icons.logout, AppColors.infoMuted, AppColors.primaryMuted);
+        return (Icons.logout, AppColors.infoMuted, AppColors.primarySubtle);
       case 'device':
-        return (Icons.phone_android, AppColors.primary, AppColors.primaryMuted);
+        return (Icons.phone_android, AppColors.primary, AppColors.primarySubtle);
       case 'alert':
         return (Icons.warning_amber, AppColors.warning, AppColors.warningMuted);
       default:

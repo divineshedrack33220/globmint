@@ -53,7 +53,7 @@ class _AnnouncementSlotState extends State<AnnouncementSlot> {
             width: double.infinity,
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
-              color: AppColors.primaryMuted,
+              color: AppColors.primarySubtle,
               borderRadius: BorderRadius.circular(16),
               border: Border.all(color: AppColors.primary, width: 1),
             ),

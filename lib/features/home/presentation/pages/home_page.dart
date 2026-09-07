@@ -388,7 +388,7 @@ class _NetworkChip extends StatelessWidget {
       margin: const EdgeInsets.only(top: 4),
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-        color: AppColors.primary.withValues(alpha: 0.12),
+        color: AppColors.primaryOverlay,
         borderRadius: BorderRadius.circular(6),
       ),
       child: Text(

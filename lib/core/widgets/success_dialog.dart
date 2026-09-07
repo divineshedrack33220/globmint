@@ -94,7 +94,7 @@ class _SuccessDialogState extends State<SuccessDialog> with SingleTickerProvider
   Widget build(BuildContext context) {
     final (iconData, iconColor, bgColor) = switch (widget.type) {
       SuccessDialogType.success => (Icons.check, AppColors.success, AppColors.successMuted),
-      SuccessDialogType.conversion => (Icons.currency_exchange, AppColors.primary, AppColors.primaryMuted),
+      SuccessDialogType.conversion => (Icons.currency_exchange, AppColors.primary, AppColors.primarySubtle),
       SuccessDialogType.transfer => (Icons.send, AppColors.info, AppColors.infoMuted),
       SuccessDialogType.warning => (Icons.warning_amber, AppColors.warning, AppColors.warningMuted),
     };

@@ -14,12 +14,20 @@ abstract final class AppColors {
   // ============================================================
   // BRAND — SIGNATURE YELLOW
   // ============================================================
-  static const Color primary = Color(0xFFFFD21F);
-  static const Color primaryBright = Color(0xFFFFE66D);
-  static const Color primaryDark = Color(0xFFC9A900);
-  static const Color primaryMuted = Color(0xFF4A4000);
-  static const Color primaryGlow = Color(0x33FFD21F);
+  static const Color primary = Color(0xFFD6FB57);
+  static const Color primaryBright = Color(0xFFD6FB57);
+  static const Color primaryDark = Color(0xFFD6FB57);
+  static const Color primaryMuted = Color(0xFFD6FB57);
+  static const Color primaryGlow = Color(0x33D6FB57);
   static const Color primaryForeground = Color(0xFF000000);
+
+  // ============================================================
+  // TRANSPARENT / SUBTLE VARIANTS FOR HIGHLIGHTS & OVERLAYS
+  // ============================================================
+  static const Color primarySubtle = Color(0x4DD6FB57);   // 30% opacity for backgrounds
+  static const Color primaryHighlight = Color(0x66D6FB57); // 40% for pressed/hover
+  static const Color primaryOverlay = Color(0x1AD6FB57);  // 10% for subtle overlays
+  static const Color primarySoft = Color(0x26D6FB57);     // 15% for very subtle
 
   // ============================================================
   // TEXT
@@ -59,7 +67,7 @@ abstract final class AppColors {
   static const Color inputBackground = Color(0xFF111111);
   static const Color inputFocus = Color(0xFF181818);
   static const Color inputBorder = Color(0xFF242424);
-  static const Color inputBorderFocus = Color(0xFFFFD21F);
+  static const Color inputBorderFocus = Color(0xFFD6FB57);
   static const Color inputBorderError = Color(0xFFEF4444);
 
   // ============================================================

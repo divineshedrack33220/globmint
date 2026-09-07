@@ -204,7 +204,7 @@ class _ScaffoldWithNavBarState extends ConsumerState<ScaffoldWithNavBar> {
                               height: 32,
                               decoration: BoxDecoration(
                                 color: isActive
-                                    ? AppColors.primaryMuted
+                                    ? AppColors.primarySubtle  // Softer background
                                     : Colors.transparent,
                                 borderRadius: BorderRadius.circular(10),
                               ),
@@ -213,7 +213,7 @@ class _ScaffoldWithNavBarState extends ConsumerState<ScaffoldWithNavBar> {
                                 size: 20,
                                 color: isActive
                                     ? AppColors.primary
-                                    : AppColors.textTertiary,
+                                    : AppColors.textTertiary.withValues(alpha: 0.6),  // Less visible
                               ),
                             ),
                             const SizedBox(height: 2),
@@ -225,7 +225,7 @@ class _ScaffoldWithNavBarState extends ConsumerState<ScaffoldWithNavBar> {
                                     isActive ? FontWeight.w600 : FontWeight.w500,
                                 color: isActive
                                     ? AppColors.primary
-                                    : AppColors.textTertiary,
+                                    : AppColors.textTertiary.withValues(alpha: 0.6),
                               ),
                             ),
                           ],

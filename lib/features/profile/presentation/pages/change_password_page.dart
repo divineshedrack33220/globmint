@@ -89,9 +89,9 @@ class _ChangePasswordPageState extends ConsumerState<ChangePasswordPage> {
                   controller: _currentController,
                   label: 'Current password',
                   hint: 'Enter current password',
-                  validator: (v) {
-                    if (v == null || v.isEmpty) return 'Enter your current password';
-                    if (v.length < 6) return 'Password must be at least 6 characters';
+validator: (v) {
+                    if (v == null || v.isEmpty) return 'Password is required';
+                    if (v.length < 8) return 'At least 8 characters';
                     return null;
                   },
                 ),
@@ -99,7 +99,7 @@ class _ChangePasswordPageState extends ConsumerState<ChangePasswordPage> {
                 PasswordTextField(
                   controller: _newController,
                   label: 'New password',
-                  hint: 'Enter new password',
+                  hint: 'At least 8 characters',
                   validator: (v) {
                     if (v == null || v.isEmpty) return 'Enter a new password';
                     if (v.length < 8) return 'Use at least 8 characters';

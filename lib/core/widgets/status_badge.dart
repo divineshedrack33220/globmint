@@ -62,7 +62,7 @@ class StatusBadge extends StatelessWidget {
         return _StatusConfig(AppColors.warning, AppColors.warningMuted);
       case TransactionStatus.initiated:
       case TransactionStatus.authorized:
-        return _StatusConfig(AppColors.primary, AppColors.primaryMuted);
+        return _StatusConfig(AppColors.primary, AppColors.primarySubtle);
       case TransactionStatus.failed:
         return _StatusConfig(AppColors.destructive, AppColors.destructiveMuted);
       case TransactionStatus.cancelled:

@@ -81,7 +81,7 @@ class PayPage extends ConsumerWidget {
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: AppColors.primaryMuted.withValues(alpha: 0.35),
+                  color: AppColors.primaryOverlay,
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: Row(
@@ -138,7 +138,7 @@ class _PayoutAction extends StatelessWidget {
               width: 48,
               height: 48,
               decoration: BoxDecoration(
-                color: AppColors.primaryMuted,
+                color: AppColors.primarySubtle,
                 borderRadius: BorderRadius.circular(12),
               ),
               child: Icon(icon, color: AppColors.primary, size: 24),

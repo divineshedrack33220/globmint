@@ -44,7 +44,7 @@ class ProfilePage extends ConsumerWidget {
                       width: 72,
                       height: 72,
                       decoration: BoxDecoration(
-                        color: AppColors.primaryMuted,
+                        color: AppColors.primarySubtle,
                         shape: BoxShape.circle,
                         border: Border.all(color: AppColors.primary, width: 2),
                       ),

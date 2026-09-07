@@ -166,7 +166,7 @@ class _BeneficiaryDetailsPageState extends ConsumerState<BeneficiaryDetailsPage>
                       decoration: BoxDecoration(
                         color: _beneficiary.isFavorite
                             ? AppColors.warningMuted
-                            : AppColors.primaryMuted,
+                            : AppColors.primarySubtle,
                         shape: BoxShape.circle,
                       ),
                       child: Icon(

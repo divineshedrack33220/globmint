@@ -188,7 +188,7 @@ class _BeneficiariesPageState extends ConsumerState<BeneficiariesPage> {
                     Container(
                       width: 80, height: 80,
                       decoration: BoxDecoration(
-                        color: AppColors.primaryMuted,
+                        color: AppColors.primarySubtle,
                         shape: BoxShape.circle,
                       ),
                       child: const Icon(Icons.people_outline, color: AppColors.primary, size: 40),
@@ -257,7 +257,7 @@ class _BeneficiaryTile extends StatelessWidget {
           Container(
             width: 48, height: 48,
             decoration: BoxDecoration(
-              color: beneficiary.isFavorite ? AppColors.warningMuted : AppColors.primaryMuted,
+              color: beneficiary.isFavorite ? AppColors.warningMuted : AppColors.primarySubtle,
               borderRadius: BorderRadius.circular(12),
             ),
             child: Icon(

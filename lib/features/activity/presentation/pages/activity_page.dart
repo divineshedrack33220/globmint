@@ -129,7 +129,7 @@ class _ActivityPageState extends ConsumerState<ActivityPage> {
                             width: 80,
                             height: 80,
                             decoration: BoxDecoration(
-                              color: AppColors.primaryMuted,
+                              color: AppColors.primarySubtle,
                               shape: BoxShape.circle,
                             ),
                             child: const Icon(Icons.receipt_long, color: AppColors.primary, size: 36),
@@ -192,7 +192,7 @@ class _FilterChip extends StatelessWidget {
         duration: const Duration(milliseconds: 200),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         decoration: BoxDecoration(
-          color: isSelected ? AppColors.primaryMuted : Colors.transparent,
+          color: isSelected ? AppColors.primarySubtle : Colors.transparent,
           borderRadius: BorderRadius.circular(20),
           border: Border.all(
             color: isSelected ? AppColors.primary : AppColors.border,
@@ -329,11 +329,11 @@ class _TransactionTile extends StatelessWidget {
       case TransactionType.withdrawal:
         return AppColors.destructiveMuted;
       case TransactionType.conversion:
-        return AppColors.primaryMuted;
+        return AppColors.primarySubtle;
       case TransactionType.transfer:
         return AppColors.infoMuted;
       case TransactionType.savings:
-        return AppColors.primaryMuted;
+        return AppColors.primarySubtle;
       case TransactionType.fee:
         return AppColors.warningMuted;
       case TransactionType.adjustment:

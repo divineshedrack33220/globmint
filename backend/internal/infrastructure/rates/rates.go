@@ -27,13 +27,13 @@ type Provider struct {
 	at   time.Time
 }
 
-// New builds a provider. cacheTTL <= 0 applies a 60s default.
+// New builds a provider. cacheTTL <= 0 applies a 15s default.
 func New(client *http.Client, cacheTTL time.Duration) *Provider {
 	if client == nil {
 		client = &http.Client{Timeout: DefaultTimeout}
 	}
 	if cacheTTL <= 0 {
-		cacheTTL = 60 * time.Second
+		cacheTTL = 15 * time.Second
 	}
 	return &Provider{client: client, cacheTTL: cacheTTL}
 }

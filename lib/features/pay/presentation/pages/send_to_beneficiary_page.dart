@@ -92,7 +92,7 @@ class _SendToBeneficiaryPageState extends ConsumerState<SendToBeneficiaryPage> {
                         child: Container(
                           padding: const EdgeInsets.all(12),
                           decoration: BoxDecoration(
-                            color: isSelected ? AppColors.primaryMuted.withValues(alpha: 0.3) : Colors.transparent,
+                            color: isSelected ? AppColors.primarySubtle : Colors.transparent,
                             borderRadius: BorderRadius.circular(12),
                           ),
                           child: Row(
@@ -101,7 +101,7 @@ class _SendToBeneficiaryPageState extends ConsumerState<SendToBeneficiaryPage> {
                                 width: 44,
                                 height: 44,
                                 decoration: BoxDecoration(
-                                  color: b.isFavorite ? AppColors.warningMuted : AppColors.primaryMuted,
+                                  color: b.isFavorite ? AppColors.warningMuted : AppColors.primarySubtle,
                                   borderRadius: BorderRadius.circular(11),
                                 ),
                                 child: Icon(
@@ -194,7 +194,7 @@ class _SendToBeneficiaryPageState extends ConsumerState<SendToBeneficiaryPage> {
                           height: 48,
                           decoration: BoxDecoration(
                             color: _selected != null
-                                ? AppColors.primaryMuted
+                                ? AppColors.primarySubtle
                                 : AppColors.surfaceHighlight,
                             borderRadius: BorderRadius.circular(12),
                           ),
@@ -250,7 +250,7 @@ class _SendToBeneficiaryPageState extends ConsumerState<SendToBeneficiaryPage> {
                 Container(
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
-                    color: AppColors.primaryMuted.withValues(alpha: 0.35),
+                    color: AppColors.primaryOverlay,
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Row(

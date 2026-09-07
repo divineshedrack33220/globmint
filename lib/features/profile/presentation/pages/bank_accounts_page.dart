@@ -178,7 +178,7 @@ class _BankAccountsPageState extends ConsumerState<BankAccountsPage> {
                     width: 44,
                     height: 44,
                     decoration: BoxDecoration(
-                      color: account.isDefault ? AppColors.primaryMuted : AppColors.surfaceHighlight,
+                      color: account.isDefault ? AppColors.primarySubtle : AppColors.surfaceHighlight,
                       borderRadius: BorderRadius.circular(12),
                       border: account.isDefault ? Border.all(color: AppColors.primary, width: 2) : null,
                     ),
@@ -289,7 +289,7 @@ class _BankAccountsPageState extends ConsumerState<BankAccountsPage> {
                     Container(
                       width: 80, height: 80,
                       decoration: BoxDecoration(
-                        color: AppColors.primaryMuted,
+                        color: AppColors.primarySubtle,
                         shape: BoxShape.circle,
                       ),
                       child: const Icon(Icons.account_balance, color: AppColors.primary, size: 40),
@@ -358,7 +358,7 @@ class _BankAccountTile extends StatelessWidget {
           Container(
             width: 48, height: 48,
             decoration: BoxDecoration(
-              color: account.isDefault ? AppColors.primaryMuted : AppColors.surfaceHighlight,
+              color: account.isDefault ? AppColors.primarySubtle : AppColors.surfaceHighlight,
               borderRadius: BorderRadius.circular(12),
               border: account.isDefault ? Border.all(color: AppColors.primary, width: 2) : null,
             ),
@@ -381,7 +381,7 @@ class _BankAccountTile extends StatelessWidget {
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
                         decoration: BoxDecoration(
-                          color: AppColors.primaryMuted,
+                          color: AppColors.primarySubtle,
                           borderRadius: BorderRadius.circular(4),
                         ),
                         child: Text('DEFAULT', style: context.typography.labelSmall.copyWith(

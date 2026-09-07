@@ -57,6 +57,7 @@ class AppButton extends StatelessWidget {
           disabledBackgroundColor: AppColors.border,
           disabledForegroundColor: AppColors.textDisabled,
           elevation: 0,
+          shadowColor: AppColors.primaryHighlight,
           padding: const EdgeInsets.symmetric(horizontal: 24),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(AppRadius.md),
@@ -136,7 +137,7 @@ class AppButton extends StatelessWidget {
           foregroundColor: AppColors.textPrimary,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(AppRadius.md),
-            side: const BorderSide(color: AppColors.border, width: 1),
+            side: BorderSide(color: AppColors.border, width: 1),
           ),
         ),
       ),
