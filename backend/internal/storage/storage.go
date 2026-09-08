@@ -153,6 +153,17 @@ type IndexerEventRepository interface {
 	MarkAttributed(ctx context.Context, txHash string, logIndex uint64) error
 }
 
+// VaultCloneRepository persists the per-user vault clones the factory deploys.
+type VaultCloneRepository interface {
+	// Ensure records a deployed clone, ignoring a race inserting the same
+	// clone twice (idempotent on user_id / clone_address).
+	Ensure(ctx context.Context, c *domain.VaultClone) error
+	// ByUser returns the clone for a user, or nil when none exists yet.
+	ByUser(ctx context.Context, userID string) (*domain.VaultClone, error)
+	// All returns every deployed clone (the indexer's watch list).
+	All(ctx context.Context) ([]domain.VaultClone, error)
+}
+
 // ElevationRepository persists time-locked (elevated) high-value withdrawals.
 type ElevationRepository interface {
 	// Create persists the pending elevation and returns it with its assigned ID.
@@ -193,6 +204,7 @@ type Store interface {
 	NotificationRepo() NotificationRepository
 	IndexerStateRepo() IndexerStateRepository
 	IndexerEventRepo() IndexerEventRepository
+	VaultCloneRepo() VaultCloneRepository
 	ElevationRepo() ElevationRepository
 	// UserSaltsRepository persists per-user random salts for commitment-based
 	// balance privacy. When GLOBMINT_PRIVACY_MODE is enabled, each user's salt
