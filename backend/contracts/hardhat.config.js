@@ -23,6 +23,14 @@ module.exports = {
       // can exercise deposits/withdrawals.
       chainId: 1337,
     },
+    // Forwarded to a long-running `npx hardhat node` so the Go backend's
+    // indexer (GLOBMINT_BLOCKCHAIN_RPC_URL=http://127.0.0.1:8545) sees the
+    // same chain as the deploy scripts. Run with:
+    //   npx hardhat run scripts/devsetup.js --network localhost
+    localhost: {
+      url: "http://127.0.0.1:8545",
+      chainId: 1337,
+    },
     sepolia: {
       url: process.env.GLOBMINT_BLOCKCHAIN_RPC_URL || "",
       accounts: process.env.GLOBMINT_DEPLOYER_PRIVATE_KEY
