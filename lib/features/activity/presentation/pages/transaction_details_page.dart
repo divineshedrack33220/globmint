@@ -89,7 +89,9 @@ class _DetailsBody extends StatelessWidget {
                     ),
                     const SizedBox(height: 10),
                     Text(
-                      '${txn.currency == 'USDT' ? 'USDT ' : '₦'}${txn.currency == 'USDT' ? CurrencyFormatter.usdt(txn.amount) : CurrencyFormatter.ngn(txn.amount)}',
+                      txn.currency == 'USDT'
+                          ? CurrencyFormatter.usdt(txn.amount)
+                          : CurrencyFormatter.ngn(txn.amount),
                       style: context.typography.amountHeroHighlight.copyWith(
                         color: amountColor,
                       ),

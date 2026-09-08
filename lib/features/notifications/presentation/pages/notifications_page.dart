@@ -350,8 +350,14 @@ class _NotificationSummarySheet extends StatelessWidget {
               width: double.infinity,
               child: OutlinedButton(
                 onPressed: () {
+                  // Capture the router before the sheet pops: the sheet's
+                  // context is unmounted while it animates out, and using the
+                  // popped context would push onto a dead stack (blank page).
+                  // `go`, not `push`: `/activity` is a shell branch, so a push
+                  // stacks a second (empty) shell instead of switching tabs.
+                  final router = GoRouter.of(context);
                   Navigator.pop(context);
-                  context.push('/activity');
+                  router.go('/activity');
                 },
                 child: const Text('View activity'),
               ),

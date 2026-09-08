@@ -52,7 +52,7 @@ class PayPage extends ConsumerWidget {
                         style: context.typography.amountHero),
                     const SizedBox(height: 4),
                     Text(
-                      '≈ ${CurrencyFormatter.usdt(totalUsdc)} USDC',
+                      '≈ ${CurrencyFormatter.usdc(totalUsdc)}',
                       style: context.typography.bodySmall.copyWith(
                         color: AppColors.textSecondary,
                       ),

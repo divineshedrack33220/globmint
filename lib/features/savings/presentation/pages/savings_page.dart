@@ -211,7 +211,7 @@ class _SavingsPageState extends ConsumerState<SavingsPage> {
                 const SizedBox(height: 8),
                 Center(
                   child: TextButton(
-                    onPressed: () => context.push('/activity'),
+                    onPressed: () => context.go('/activity'),
                     child: Text(
                       'See all activity',
                       style: context.typography.labelLarge.copyWith(
