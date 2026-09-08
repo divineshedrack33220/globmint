@@ -40,6 +40,8 @@ func safeMessage(err error) string {
 		return "Invalid email or password."
 	case errors.Is(err, domain.ErrInvalidToken):
 		return "Your session is invalid or has expired."
+	case errors.Is(err, domain.ErrUnauthenticated):
+		return "You must be authenticated to perform this action."
 	case errors.Is(err, domain.ErrUserLocked):
 		return "Your account is locked. Contact support."
 	case errors.Is(err, domain.ErrNotFound), errors.Is(err, domain.ErrAccountNotFound), errors.Is(err, domain.ErrRateNotFound):

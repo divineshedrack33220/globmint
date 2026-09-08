@@ -120,5 +120,56 @@ describe("GlobmintVault", function () {
       await vault.connect(bob).withdraw(ONE * 2n);
       expect(await vault.totalDeposits()).to.equal(ONE * 8n);
     });
+
+    it("vaultAvailableBase equals the vault's stablecoin custody", async function () {
+      await fundAndAllow(alice, ONE * 10n);
+      await vault.connect(alice).deposit(ONE * 5n);
+      expect(await vault.vaultAvailableBase()).to.equal(ONE * 5n);
+      expect(await vault.vaultAvailableBase()).to.equal(
+        await usdc.balanceOf(await vault.getAddress())
+      );
+    });
+  });
+
+  describe("direct ERC-20 transfers (mistaken wallet 'Send')", function () {
+    it("locks funds in custody without crediting the sender on-chain", async function () {
+      // A standard transfer() never calls the vault, so it cannot emit
+      // Deposited or credit a balance — and it cannot be reverted either.
+      await usdc.mint(alice.address, ONE * 5n);
+      await usdc.connect(alice).transfer(await vault.getAddress(), ONE * 3n);
+
+      expect(await vault.balanceOf(alice.address)).to.equal(0);
+      expect(await vault.totalDeposits()).to.equal(0);
+      // The tokens are now stranded in vault custody (until the off-chain
+      // indexer attributes them).
+      expect(await usdc.balanceOf(await vault.getAddress())).to.equal(ONE * 3n);
+      expect(await vault.vaultAvailableBase()).to.equal(ONE * 3n);
+
+      // Nothing was credited, so the sender cannot withdraw it.
+      await expect(vault.connect(alice).withdraw(ONE * 3n)).to.be.revertedWith(
+        "insufficient private balance"
+      );
+    });
+
+    it("indexer can always reconcile the uncredited remainder", async function () {
+      await fundAndAllow(bob, ONE * 10n);
+      await vault.connect(bob).deposit(ONE * 4n);
+      await usdc.mint(alice.address, ONE * 2n);
+      await usdc.connect(alice).transfer(await vault.getAddress(), ONE * 2n);
+
+      // total: 6 held; 4 credited on-chain; 2 = stray direct send.
+      expect(await vault.totalDeposits()).to.equal(ONE * 4n);
+      expect(await vault.vaultAvailableBase()).to.equal(ONE * 6n);
+      expect(await vault.vaultAvailableBase() - await vault.totalDeposits()).to.equal(ONE * 2n);
+    });
+  });
+
+  describe("native ETH protection", function () {
+    it("rejects ETH sent to the vault", async function () {
+      await expect(
+        owner.sendTransaction({ to: await vault.getAddress(), value: ONE })
+      ).to.be.revertedWith("ETH not accepted");
+      expect(await ethers.provider.getBalance(await vault.getAddress())).to.equal(0);
+    });
   });
 });

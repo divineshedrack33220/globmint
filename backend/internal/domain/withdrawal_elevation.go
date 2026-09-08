@@ -22,10 +22,10 @@ const (
 // WithdrawalElevation is a high-value withdrawal held by the time-lock so
 // operations/user have a window to react before the signer broadcasts it.
 type WithdrawalElevation struct {
-	ID              string
-	UserID          string
-	Destination     string
-	AmountNgnMinor  int64
+	ID             string
+	UserID         string
+	Destination    string
+	AmountNgnMinor int64
 	// FeeMinor is the withdrawal fee (kobo) computed at request time. It is
 	// only debited when the sweeper broadcasts; cancellations never charge it.
 	FeeMinor        int64
@@ -37,6 +37,18 @@ type WithdrawalElevation struct {
 	IdempotencyKey  string
 }
 
+// IndexerEventType identifies what an indexer log row represents. Types:
+//   - IndexerEventDeposited    — a credited transfer (vault custody -> user ledger).
+//   - IndexerEventUnattributed — a transfer into the vault the indexer could
+//     not assign to a user (direct send from an unlinked wallet). Flagged for
+//     operator review; operators attribute it via AttributeDeposit.
+type IndexerEventType = string
+
+const (
+	IndexerEventDeposited    IndexerEventType = "deposited"
+	IndexerEventUnattributed IndexerEventType = "unattributed"
+)
+
 // IndexerEvent is a durable log line recorded for each confirmed vault transfer
 // the indexer ingests. It is the on-chain-agnostic audit trail that makes
 // replay fast (no RPC re-fetch) and ingest idempotent.
@@ -44,8 +56,8 @@ type IndexerEvent struct {
 	TxHash      string
 	LogIndex    uint64
 	BlockNumber uint64
-	// EventType is "deposited" or "withdrawn".
-	EventType string
+	// EventType identifies the event kind (see IndexerEventType constants).
+	EventType IndexerEventType
 	From      string
 	To        string
 	// ValueBase is the token base-unit amount (e.g. 6-decimals USDC).

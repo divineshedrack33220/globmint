@@ -174,8 +174,9 @@ class _HomePageState extends ConsumerState<HomePage> {
                 child: Center(
                   child: Text(
                     summaryAsync.maybeWhen(
-                      data: (s) =>
-                          '1 USDC = ${CurrencyFormatter.ngn(s.currentRate)}',
+                      data: (s) => s.currentRate > 0
+                          ? '1 USDC = ${CurrencyFormatter.ngn(s.currentRate)}'
+                          : 'Rate unavailable',
                       orElse: () => '',
                     ),
                     style: context.typography.bodySmall.copyWith(

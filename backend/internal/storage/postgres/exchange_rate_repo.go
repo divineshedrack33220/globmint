@@ -45,3 +45,15 @@ func (r *exchangeRateRepo) UpdateRate(ctx context.Context, base, quote string, r
 	}
 	return nil
 }
+
+func (r *exchangeRateRepo) UpsertRate(ctx context.Context, base, quote string, rateMinor int64) error {
+	_, err := r.q.Exec(ctx, `
+		INSERT INTO exchange_rates (base, quote, rate_minor, fee_bps, min_minor, max_minor, status)
+		VALUES ($1, $2, $3, 50, 1000, 1000000000, 'active')
+		ON CONFLICT (base, quote) DO UPDATE
+		   SET rate_minor=EXCLUDED.rate_minor, status='active', updated_at=now()`, base, quote, rateMinor)
+	if err != nil {
+		return mapPgErr(err)
+	}
+	return nil
+}

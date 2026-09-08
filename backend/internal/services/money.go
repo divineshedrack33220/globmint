@@ -409,6 +409,10 @@ func (s *MoneyService) QuoteConversion(ctx context.Context, amountMinor int64, f
 	if err != nil {
 		return nil, err
 	}
+	if rate.Rate <= 0 {
+		// No real market rate has been fetched yet; never invent one.
+		return nil, domain.ErrRateNotFound
+	}
 	if amountMinor < rate.MinMinor || amountMinor > rate.MaxMinor {
 		return nil, domain.ErrRateExceeded
 	}
@@ -424,9 +428,11 @@ func (s *MoneyService) QuoteConversion(ctx context.Context, amountMinor int64, f
 	if err != nil {
 		return nil, domain.ErrBadRequest
 	}
-	// output = net / rate (rate is minor units of quote per 1 major of base).
-	// net is in base minor units; convert to base major=cnt, then to quote minor.
-	output, err := convertBaseToQuote(net.Minor(), rate.Rate)
+	// Convert the net amount into the quote currency. The rate book stores
+	// every cross pair (NGN <-> USDC/USDT) with identical semantics: rate is
+	// NGN minor units (kobo) per 1 stablecoin major unit, so spending naira
+	// on a stablecoin divides and selling a stablecoin into naira multiplies.
+	output, err := convertCrossQuotes(net.Minor(), rate.Rate, fromCurrency, toCurrency)
 	if err != nil {
 		return nil, domain.ErrBadRequest
 	}
@@ -443,17 +449,35 @@ func (s *MoneyService) QuoteConversion(ctx context.Context, amountMinor int64, f
 	}, nil
 }
 
-// convertBaseToQuote converts base minor units into quote minor units given
-// the rate (quote minor units per 1 base major unit). Because minor units are
-// 100 per major, base major = baseMinor/100, and output quote minor =
-// baseMajor * rate = (baseMinor * rate) / 100.
-func convertBaseToQuote(baseMinor, rate int64) (int64, error) {
-	big := money.FromMinorUnits(baseMinor)
-	mult, err := big.MulRatio(rate, money.MinorUnit)
-	if err != nil {
-		return 0, err
+// convertCrossQuotes converts base minor units into quote minor units given
+// the rate (NGN minor units per 1 stablecoin major unit). Every cross pair in
+// the rate book (USDC/USDT <-> NGN) stores the same unit semantics regardless
+// of direction: rate is "NGN kobo per 1 stablecoin major", i.e. the value
+// 132192 means ₦1321.92 per 1 USDC. Selling a stablecoin for
+// naira multiplies (more kobo per unit); spending naira on a stablecoin
+// divides (fewer stablecoins per naira).
+func convertCrossQuotes(baseMinor, rate int64, base, quote string) (int64, error) {
+	if rate <= 0 {
+		return 0, domain.ErrInvalidAmount
 	}
-	return mult.Minor(), nil
+	big := money.FromMinorUnits(baseMinor)
+	if quote == "NGN" {
+		// stable -> NGN : output = baseMinor * rate / 100
+		m, err := big.MulRatio(rate, money.MinorUnit)
+		if err != nil {
+			return 0, err
+		}
+		return m.Minor(), nil
+	}
+	if base == "NGN" {
+		// NGN -> stable : output = baseMinor * 100 / rate
+		m, err := big.MulRatio(money.MinorUnit, rate)
+		if err != nil {
+			return 0, err
+		}
+		return m.Minor(), nil
+	}
+	return 0, domain.ErrUnsupportedCurrency
 }
 
 // Convert executes a conversion that debits the source currency account and

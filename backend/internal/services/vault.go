@@ -115,12 +115,11 @@ type VaultService struct {
 }
 
 // NewVaultService builds the vault service. rateMinor is the NGN minor units
-// per 1 USDC (i.e. the value 160450 for 1604.50 NGN/USDC); pass 0 to fall back
-// to 160450. The rate can be refreshed live later via SetRateMinor.
+// per 1 USDC (kobo), taken from the live market feed or the last real value
+// persisted in the rate book. 0 is legal but means "no live rate yet": deposit
+// crediting is declined until SetRateMinor supplies a real rate (the server
+// refuses to boot without one, so this never happens in production).
 func NewVaultService(store storage.Store, chain blockchain.BlockchainService, money *MoneyService, cfg VaultConfig, rateMinor int64) *VaultService {
-	if rateMinor <= 0 {
-		rateMinor = 160450
-	}
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = 8 * time.Second
 	}
@@ -148,12 +147,11 @@ func (v *VaultService) SetRateMinor(rateMinor int64) {
 	}
 }
 
-// currentRateMinor returns the live NGN minor units per 1 USDC.
+// currentRateMinor returns the live NGN minor units per 1 USDC, or 0 when no
+// real market rate has been supplied yet. Callers treat 0 as "unpriced" and
+// decline to credit/withdraw rather than guess a rate.
 func (v *VaultService) currentRateMinor() int64 {
-	if r := v.rate.Load(); r > 0 {
-		return r
-	}
-	return 160450
+	return v.rate.Load()
 }
 
 // lockFor returns the per-user serialization lock, creating it on first use.
@@ -452,14 +450,26 @@ func (v *VaultService) handleVaultDeposit(ctx context.Context, d blockchain.Vaul
 		userID = commitments[d.Commitment]
 	}
 	if userID == "" {
-		return errors.New("commitment not linked to a user")
+		// Privacy mode: a credited commitment resolves to no user. The funds
+		// are in vault custody; flag durably for operator review instead of
+		// crediting a guess.
+		v.recordUnattributed(ctx, &domain.IndexerEvent{
+			TxHash:      d.TxHash,
+			LogIndex:    d.LogIndex,
+			BlockNumber: d.BlockNumber,
+			EventType:   domain.IndexerEventUnattributed,
+			From:        d.Commitment,
+			To:          v.cfg.VaultContract,
+			ValueBase:   d.Amount.Int64(),
+		})
+		return nil
 	}
 
 	if err := v.store.IndexerEventRepo().Insert(ctx, &domain.IndexerEvent{
 		TxHash:      d.TxHash,
 		LogIndex:    d.LogIndex,
 		BlockNumber: d.BlockNumber,
-		EventType:   "deposited",
+		EventType:   domain.IndexerEventDeposited,
 		From:        d.Commitment,
 		To:          v.cfg.VaultContract,
 		ValueBase:   d.Amount.Int64(),
@@ -467,7 +477,11 @@ func (v *VaultService) handleVaultDeposit(ctx context.Context, d blockchain.Vaul
 		log.Printf("vault indexer: event log write failed: %v", err)
 	}
 
-	ngnMinor := depositNGNMinor(d.Amount, v.currentRateMinor())
+	rateMinor := v.currentRateMinor()
+	if rateMinor <= 0 {
+		return errors.New("vault indexer: no market rate; leaving deposit uncredited")
+	}
+	ngnMinor := depositNGNMinor(d.Amount, rateMinor)
 	if ngnMinor <= 0 {
 		return errors.New("deposit value below resolution")
 	}
@@ -505,11 +519,25 @@ func (v *VaultService) handleDeposit(ctx context.Context, t blockchain.TokenTran
 		return nil
 	}
 	userID, err := v.senderUserID(ctx, t.From)
-	if err != nil || userID == "" {
-		if err == nil {
-			err = errors.New("sender not linked to a user")
-		}
-		return err
+	if err != nil {
+		return fmt.Errorf("sender lookup failed: %w", err)
+	}
+	if userID == "" {
+		// Direct transfer into the vault ("Send" from a wallet that is not
+		// linked to any account, or a generic MetaMask send). The tokens are
+		// now in vault custody, no Deposited event exists, and no user has
+		// been credited. Flag it durably so an operator can attribute it —
+		// never silently drop money.
+		v.recordUnattributed(ctx, &domain.IndexerEvent{
+			TxHash:      t.TxHash,
+			LogIndex:    t.LogIndex,
+			BlockNumber: t.BlockNumber,
+			EventType:   domain.IndexerEventUnattributed,
+			From:        t.From,
+			To:          t.To,
+			ValueBase:   t.Value.Int64(),
+		})
+		return nil
 	}
 
 	// Durable, replayable event log (write-ahead for idempotency + audit).
@@ -517,7 +545,7 @@ func (v *VaultService) handleDeposit(ctx context.Context, t blockchain.TokenTran
 		TxHash:      t.TxHash,
 		LogIndex:    t.LogIndex,
 		BlockNumber: t.BlockNumber,
-		EventType:   "deposited",
+		EventType:   domain.IndexerEventDeposited,
 		From:        t.From,
 		To:          t.To,
 		ValueBase:   t.Value.Int64(),
@@ -525,7 +553,11 @@ func (v *VaultService) handleDeposit(ctx context.Context, t blockchain.TokenTran
 		log.Printf("vault indexer: event log write failed: %v", err)
 	}
 
-	ngnMinor := depositNGNMinor(t.Value, v.currentRateMinor())
+	rateMinor := v.currentRateMinor()
+	if rateMinor <= 0 {
+		return errors.New("vault indexer: no market rate; leaving deposit uncredited")
+	}
+	ngnMinor := depositNGNMinor(t.Value, rateMinor)
 	if ngnMinor <= 0 {
 		return errors.New("deposit value below resolution")
 	}
@@ -579,6 +611,99 @@ func (v *VaultService) senderUserID(ctx context.Context, from string) (string, e
 	v.addressUser[from] = uid
 	v.mu.Unlock()
 	return uid, nil
+}
+
+// -------- Unattributed deposits (direct-send recovery) --------
+
+// recordUnattributed durably flags a vault transfer that could not be assigned
+// to a user (a direct USDC send from an unlinked wallet, or an unresolvable
+// privacy commitment). Insert is idempotent on (tx_hash, log_index), so crash
+// rescans never duplicate the flag.
+func (v *VaultService) recordUnattributed(ctx context.Context, evt *domain.IndexerEvent) {
+	if err := v.store.IndexerEventRepo().Insert(ctx, evt); err != nil {
+		log.Printf("vault indexer: record unattributed failed: %v", err)
+		return
+	}
+	log.Printf("vault indexer: flagged unattributed deposit %s (%s %s from %s) for operator review",
+		evt.TxHash, baseToMajorString(big.NewInt(evt.ValueBase), v.cfg.StablecoinDecimals), v.cfg.StablecoinSymbol, evt.From)
+}
+
+// UnattributedDeposits returns the direct transfers into the vault that no
+// user has been credited for (newest first). Operators use this queue to
+// reconcile stray "Send" transactions.
+func (v *VaultService) UnattributedDeposits(ctx context.Context, limit int) ([]domain.IndexerEvent, error) {
+	return v.store.IndexerEventRepo().ListUnattributed(ctx, limit)
+}
+
+// AttributeDeposit links the sender of an unattributed direct transfer to the
+// given user and credits their NGN ledger for the deposited amount. It is
+// idempotent: attributing an already-credited deposit is a no-op that returns
+// false. It returns ErrConflict if the sender address belongs to a different
+// user, and ErrNotFound if the event is not a flagged unattributed deposit.
+func (v *VaultService) AttributeDeposit(ctx context.Context, txHash string, logIndex uint64, userID string) (bool, error) {
+	if userID == "" {
+		return false, domain.ErrInvalidAmount
+	}
+	evt, err := v.store.IndexerEventRepo().FindByTxAndLog(ctx, txHash, logIndex)
+	if err != nil {
+		return false, err
+	}
+	if evt.EventType == domain.IndexerEventDeposited {
+		// Already attributed: either an operator credited it or the indexer
+		// recognized the (now-linked) sender directly. Idempotent no-op.
+		return false, nil
+	}
+	if evt.EventType != domain.IndexerEventUnattributed {
+		return false, domain.ErrConflict
+	}
+	if evt.ValueBase <= 0 {
+		return false, errors.New("unattributed deposit has no value")
+	}
+
+	// Claim the sender address for the target user (or confirm it is theirs).
+	owner, err := v.store.DepositAddressRepo().OwnerOf(ctx, evt.From)
+	if err != nil {
+		return false, err
+	}
+	if owner != "" && owner != userID {
+		return false, domain.ErrConflict
+	}
+	if owner == "" {
+		if err := v.store.DepositAddressRepo().Set(ctx, &domain.DepositAddress{UserID: userID, Address: evt.From}); err != nil {
+			return false, err
+		}
+	}
+
+	rateMinor := v.currentRateMinor()
+	if rateMinor <= 0 {
+		return false, errors.New("vault: no market rate; cannot price the deposit")
+	}
+	ngnMinor := depositNGNMinor(big.NewInt(evt.ValueBase), rateMinor)
+	if ngnMinor <= 0 {
+		return false, errors.New("deposit value below resolution")
+	}
+
+	// Same idempotency key the indexer would have used — replay-safe.
+	lock := v.lockFor(userID)
+	lock.Lock()
+	defer lock.Unlock()
+	key := "vault-deposit-" + evt.TxHash
+	if _, err := v.money.Deposit(ctx, userID, "NGN", ngnMinor, key); err != nil {
+		if errors.Is(err, domain.ErrConflict) {
+			return false, nil
+		}
+		return false, err
+	}
+
+	if err := v.store.IndexerEventRepo().MarkAttributed(ctx, evt.TxHash, evt.LogIndex); err != nil {
+		return false, err
+	}
+	if v.Hub != nil {
+		v.Hub.Publish(events.Event{Type: "data.changed", UserID: userID, Kind: "all",
+			At: time.Now().UTC().Format(time.RFC3339)})
+	}
+	log.Printf("vault indexer: operator attributed %d kobo to %s (tx %s)", ngnMinor, userID, evt.TxHash)
+	return true, nil
 }
 
 // -------- Withdraw --------

@@ -75,9 +75,13 @@ type BankAccountRepository interface {
 // ExchangeRateRepository persists currency conversion rates.
 type ExchangeRateRepository interface {
 	FindByPair(ctx context.Context, base, quote string) (*domain.ExchangeRate, error)
-	// UpdateRate sets rate_minor for an active pair (used by the market-rate
-	// refresher). Returns ErrNotFound when the pair does not exist.
+	// UpdateRate sets rate_minor for an active pair. Returns ErrNotFound when
+	// the pair does not exist.
 	UpdateRate(ctx context.Context, base, quote string, rateMinor int64) error
+	// UpsertRate writes a real market rate to the pair, creating the row if it
+	// is missing (used by the market-rate refresher and the boot-time sync so
+	// a fresh database is populated without any invented seed prices).
+	UpsertRate(ctx context.Context, base, quote string, rateMinor int64) error
 }
 
 // UserSaltsRepository persists per-user random salts for commitment-based
@@ -138,6 +142,15 @@ type IndexerEventRepository interface {
 	Insert(ctx context.Context, evt *domain.IndexerEvent) error
 	// ListByRange returns events in a block range, oldest first.
 	ListByRange(ctx context.Context, fromBlock, toBlock uint64) ([]domain.IndexerEvent, error)
+	// ListUnattributed returns direct transfers into the vault the indexer
+	// could not assign to a user, newest first, capped at limit. These are
+	// flagged for operator review and later attributed via AttributeDeposit.
+	ListUnattributed(ctx context.Context, limit int) ([]domain.IndexerEvent, error)
+	// FindByTxAndLog returns the single event for a tx hash + log index.
+	FindByTxAndLog(ctx context.Context, txHash string, logIndex uint64) (*domain.IndexerEvent, error)
+	// MarkAttributed flips an "unattributed" event to "deposited" after an
+	// operator has attributed it to a user and the ledger credit is recorded.
+	MarkAttributed(ctx context.Context, txHash string, logIndex uint64) error
 }
 
 // ElevationRepository persists time-locked (elevated) high-value withdrawals.

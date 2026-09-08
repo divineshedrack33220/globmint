@@ -123,6 +123,43 @@ sequenceDiagram
    credits the user's internal ledger.
 6. The UI refreshes balances and activity.
 
+### 2.2.1 Deposit flow limitations — direct transfers ("Send")
+
+A user occasionally bypasses the approve+deposit flow and sends USDC to the vault address
+with a generic wallet "Send", or sends from a wallet they never linked. Two facts matter:
+
+- **ERC-20 has no receiver hook.** A standard `transfer`/`send` only updates the token's own
+  storage; it never calls the vault contract (exchange into placeholders: `fallback()` is not
+  invoked and `Deposited` is not emitted), so the contract **cannot** revert or credit such a
+  transfer. Only native ETH is rejected — `receive()` reverts, since with no owner stray ETH
+  would be unrecoverable.
+- **The indexer covers the linked case automatically.** The vault indexer already watches the
+  stablecoin's `Transfer(to == vault)` events in addition to the vault's `Deposited` events,
+  so a direct "Send" **from the wallet linked to your account** is credited with no extra steps
+  (the amount lands in vault custody on-chain and is mirrored on the internal ledger).
+
+For the remaining case — a direct send from a wallet **no account is linked to** — the indexer
+no longer drops it silently:
+
+1. The transfer is durably flagged as `unattributed` in `indexer_events` (idempotent on
+   `(tx_hash, log_index)`), visible to support:
+
+   ```
+   GET  /api/v1/operator/vault/unattributed-deposits   # X-Operator-Token: …
+   POST /api/v1/operator/vault/attribute-deposit       # {tx_hash, log_index, user_id}
+   ```
+
+2. `attribute-deposit` links the sender address to the target user (rejecting a sender that
+   belongs to someone else with a conflict) and credits the ledger with the same idempotency
+   key the indexer would have used, so replaying the attribution or a later rescan never
+   double-credits.
+3. Operators authenticate with the `GLOBMINT_OPERATOR_TOKEN` header; both endpoints are
+   disabled when that env var is unset.
+
+Operators reconcile the whole ledger on-chain via `vault.vaultAvailableBase()`: the difference
+`vaultAvailableBase() - totalDeposits()` is exactly the custody that has not yet been credited
+(e.g. stray direct sends still awaiting attribution).
+
 ### 2.3 Withdrawal flow (money out)
 
 ```mermaid

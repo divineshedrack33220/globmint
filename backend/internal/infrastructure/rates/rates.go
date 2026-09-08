@@ -1,6 +1,7 @@
 // Package rates fetches a live NGN-per-USDC market rate with short TTL caching
 // and a strict local-only guarantee: callers fall back to the seeded rate book
-// whenever the feed is unreachable.
+// whenever every market feed is unreachable. Several public feeds are tried in
+// order so a single outage never freezes the rate.
 package rates
 
 import (
@@ -9,6 +10,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -16,11 +18,17 @@ import (
 // DefaultTimeout bounds a single upstream fetch.
 const DefaultTimeout = 3 * time.Second
 
+// marketFeed pulls the NGN minor price (kobo) of 1 USDC from a single public
+// feed. Providers are tried in order until one succeeds.
+type marketFeed func(ctx context.Context, client *http.Client) (int64, error)
+
 // Provider returns the NGN price of 1 USDC as NGN minor units (kobo), i.e.
-// 160450 for ₦1604.50/USDC. Results are cached for CacheTTL.
+// 132192 for ₦1321.92/USDC, fetched from the configured live feeds. Results
+// are cached for CacheTTL.
 type Provider struct {
 	client   *http.Client
 	cacheTTL time.Duration
+	feeds    []marketFeed
 
 	mu   sync.Mutex
 	rate int64
@@ -35,7 +43,20 @@ func New(client *http.Client, cacheTTL time.Duration) *Provider {
 	if cacheTTL <= 0 {
 		cacheTTL = 15 * time.Second
 	}
-	return &Provider{client: client, cacheTTL: cacheTTL}
+	return &Provider{
+		client:   client,
+		cacheTTL: cacheTTL,
+		feeds:    []marketFeed{fetchCoinGecko, fetchCryptoCompare},
+	}
+}
+
+// newWithFeeds is used by tests to inject deterministic feeds.
+func newWithFeeds(client *http.Client, cacheTTL time.Duration, feeds []marketFeed) *Provider {
+	p := New(client, cacheTTL)
+	if len(feeds) > 0 {
+		p.feeds = feeds
+	}
+	return p
 }
 
 // NGNPerUSDCKobo returns the cached or freshly fetched NGN minor rate per USDC.
@@ -62,10 +83,29 @@ func (p *Provider) NGNPerUSDCKobo(ctx context.Context) (int64, error) {
 	return r, nil
 }
 
-// fetch pulls the live USDC/NGN spot price from CoinGecko's simple/price
-// endpoint. This is intentionally the only external dependency of the rate
-// layer; swap this method to switch feeds (Binance, oracle, ...).
+// fetch pulls the live USDC/NGN spot price from the configured market feeds in
+// order, returning the first success. When every feed fails the aggregated
+// errors are returned; upstream keeps pricing from the last good value.
 func (p *Provider) fetch(ctx context.Context) (int64, error) {
+	var errs []string
+	for _, feed := range p.feeds {
+		rate, err := feed(ctx, p.client)
+		if err != nil {
+			errs = append(errs, err.Error())
+			continue
+		}
+		if rate <= 0 {
+			errs = append(errs, "feed returned a non-positive rate")
+			continue
+		}
+		return rate, nil
+	}
+	return 0, fmt.Errorf("rates: all feeds failed: %s", strings.Join(errs, "; "))
+}
+
+// fetchCoinGecko pulls the USDC/NGN spot price from CoinGecko's simple/price
+// endpoint.
+func fetchCoinGecko(ctx context.Context, client *http.Client) (int64, error) {
 	type simplePrice struct {
 		USDCoin struct {
 			NGN float64 `json:"ngn"`
@@ -76,21 +116,50 @@ func (p *Provider) fetch(ctx context.Context) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	resp, err := p.client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
-		return 0, fmt.Errorf("rates: fetch: %w", err)
+		return 0, fmt.Errorf("rates: coingecko fetch: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("rates: upstream status %d", resp.StatusCode)
+		return 0, fmt.Errorf("rates: coingecko status %d", resp.StatusCode)
 	}
 	var out simplePrice
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return 0, fmt.Errorf("rates: decode: %w", err)
+		return 0, fmt.Errorf("rates: coingecko decode: %w", err)
 	}
 	price := out.USDCoin.NGN
 	if price <= 0 {
-		return 0, fmt.Errorf("rates: unusable price %v", price)
+		return 0, fmt.Errorf("rates: coingecko unusable price %v", price)
 	}
 	return int64(math.Round(price * 100)), nil
+}
+
+// fetchCryptoCompare pulls the USDC/NGN spot price from CryptoCompare's public
+// "price" endpoint, which returns a bare currency map, e.g. {"NGN": 1604.50}.
+func fetchCryptoCompare(ctx context.Context, client *http.Client) (int64, error) {
+	type price struct {
+		NGN float64 `json:"NGN"`
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		"https://min-api.cryptocompare.com/data/price?fsym=USDC&tsyms=NGN", nil)
+	if err != nil {
+		return 0, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("rates: cryptocompare fetch: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("rates: cryptocompare status %d", resp.StatusCode)
+	}
+	var out price
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return 0, fmt.Errorf("rates: cryptocompare decode: %w", err)
+	}
+	if out.NGN <= 0 {
+		return 0, fmt.Errorf("rates: cryptocompare unusable price %v", out.NGN)
+	}
+	return int64(math.Round(out.NGN * 100)), nil
 }

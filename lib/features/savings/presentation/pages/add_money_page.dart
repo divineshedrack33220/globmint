@@ -12,9 +12,12 @@ import '../../../../shared/widgets/privacy_notice.dart';
 import '../../../../shared/widgets/stablecoin_risk_disclosure.dart';
 
 /// Personal savings vault. You top it up by sending USDC on-chain to the
-/// deposit address shown here. The app watches that address and reflects every
-/// incoming deposit as vault holdings (valued in NGN at the live rate) and in
-/// your transaction history — no wallet linking required.
+/// deposit address shown here — from the wallet linked to your account. The
+/// app watches that address and reflects every incoming deposit as vault
+/// holdings (valued in NGN at the live rate) and in your transaction history.
+/// A generic "Send" from the linked wallet is detected automatically; sends
+/// from an unlinked wallet land in vault custody and must be attributed by
+/// support.
 class AddMoneyPage extends ConsumerStatefulWidget {
   const AddMoneyPage({super.key});
 
@@ -95,10 +98,46 @@ class _AddMoneyPageState extends ConsumerState<AddMoneyPage> {
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      'Send any amount of USDC from any wallet. The app '
-                      'watches this address on-chain and reflects deposits '
-                      'automatically — no sender link required.',
+                      'Send USDC to this address from the wallet linked to '
+                      'your account. The app watches the chain and credits '
+                      'deposits automatically.',
                       style: context.typography.bodySmall,
+                    ),
+                    const SizedBox(height: 12),
+                    _step(context, '1', 'Link your wallet in Profile'),
+                    _step(context,
+                        '2', 'Approve USDC spend for the vault contract'),
+                    _step(context,
+                        '3', 'Confirm the deposit from that wallet'),
+                    const SizedBox(height: 12),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: AppColors.surfaceHighlight,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                            color: AppColors.border, width: 1),
+                      ),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Icon(Icons.warning_amber_rounded,
+                              color: AppColors.warning, size: 18),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'A transfer sent from a wallet that is not '
+                              'linked to your account is not credited '
+                              'automatically — it stays in vault custody '
+                              'until support attributes it. Always send from '
+                              'your linked wallet.',
+                              style: context.typography.bodySmall.copyWith(
+                                  color: AppColors.textSecondary),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                     const SizedBox(height: 8),
                     Row(
@@ -255,6 +294,34 @@ class _AddMoneyPageState extends ConsumerState<AddMoneyPage> {
 
   Widget _label(BuildContext context, String text) =>
       Text(text, style: context.typography.bodySmall);
+
+  Widget _step(BuildContext context, String number, String label) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 20,
+            height: 20,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: AppColors.primary,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Text(number,
+                style: context.typography.bodySmall.copyWith(
+                    color: AppColors.primaryForeground,
+                    fontWeight: FontWeight.bold)),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(label, style: context.typography.bodySmall),
+          ),
+        ],
+      ),
+    );
+  }
 
   Widget _chip(BuildContext context, String label, String value) {
     return Container(

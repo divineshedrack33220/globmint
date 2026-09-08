@@ -27,8 +27,8 @@ func NewHandler(deps *Deps, auth middleware.Authenticator, corsOrigins []string,
 
 	// Public
 	mux.HandleFunc("GET /health", deps.handleHealth)
-	mux.HandleFunc("GET /live", deps.handleHealth)     // liveness probe
-	mux.HandleFunc("GET /ready", deps.handleReady)     // readiness probe
+	mux.HandleFunc("GET /live", deps.handleHealth) // liveness probe
+	mux.HandleFunc("GET /ready", deps.handleReady) // readiness probe
 	mux.HandleFunc("GET /metrics", deps.handleMetrics)
 
 	// API v1 routes
@@ -120,6 +120,11 @@ func NewHandler(deps *Deps, auth middleware.Authenticator, corsOrigins []string,
 		limits.MoneyBurst,
 		clientIPKey,
 	))
+
+	// Operator (support): direct vault transfers the indexer could not assign.
+	// Guarded by the GLOBMINT_OPERATOR_TOKEN header, not a user session.
+	mux.Handle("GET "+api+"/operator/vault/unattributed-deposits", http.HandlerFunc(deps.handleListUnattributedDeposits))
+	mux.Handle("POST "+api+"/operator/vault/attribute-deposit", http.HandlerFunc(deps.handleAttributeDeposit))
 
 	// Devices (active sessions)
 	mux.Handle("GET "+api+"/devices", middleware.Auth(auth, http.HandlerFunc(deps.handleListDevices)))

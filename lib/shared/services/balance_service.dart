@@ -64,8 +64,9 @@ class BalanceService {
     );
   }
 
-  /// Live NGN-per-USDC rate from the server book (market feed when reachable,
-  /// seeded otherwise). Falls back to the last-known default when offline.
+  /// Live NGN-per-USDC rate from the server book. 0 means "no rate available"
+  /// — the server only serves real market data, and there is deliberately no
+  /// invented client-side default.
   Future<double> _liveRate() async {
     try {
       final data = await _api
@@ -73,8 +74,6 @@ class BalanceService {
       final minor = (data?['rate_minor'] as num?)?.toDouble() ?? 0;
       if (minor > 0) return minor / 100;
     } catch (_) {}
-    return _defaultRate();
+    return 0;
   }
-
-  double _defaultRate() => 1604.50;
 }

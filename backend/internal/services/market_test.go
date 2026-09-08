@@ -8,11 +8,43 @@ import (
 	"globmint/backend/internal/domain"
 )
 
-// Seeded book values (see 0004_seed_rates.sql); restored after the test so
-// the shared test database keeps its documented state.
+// Book rates are written by the live market feed only (no invented seeds).
+// This is the last real value persisted in the shared test database; restored
+// after the test so the shared book keeps its documented state.
 var seededBookRates = map[[2]string]int64{
-	{"USDT", "NGN"}: 160450,
-	{"USDC", "NGN"}: 160000,
+	{"USDT", "NGN"}: 132192,
+	{"USDC", "NGN"}: 132192,
+	{"NGN", "USDT"}: 132192,
+	{"NGN", "USDC"}: 132192,
+}
+
+func TestConvertCrossQuotes_DirectionAware(t *testing.T) {
+	const rate = int64(160450) // ₦1604.50 per 1 USDC
+
+	// 6000.00 NGN -> USDC: 600000 kobo * 100 / 160450 ≈ 3.74 USDC (374 minor).
+	out, err := convertCrossQuotes(600000, rate, "NGN", "USDC")
+	if err != nil {
+		t.Fatalf("ngn->usdc: %v", err)
+	}
+	if out != 374 {
+		t.Errorf("ngn->usdc = %d minor, want 374 (3.74 USDC)", out)
+	}
+
+	// 500.00 USDC -> NGN: 50000 minor * 160450 / 100 = 80225000 kobo (₦802250).
+	out, err = convertCrossQuotes(50000, rate, "USDC", "NGN")
+	if err != nil {
+		t.Fatalf("usdc->ngn: %v", err)
+	}
+	if out != 80225000 {
+		t.Errorf("usdc->ngn = %d kobo, want 80225000", out)
+	}
+
+	if _, err := convertCrossQuotes(600000, 0, "NGN", "USDC"); err == nil {
+		t.Error("expected error for zero rate")
+	}
+	if _, err := convertCrossQuotes(600000, rate, "USDT", "USDC"); err == nil {
+		t.Error("expected error for an unsupported pair")
+	}
 }
 
 func TestSyncMarketRate_UpdatesBookPairs(t *testing.T) {

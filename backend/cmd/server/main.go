@@ -56,12 +56,12 @@ func main() {
 	// Blockchain settlement layer. Uses the mock service unless the configured
 	// mode is "real" and a valid RPC URL is present.
 	chainSvc, closeChain, err := blockchain.NewFromConfig(ctx, cfg.Blockchain.Mode, blockchain.EthereumConfig{
-		RPCURL:              cfg.Blockchain.RPCURL,
-		ChainID:             cfg.Blockchain.ChainID,
-		StablecoinSymbol:    cfg.Blockchain.Stablecoin,
-		StablecoinDecimals:  cfg.Blockchain.StablecoinDecimals,
-		StablecoinContract:  cfg.Blockchain.StablecoinContract,
-		PrivateKeyHex:       cfg.Blockchain.PrivateKeyHex,
+		RPCURL:             cfg.Blockchain.RPCURL,
+		ChainID:            cfg.Blockchain.ChainID,
+		StablecoinSymbol:   cfg.Blockchain.Stablecoin,
+		StablecoinDecimals: cfg.Blockchain.StablecoinDecimals,
+		StablecoinContract: cfg.Blockchain.StablecoinContract,
+		PrivateKeyHex:      cfg.Blockchain.PrivateKeyHex,
 	})
 	if err != nil {
 		log.Fatalf("initialize blockchain service: %v", err)
@@ -79,13 +79,17 @@ func main() {
 	savingsSvc := services.NewSavingsService(store, savingsCfg)
 	securitySvc := services.NewSecurityService(store)
 
-	// NGN-per-USDC rate from the seeded rate book (kobo per USDC).
-	rateMinor := int64(160450)
-	if er, rerr := store.ExchangeRateRepo().FindByPair(ctx, "USDT", "NGN"); rerr == nil {
+	// NGN-per-USDC rate (kobo per USDC). There is NO invented fallback: the
+	// rate comes from the live market feed, or, when the feed is unreachable,
+	// from the last real value persisted in the rate book. If neither exists
+	// the server refuses to start rather than serve fake pricing.
+	rateMinor := int64(0)
+	if er, rerr := store.ExchangeRateRepo().FindByPair(ctx, "USDC", "NGN"); rerr == nil && er.Rate > 0 {
 		rateMinor = er.Rate
+		log.Printf("market rate: using last real rate from book (%d kobo/USDC)", rateMinor)
 	}
-	// Live market rate (fail-soft): prefer the feed at boot, keep the seeded
-	// value when it is unreachable.
+	// Live market rate: prefer the feed at boot; keep the stored real value
+	// (never an invented one) when it is unreachable.
 	rateProvider := rates.New(nil, 5*time.Minute)
 	if live, lerr := rateProvider.NGNPerUSDCKobo(ctx); lerr == nil && live > 0 {
 		log.Printf("market rate: live feed NGN/USDC kobo = %d", live)
@@ -93,28 +97,31 @@ func main() {
 		if serr := services.SyncMarketRate(ctx, store.ExchangeRateRepo(), live); serr != nil {
 			log.Printf("market rate: book sync failed (keeping previous rows): %v", serr)
 		}
+	} else if rateMinor <= 0 {
+		log.Fatalf("market rate: no live feed (%v) and no real rate stored in the book; "+
+			"refusing to start with invented pricing", lerr)
 	} else {
-		log.Printf("market rate: feed unreachable, using seeded rate %d (%v)", rateMinor, lerr)
+		log.Printf("market rate: feed unreachable, keeping last real stored rate %d (%v)", rateMinor, lerr)
 	}
 	vaultSvc := services.NewVaultService(store, chainSvc, moneySvc, services.VaultConfig{
-		VaultAddress:                     vaultAddress,
-		VaultContract:                    cfg.Blockchain.VaultContract,		StablecoinSymbol:                 cfg.Blockchain.Stablecoin,
-		StablecoinDecimals:               cfg.Blockchain.StablecoinDecimals,
-		Mode:                             cfg.Blockchain.Mode,
-		PollInterval:                     8 * time.Second,
-		StartBlock:                       uint64(cfg.VaultStartBlock),
-		FallbackUserID:                   cfg.VaultFallbackUserID,
-		MinConfirmations:                 cfg.VaultMinConfirmations,
-		WithdrawEnabled:                  cfg.VaultWithdrawEnabled,
-		WithdrawMinMinor:                 cfg.VaultWithdrawMinMinor,
-		WithdrawMaxMinor:                 cfg.VaultWithdrawMaxMinor,
-		WithdrawDailyCapMinor:            cfg.VaultWithdrawDailyCapMinor,
-		WithdrawElevationThresholdMinor:  cfg.VaultWithdrawElevationThresholdMinor,
-		WithdrawElevationDelay:           cfg.VaultWithdrawElevationDelay,
-		WithdrawFeeBPS:                   cfg.WithdrawFeeBPS,
-		WithdrawFeeMinMinor:              cfg.WithdrawFeeMinMinor,
-		WithdrawFeeCapMinor:              cfg.WithdrawFeeCapMinor,
-		PrivacyMode:                      cfg.PrivacyMode,
+		VaultAddress:  vaultAddress,
+		VaultContract: cfg.Blockchain.VaultContract, StablecoinSymbol: cfg.Blockchain.Stablecoin,
+		StablecoinDecimals:              cfg.Blockchain.StablecoinDecimals,
+		Mode:                            cfg.Blockchain.Mode,
+		PollInterval:                    8 * time.Second,
+		StartBlock:                      uint64(cfg.VaultStartBlock),
+		FallbackUserID:                  cfg.VaultFallbackUserID,
+		MinConfirmations:                cfg.VaultMinConfirmations,
+		WithdrawEnabled:                 cfg.VaultWithdrawEnabled,
+		WithdrawMinMinor:                cfg.VaultWithdrawMinMinor,
+		WithdrawMaxMinor:                cfg.VaultWithdrawMaxMinor,
+		WithdrawDailyCapMinor:           cfg.VaultWithdrawDailyCapMinor,
+		WithdrawElevationThresholdMinor: cfg.VaultWithdrawElevationThresholdMinor,
+		WithdrawElevationDelay:          cfg.VaultWithdrawElevationDelay,
+		WithdrawFeeBPS:                  cfg.WithdrawFeeBPS,
+		WithdrawFeeMinMinor:             cfg.WithdrawFeeMinMinor,
+		WithdrawFeeCapMinor:             cfg.WithdrawFeeCapMinor,
+		PrivacyMode:                     cfg.PrivacyMode,
 	}, rateMinor)
 
 	// Fan-out hub for SSE push; shared by the money handlers and the vault
@@ -122,15 +129,16 @@ func main() {
 	eventsHub := events.NewHub()
 
 	deps := &httpapi.Deps{
-		Auth:       authSvc,
-		Balance:    balanceSvc,
-		Ledger:     ledgerSvc,
-		Money:      moneySvc,
-		Savings:    savingsSvc,
-		Security:   securitySvc,
-		Blockchain: chainSvc,
-		Vault:      vaultSvc,
-		Events:     eventsHub,
+		Auth:          authSvc,
+		Balance:       balanceSvc,
+		Ledger:        ledgerSvc,
+		Money:         moneySvc,
+		Savings:       savingsSvc,
+		Security:      securitySvc,
+		Blockchain:    chainSvc,
+		Vault:         vaultSvc,
+		Events:        eventsHub,
+		OperatorToken: cfg.OperatorToken,
 	}
 	vaultSvc.Hub = eventsHub
 

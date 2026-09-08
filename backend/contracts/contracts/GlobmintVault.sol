@@ -11,8 +11,19 @@ import "./SafeMath.sol";
  *   - Nobody controls any user's money. There is NO owner, NO admin, and NO
  *     function that can seize, transfer, or burn another user's balance.
  *   - Each user has their own balance tracked on-chain (`balanceOf`).
- *   - Deposits: users `approve` the vault then call `deposit(amount)`; USDC
+ *   - Users `approve` the vault then call `deposit(amount)`; USDC
  *     is pulled from the user and credited to their balance.
+ *   - Direct ERC-20 transfers: a standard `transfer`/`send` of the stablecoin
+ *     to this contract moves tokens purely inside the token contract's storage
+ *     and NEVER calls a function here, so the vault cannot emit `Deposited`
+ *     and cannot revert the transfer (ERC-20 has no receiver hook, and the
+ *     contract's `fallback()` is never invoked). Those funds land in vault
+ *     custody. This is intentional: the off-chain Globmint indexer watches
+ *     the stablecoin's `Transfer(to == vault)` events and credits the sender's
+ *     internal ledger (see `vaultAvailableBase()` reconciliation).
+ *   - Native ETH is rejected outright (`receive` reverts): it would otherwise
+ *     be irrecoverable with no owner.
+ *
  *   - Withdrawals: any user calls `withdraw(amount)` to pull their OWN USDC
  *     back to their own address. Nothing is ever sent to a third party.
  *   - No fees are collected by the contract or any operator. The only cost is
@@ -39,6 +50,19 @@ contract GlobmintVault {
 
     /// @notice Total USDC held by the vault across all users.
     uint256 private _totalDeposits;
+
+    /// @notice Reject native ETH: with no owner, stray ETH would be stranded.
+    receive() external payable {
+        revert("ETH not accepted");
+    }
+
+    /// @notice Reject unknown calldata. Note: a standard ERC-20 `transfer`
+    ///         to this address does NOT route here (the token contract simply
+    ///         updates its own balances), so direct stablecoin transfers are
+    ///         handled off-chain by the indexer, not by this function.
+    fallback() external payable {
+        revert("invalid call");
+    }
 
     /// @notice Per-user USDC balance using the raw-address mapping.
     ///       Used when GLOBMINT_PRIVACY_MODE is false (default, backward compat).
@@ -99,6 +123,18 @@ contract GlobmintVault {
      */
     function totalDeposits() public view returns (uint256) {
         return _totalDeposits;
+    }
+
+    /**
+     * @notice Stablecoin base-units in this contract's custody, including any
+     *         direct-transfer amounts that were never credited on-chain.
+     * @dev Reconciliation: the difference `vaultAvailableBase() - totalDeposits()`
+     *      is USDC sent straight to the contract (e.g. a wallet's generic
+     *      "Send") by a sender the off-chain indexer could not identify. The
+     *      indexer flags those and operators attribute them to a user.
+     */
+    function vaultAvailableBase() external view returns (uint256) {
+        return IERC20(stablecoin).balanceOf(address(this));
     }
 
     /**

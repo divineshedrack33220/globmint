@@ -57,7 +57,10 @@ void main() {
     expect(summary.available.balance, 25000.0);
     expect(summary.savings.balance, 5000.0);
     expect(summary.totalNgnEquivalent, 30000.0);
-    expect(summary.totalUsdtEquivalent, closeTo(30000.0 / 1604.5, 1e-9));
+    // No invented rate: when the server answers 404, the summary reports 0
+    // instead of a made-up default.
+    expect(summary.currentRate, 0);
+    expect(summary.totalUsdtEquivalent, 0);
   });
 
   test('empty account summarizes to zero with no vault dependence', () async {

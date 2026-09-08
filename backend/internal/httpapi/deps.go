@@ -9,14 +9,18 @@ import (
 // Deps bundles the services handlers depend on. The HTTP layer stays thin and
 // does not contain business logic.
 type Deps struct {
-	Auth        *services.AuthService
-	Balance     *services.BalanceService
-	Ledger      *services.LedgerService
-	Money       *services.MoneyService
-	Savings     *services.SavingsService
-	Security    *services.SecurityService
-	Blockchain  blockchain.BlockchainService
-	Vault       *services.VaultService
+	Auth       *services.AuthService
+	Balance    *services.BalanceService
+	Ledger     *services.LedgerService
+	Money      *services.MoneyService
+	Savings    *services.SavingsService
+	Security   *services.SecurityService
+	Blockchain blockchain.BlockchainService
+	Vault      *services.VaultService
 	// Events fans change notifications out to SSE subscribers.
 	Events *events.Hub
+	// OperatorToken authenticates the operator-only endpoints (unattributed
+	// deposit review/attribution) via the X-Operator-Token header. Empty
+	// disables those endpoints.
+	OperatorToken string
 }
