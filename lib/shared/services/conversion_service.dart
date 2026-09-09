@@ -11,6 +11,11 @@ import 'api_client.dart';
 class ConversionService {
   ConversionService(this._api);
 
+  /// Server quote floor for NGN -> stablecoin: the rate book sets
+  /// NGN min_minor = 1000 kobo (₦10). Amounts below it are rejected by
+  /// `POST /money/quote` with 400, so callers skip the request entirely.
+  static const double minQuoteAmount = 10;
+
   final ApiClient _api;
 
   /// Requests a live conversion quote from the backend.

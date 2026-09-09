@@ -95,7 +95,7 @@ class _HomePageState extends ConsumerState<HomePage> {
         ? 0.0
         : CurrencyFormatter.vaultUsdc(
             vaultAsync.valueOrNull!.vaultUsdcBalance);
-    final network = vaultAsync.valueOrNull?.network ?? '';
+    final network = vaultAsync.valueOrNull?.networkLabel ?? '';
     final networkMode = vaultAsync.valueOrNull?.mode ?? '';
 
     return Scaffold(

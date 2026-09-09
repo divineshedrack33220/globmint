@@ -9,6 +9,9 @@ import '../../../../core/widgets/app_button.dart';
 import '../../../../core/widgets/app_confirmation_modal.dart';
 import '../../../../core/widgets/pin_verify_sheet.dart';
 import '../../../../core/widgets/success_dialog.dart';
+import '../../../../shared/services/api_client.dart';
+import '../../../../shared/services/conversion_service.dart';
+import '../../../../shared/services/savings_client.dart';
 
 class WithdrawalReviewPage extends ConsumerStatefulWidget {
   const WithdrawalReviewPage({
@@ -33,6 +36,8 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
   bool _isProcessing = false;
   double? _usdcEstimate;
 
+  static final _addressPattern = RegExp(r'^0x[0-9a-fA-F]{40}$');
+
   /// Client-side mirror of the server withdrawal fee (GLOBMINT_WITHDRAW_FEE_*
   /// defaults: 20 bps = 0.2%, min ₦10, cap ₦100). Display-only: the server is
   /// authoritative and computes the same schedule in kobo.
@@ -40,6 +45,14 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
     if (amountNgn <= 0) return 0;
     final raw = amountNgn * 20 / 10000;
     return raw.clamp(10.0, 100.0);
+  }
+
+  /// Human-friendly network name for display and confirmation: prefers the
+  /// withdrawal form's choice (e.g. "Ethereum (Sepolia)"), else the deposit
+  /// info's derived label.
+  String _networkLabel(DepositInfo? info) {
+    if (widget.network?.isNotEmpty == true) return widget.network!;
+    return info?.networkLabel ?? 'on-chain';
   }
 
   @override
@@ -50,7 +63,7 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
 
   Future<void> _loadQuote() async {
     final a = widget.amount ?? 0;
-    if (a <= 0) return;
+    if (a <= 0 || a < ConversionService.minQuoteAmount) return;
     try {
       final q = await ref
           .read(conversionServiceProvider)
@@ -65,12 +78,25 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
     final a = widget.amount ?? 0;
     final destination = widget.destination?.trim() ?? '';
     if (a <= 0 || destination.isEmpty) return;
+    if (!_addressPattern.hasMatch(destination)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text(
+                'Invalid destination address — it must be 0x followed by 40 hex characters.')),
+      );
+      return;
+    }
     final fee = _withdrawalFee(a);
+    final depositInfo = ref.read(depositInfoProvider).valueOrNull;
 
     final confirmed = await ConfirmationModal.show(
       context: context,
       title: 'Finalize withdrawal?',
       details: [
+        ConfirmationDetail(
+            label: 'Coin',
+            value: depositInfo?.assetLabel ?? 'USDC'),
+        ConfirmationDetail(label: 'Network', value: _networkLabel(depositInfo)),
         ConfirmationDetail(
             label: 'Amount', value: CurrencyFormatter.ngn(a), isHighlighted: true),
         ConfirmationDetail(
@@ -113,8 +139,9 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
       } catch (e) {
         if (mounted) {
           setState(() => _isProcessing = false);
+          final message = e is ApiException ? e.message : '$e';
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Withdrawal failed: $e')),
+            SnackBar(content: Text('Withdrawal failed: $message')),
           );
         }
       }
@@ -137,16 +164,7 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
     final a = widget.amount ?? 0;
     final destination = widget.destination?.trim() ?? '';
     final fee = _withdrawalFee(a);
-
-    final network = widget.network?.isNotEmpty == true
-        ? widget.network!
-        : ref
-            .watch(depositInfoProvider)
-            .maybeWhen(
-              data: (info) =>
-                  info.network.isNotEmpty ? info.network : 'on-chain',
-              orElse: () => 'on-chain',
-            );
+    final depositInfo = ref.watch(depositInfoProvider).valueOrNull;
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -201,8 +219,12 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
               const Divider(color: AppColors.divider),
               const SizedBox(height: 8),
               _ReviewRow(
-                label: 'Sent on',
-                value: network,
+                label: 'Coin',
+                value: depositInfo?.assetLabel ?? 'USDC',
+              ),
+              _ReviewRow(
+                label: 'Network',
+                value: _networkLabel(depositInfo),
               ),
               const SizedBox(height: 32),
               AppButton(

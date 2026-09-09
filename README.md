@@ -4,8 +4,10 @@
 
 Globe Mint is a full-stack fintech product that lets users hold and move money entirely in
 USD-backed stablecoins (USDC) through a non-custodial smart-contract vault. There is no
-Paystack, no Flutterwave, no local-bank integration: money-in is a user depositing USDC to
-their vault, money-out is the user telling the app which address to pay. The platform is a
+Paystack, no Flutterwave, no local-bank integration: money-in is USDC arriving at a
+**per-user vault clone address** (deployed deterministically by a factory, so every account
+has its own private on-chain address — no wallet "connect" is ever needed to receive),
+and money-out is the user telling the app which address to pay. The platform is a
 Go API + Solidity vault + Flutter client, currently live on **Sepolia testnet** and staged
 for Ethereum mainnet.
 
@@ -19,12 +21,14 @@ flowchart TB
         IDX["Indexer: vault events → ledger credits"] --> DB
     end
     subgraph Chain["Ethereum (Sepolia / mainnet)"]
+        FACTORY["GlobmintVaultFactory.sol — CREATE2"] --> CLONE["GlobmintVaultClone.sol per account"]
         VAULT["GlobmintVault.sol — no owner, no admin"]
     end
     UI == HTTPS ==> API
-    UI -->|"approve + deposit / withdraw (users sign their own txs)"| VAULT
+    UI -->|"USDC to their per-user clone address (any sender)"| CLONE
     SVC -->|"RPC: signer broadcasts withdrawals"| VAULT
-    VAULT -->|Deposited / Withdrawn events| IDX
+    CLONE -->|"Transfers / Deposited events"| IDX
+    VAULT -->|"Deposited / Withdrawn events"| IDX
 ```
 
 ---
@@ -54,12 +58,14 @@ flowchart TB
 
 Globe Mint is a product decision made deliberately: **self-custodial crypto only**.
 
-- Deposits and balances live **on-chain** in `GlobmintVault`, a contract with no owner and
-  no admin. No operator — not even this platform — can seize, freeze, or move a user's USDC.
-- The backend is an **indexer + ledger + intent service**. It watches the contract for
-  `Deposited` events, credits the user's internal ledger so the UI can show balances, and
-  relays withdrawal *intents* (signed by the user's PIN) to the chain via a designated
-  signer wallet.
+- Deposits and balances live **on-chain**, each account in its own `GlobmintVaultClone`
+  (deterministic EIP-1167 proxy, deployed by `GlobmintVaultFactory`) plus the legacy shared
+  `GlobmintVault`. None of them has an owner/admin who can seize, freeze, or move a user's
+  USDC.
+- The backend is an **indexer + ledger + intent service**. It watches for stablecoin
+  transfers into per-user clones and the vault's `Deposited`/`DepositedPrivate` events,
+  credits the user's internal ledger so the UI can show balances, and relays withdrawal
+  *intents* (signed by the user's PIN) to the chain via a designated signer wallet.
 - The app has **no fiat off-ramp built in**. Users withdraw USDC to any address they name —
   their own wallet, or an OTC desk / off-ramp provider that accepts USDC. Fiat conversion
   happens outside Globe Mint entirely.
@@ -85,58 +91,72 @@ flowchart LR
         SVC <--> IDX["Blockchain indexer — vault events → ledger"]
     end
     subgraph CHAIN["Ethereum (Sepolia / mainnet)"]
+        FACTORY["GlobmintVaultFactory.sol — CREATE2"] --> CLONE["per-user GlobmintVaultClone.sol"]
         VAULT["GlobmintVault.sol (no owner) / USDC ERC-20"]
     end
     APP -- HTTPS --> API
-    IDX <--> |"RPC: filter logs / send tx"| VAULT
+    IDX <--> |"RPC: filter logs / send tx"| CLONE
+    IDX <--> |"RPC: filter logs"| VAULT
 ```
 
 Three actors move money:
 
 | Actor | Role |
 |---|---|
-| **User wallet** | The only party that can deposit. Signs `approve` + `deposit` (or `depositWithPermit`) transactions. |
-| **GlobmintVault** | Holds USDC per-user. Emits `Deposited` / `Withdrawn`. No admin functions. |
+| **User wallet** | The only party that can *spend*. Deposits do not need it: any wallet, exchange, or friend can send USDC to the user's clone address. |
+| **GlobmintVaultClone (per-user)** | One EIP-1167 minimal proxy per account, deployed deterministically via CREATE2. Holds that account's USDC; withdrawing requires the clone owner or a per-withdrawal EIP-712 signature. |
+| **GlobmintVaultFactory** | Deploys every account's clone at a deterministic address derived from the account ID and applies the fleet privacy policy (`initialPrivacy`) at deploy time. |
+| **GlobmintVault (shared)** | Legacy ownerless vault, kept for API exposure and privacy-event scanning. No admin functions. |
 | **Signer wallet** | Server-side key that broadcasts withdrawal transactions *the user requested* and pre-approved with their PIN. Only sends to addresses the user named. |
 
 ### 2.2 Deposit flow (money in)
 
 ```mermaid
 sequenceDiagram
-    participant U as User (their wallet)
+    participant U as User / anyone
     participant A as App / API
-    participant V as GlobmintVault (chain)
-    U->>A: 1. PUT /savings/deposit-address
-    A-->>U: 2. GET /savings/deposit-info (vault + stablecoin + decimals)
-    U->>V: 3. approve(vault, amount)
-    U->>V: 4. deposit(amount)
-    V-->>A: 5. emits Deposited(user, amt)
-    Note over A: indexer scans new blocks
+    participant F as GlobmintVaultFactory (chain)
+    participant C as user's GlobmintVaultClone (chain)
+    U->>A: 1. PUT /savings/deposit-address (optional — link a wallet)
+    A->>F: 2. EnsureClone → createClone(userKey, owner) — deterministic CREATE2
+    A-->>U: 3. GET /savings/deposit-info (clone address + stablecoin + decimals)
+    U->>C: 4. USDC arrives at the clone (any transfer, or depositFor with the salt)
+    C-->>A: 5. stablecoin Transfer / DepositedPrivate events
+    Note over A: indexer routes the clone transfer to its owning account
     A-->>U: 6. balances / activity refresh
 ```
 
-1. The user links their own wallet address (`PUT /savings/deposit-address`).
-2. The app exposes the vault contract + stablecoin + decimals (`GET /savings/deposit-info`).
-3. In their wallet the user `approve`s the vault for an amount of USDC.
-4. The user calls `deposit(amount)`; USDC is pulled and credited to `balanceOf[user]`.
-5. The **indexer** watches for `Deposited` events and — only after a confirmation window —
-   credits the user's internal ledger.
+1. The user may link their own wallet address (`PUT /savings/deposit-address`); linking is
+   **not** required to receive.
+2. On first `deposit-info` the backend deploys the account's clone via `createClone(userKey,
+   owner)` — CREATE2 makes the address deterministic, so `predict(userKey)` never changes.
+   The `user_vault_clones` row maps clone → account.
+3. `GET /savings/deposit-info` returns the **per-user clone address** (plus stablecoin +
+   decimals) — the address the app shows for "Add money".
+4. Any amount of USDC sent to that address is a deposit: a plain ERC-20 transfer from any
+   wallet needs no approval, and privacy clones also accept `depositFor(user, salt, amount)`.
+5. The **indexer** sees the stablecoin `Transfer(to == clone)` and — only after the
+   confirmation window — credits the clone's owning account. Privacy `DepositedPrivate`
+   events from the shared vault are resolved through the `keccak256(user, salt)` commitment
+   map.
 6. The UI refreshes balances and activity.
 
 ### 2.2.1 Deposit flow limitations — direct transfers ("Send")
 
-A user occasionally bypasses the approve+deposit flow and sends USDC to the vault address
-with a generic wallet "Send", or sends from a wallet they never linked. Two facts matter:
+A user occasionally bypasses the app flow and sends USDC straight to their deposit address
+with a generic wallet "Send", or a third party funds it on their behalf. Two facts matter:
 
 - **ERC-20 has no receiver hook.** A standard `transfer`/`send` only updates the token's own
-  storage; it never calls the vault contract (exchange into placeholders: `fallback()` is not
-  invoked and `Deposited` is not emitted), so the contract **cannot** revert or credit such a
-  transfer. Only native ETH is rejected — `receive()` reverts, since with no owner stray ETH
-  would be unrecoverable.
-- **The indexer covers the linked case automatically.** The vault indexer already watches the
-  stablecoin's `Transfer(to == vault)` events in addition to the vault's `Deposited` events,
-  so a direct "Send" **from the wallet linked to your account** is credited with no extra steps
-  (the amount lands in vault custody on-chain and is mirrored on the internal ledger).
+  storage; it never calls the destination contract (exchange into placeholders: `fallback()`
+  is not invoked and `Deposited` is not emitted), so the contract **cannot** revert or credit
+  such a transfer. Only native ETH is rejected — `receive()` reverts, since with no owner
+  stray ETH would be unrecoverable.
+- **Any direct send to a per-user clone is credited automatically.** Every account has its
+  own clone deposit address, and the indexer routes any stablecoin `Transfer(to == clone)`
+  to that clone's owning account — **no wallet link is needed to receive**. This is why the
+  app can show a deposit address and let a friend, an exchange, or a brand-new wallet fund it
+  without any "connect your wallet" ceremony. Privacy is handled by the accounting, not by
+  exposing the mapping: the clone address on chain reveals no personal data (see §5.4).
 
 For the remaining case — a direct send from a wallet **no account is linked to** — the indexer
 no longer drops it silently:
@@ -199,7 +219,7 @@ with the fee stored on the row and debited only at sweep time.
 |---|---|---|
 | API | **Go 1.24** (`net/http` stdlib mux + middleware chain) | No heavyweight web framework; layered handlers over a shared `Deps` struct. |
 | Storage | **PostgreSQL 16** (Docker) + **pgx/v5** | All state (ledger, sessions, rates, users, audit) in one DB. |
-| Contracts | **Solidity ^0.8.24**, **Hardhat** + ethers v6 | `GlobmintVault.sol`, zero OpenZeppelin dependency. |
+| Contracts | **Solidity ^0.8.24**, **Hardhat** + ethers v6 | `GlobmintVault.sol`, `GlobmintVaultV2.sol`, plus `GlobmintVaultClone.sol` + `GlobmintVaultFactory.sol` (OZ-v5 clone construction vendored in the factory — zero-OpenZeppelin build). |
 | Chain client | **go-ethereum v1.17** (`rpc`, `ethclient`, `crypto`) | Filter-logs indexer + `SendTransaction`. |
 | Client | **Flutter** (`flutter_riverpod`, `go_router`, `freezed`, `http`) | Web + Android/iOS targets; `build/web` served locally. |
 | Infra | `docker-compose.yml` (Postgres), bash scripts | Backup, wallet generation, deploy scripts. |
@@ -241,11 +261,12 @@ globe-mint/
 │       ├── services/             # business logic (auth, ledger, money, vault, totp)
 │       └── storage/
 │           ├── storage.go        # repository interfaces
-│           └── postgres/         # pgx implementations + migrations 0001..0010
+│           └── postgres/         # pgx implementations + migrations 0001..0015
 ├── backend/contracts/
-│   ├── contracts/GlobmintVault.sol
-│   ├── scripts/                  # deploy.js, devdepositor.js, devsetup.js
-│   ├── test/                     # hardhat tests (9 passing)
+│   ├── contracts/                # GlobmintVault.sol, GlobmintVaultV2.sol,
+│   │                             # GlobmintVaultClone.sol, GlobmintVaultFactory.sol
+│   ├── scripts/                  # deploy.js, devsetup.js, devdepositor.js, devcreditclones.js
+│   ├── test/                     # hardhat tests (48 passing: V1 / V2 privacy / clone suite)
 │   └── DEPLOYMENT.md             # full deploy + mainnet runbook
 ├── scripts/backup.sh             # pg_dump + retention (Docker-aware)
 ├── .github/workflows/ci.yml
@@ -305,23 +326,33 @@ negatives.
 
 ### 5.4 Privacy model
 
-The vault contract (V2) supports two balance-mapping modes:
+Privacy is enforced at the contract level in two complementary layers:
 
-- **Privacy mode off (default):** Balances are stored against raw `address` in `_balances`.
-  This is the legacy mode; all existing behaviour is preserved exactly. The contract
-  has no owner/admin and no function can seize another user's funds.
+**Per-user clone addresses (the default deposit path).** Every account gets its own
+on-chain deposit address — an EIP-1167 minimal proxy deployed by `GlobmintVaultFactory`
+via CREATE2 from a per-user key (`keccak256(userID)`, never the owner). A clone address on
+chain is just a hash of `(factory, userKey)`: looking it up reveals no personal data, and
+because each account has a unique address, no shared contract exposes "who owns what". Anyone
+can send USDC to a clone without the recipient ever connecting a wallet — the indexer credits
+the clone's owning account by construction.
 
-- **Privacy mode on (`GLOBMINT_PRIVACY_MODE=true`):** Balances are stored against
-  `keccak256(user, salt)` commitments in `_privateBalances`. A per-user random `salt`
-  is generated when the user links their deposit address and stored in the
-  `user_salts` Postgres table. External observers cannot query a user's balance by
-  looking up their address on a block explorer. The commitment key is
-  `keccak256(abi.encodePacked(user, salt))`, which is deterministic only when the
-  salt is known (held by the backend + user).
+**Commitment-based balances (privacy mode, `GLOBMINT_PRIVACY_MODE=true`).** When privacy
+mode is on, clones (and the V2 vault) store balances against `keccak256(abi.encodePacked(
+user, salt))` commitments instead of raw addresses, and only commitment hashes appear in
+emitted events (`DepositedPrivate` / `WithdrawnPrivate`). A per-user random 16-byte `salt`
+is generated on first deposit-address link and stored in the `user_salts` table, so an
+external observer cannot query a balance or correlate a deposit with an identity even if
+they know the account's address. The factory sets the privacy flag fleet-wide at deploy time
+(`initialPrivacy`); in privacy mode a clone's raw `deposit()` / `withdraw()` /
+`withdrawWithSig()` revert, leaving `depositFor` → `withdrawWithSalt` (salt-proving) as the
+only funded entry points.
 
-Both mappings coexist in the contract for zero-downtime migration. When privacy mode
-is off, `_privateBalances` is effectively a no-op (zero-valued salt → deterministic
-commitment); when on, the backend routes all balance reads through the commitment path.
+Both keyings coexist in the contracts for zero-downtime migration: raw balances
+(`_balances` / `_owners` + token custody) and commitment balances (`_privateBalances`) are
+disjoint mappings, so flipping the flag changes which API is usable without touching stored
+funds. In legacy mode commitments are a no-op; in privacy mode the backend routes all
+balance reads and deposit resolution through the commitment path (`vaultCommitment` in
+`backend/internal/services/vault.go`).
 
 ---
 
@@ -521,9 +552,11 @@ The gate returns a list of every missing item so operators fix the whole config 
 - The backend never holds user private keys; users always initiate deposits.
 - No banking rails exist anywhere in the codebase by design.
 - **Privacy:** When `GLOBMINT_PRIVACY_MODE=true`, balances are hidden from block
-  explorers via commitment-based storage. Users are strongly encouraged to use a
-  dedicated wallet address for Globe Mint that is not linked to their identity. The
-  app UI includes a privacy notice during onboarding.
+  explorers via commitment-based storage, and every account funds its own pseudonymous
+  clone address (which reveals nothing about the identity behind it). Users are strongly
+  encouraged to use a dedicated wallet address for Globe Mint that is not linked to their
+  identity. The app UI includes a privacy notice during onboarding and a "Privacy-protected
+  balance" badge on the Add Money screen.
   - Full privacy security review (raw-address leak inventory, threat model,
     salt-rotation incident response, ZK roadmap):
     [`docs/security_privacy.md`](docs/security_privacy.md).
@@ -541,7 +574,7 @@ The gate returns a list of every missing item so operators fix the whole config 
 | Insider / operator | Read the DB | Seize user USDC: vault has no owner/admin functions |
 | Reorg attacker (mainnet) | — | Get a deposit credited early: confirmations window ≥ 12 |
 | CSRF / cross-site | — | Call the API: no cookies, bearer-in-header, CORS-allowlisted origins |
-| Blockchain observer | View raw addresses + balances on a block explorer (privacy mode off) | Query a user's balance by address when privacy mode is on (commitment-based) |
+| Blockchain observer | View transfers at a pseudonymous clone address (privacy mode off) | Link a clone or commitment to a user identity, or query balances, when privacy mode is on (per-user clone addresses + commitment-based balances) |
 
 The boundaries above are enforced at three layers simultaneously: the contract (money can
 only move per its rules), the service layer (limits, PIN, throttling, idempotency), and the
@@ -554,7 +587,8 @@ transport layer (no cookies, strict CORS, request IDs, strict JSON).
 ### 8.1 Accounts and transaction lifecycle
 
 NGN balances live in `accounts` (`available` and `savings`); USDC value lives on-chain (the
-vault is the source of truth) and is *displayed* by summing confirmed `Deposited` events
+per-user clones / vaults are the source of truth) and is *displayed* by summing confirmed
+deposit events (stablecoin transfers into clones and vault `Deposited`/`DepositedPrivate`)
 through the indexer.
 
 A representative transfer:
@@ -661,15 +695,63 @@ Design principles encoded in the contract itself:
 - CEI (checks-effects-interactions) ordering + SafeMath-style arithmetic guard reentrancy
   and overflow.
 
+#### 9.1.1 Per-user clones (`GlobmintVaultClone` + `GlobmintVaultFactory`)
+
+The deposit path users actually fund is a **per-user clone**, not the shared vault:
+
+```solidity
+contract GlobmintVaultFactory {
+    address public immutable implementation;  // GlobmintVaultClone logic
+    bool    public immutable initialPrivacy;   // fleet-wide privacy policy
+    function predict(bytes32 userKey) public view returns (address);   // pure CREATE2 math
+    function createClone(bytes32 userKey, address owner) external returns (address);
+}
+
+// deployed per account as an EIP-1167 minimal proxy; all state keyed by address(this)
+contract GlobmintVaultClone {
+    function deposit(uint256 amount) external;                        // REVERTS in privacy mode
+    function depositFor(address user, bytes32 salt, uint256 amount) external;  // privacy entry
+    function withdraw(uint256 amount, address to) external;           // owner-only; REVERTS in privacy mode
+    function withdrawWithSalt(bytes32 salt, uint256 amount, address to) external;  // salt-proving
+    function privacyEnabled() external view returns (bool);
+    function balanceOfCommitment(bytes32 commitment) external view returns (uint256);
+    function setPrivacyEnabled(bool) external;                        // factory-only, applied at deploy
+}
+```
+
+- **Deterministic & private.** `createClone` uses CREATE2 with a per-user key, so the
+  address is stable across deploys and reveals no personal data. The factory initializes
+  ownership and the privacy flag in the same transaction the clone is created — no
+  initialize window for anyone to squat on an uninitialized clone.
+- **Privacy entry points.** In privacy mode only `depositFor`/`withdrawWithSalt` work and
+  only `keccak256(user, salt)` commitments appear in events (`DepositedPrivate` /
+  `WithdrawnPrivate`); the raw-address `deposit`/`withdraw`/`withdrawWithSig` revert with
+  `"privacy mode: use depositFor"` / `"privacy mode: use withdrawWithSalt"`. A wrong salt
+  resolves to an empty commitment and reverts.
+- **Any USDC in the clone is withdrawable by its owner** — including funds that arrived by
+  plain transfer (the token balance is the availability baseline).
+- `withdrawWithSig` / `transferOwnershipBySig` are EIP-712 relayed flows; the latter lets
+  an unlinked account's signer-placeholder owner be claimed by the user ("sign to take
+  custody"), sharing the per-clone nonce so one signature type never replays the other.
+
 ### 9.2 The indexer
 
 ```mermaid
 flowchart TB
-    VAULT[vault contract] -->|"Deposited / Withdrawn events"| L["filter logs (Topics, fromBlock = START_BLOCK)"]
+    CLONE[stablecoin Transfer to a clone or the vault] --> L["filter logs (fromBlock = START_BLOCK)"]
+    VAULT[vault Deposited / DepositedPrivate events] --> L
     L --> H["confirmed head = latest − MIN_CONFIRMATIONS (0 testnet, ≥12 mainnet)"]
-    H --> R["per event: resolve deposit_address → user → ledger credit"]
+    H --> R["per event: clone → owning account, or commitment → user (salt map)"]
     R --> C["cursor persisted in indexer_state (resumable, crash-safe)"]
 ```
+
+- **Clone routing.** Each scan refreshes a `cloneUser` map (clone address → owning account)
+  from `user_vault_clones`. A stablecoin `Transfer` whose `to` is a clone is credited to
+  that account by construction — no wallet link or sender resolution is needed to receive.
+  In privacy mode the shared vault's `DepositedPrivate` events (commitment-only) are
+  resolved through `user_salts` + the `deposit_addresses` salt column and never fall back
+  to a raw sender. Unlinked senders to the shared vault still land in `unattributed`
+  (§2.2.1).
 
 - Events before the confirmation window are **not** credited — deposits appear only once
   deep enough (prevents reorg reversals).
@@ -743,6 +825,7 @@ request time and stored on the row, but nothing is debited until release.
 | `GLOBMINT_BLOCKCHAIN_MODE` | `mock` (no chain calls) / `real` |
 | `GLOBMINT_STABLECOIN_CONTRACT_ADDRESS` | USDC: Sepolia `0x1c7D4B…C7238`, mainnet `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48` |
 | `GLOBMINT_VAULT_CONTRACT_ADDRESS` / `GLOBMINT_VAULT_ADDRESS` | Deployed vault + the displayed deposit address |
+| `GLOBMINT_CLONE_FACTORY_ADDRESS` | Deployed `GlobmintVaultFactory`. When set, every account gets its own deterministic clone deposit address (CREATE2); `GLOBMINT_VAULT_ADDRESS` remains the fallback owner seat and the shared-vault events source. |
 | `GLOBMINT_VAULT_START_BLOCK` | Indexer anchor |
 | `GLOBMINT_VAULT_MIN_CONFIRMATIONS` | credit window (≥12 forced on mainnet) |
 | `GLOBMINT_STABLECOIN_PRIVATE_KEY` | signer key (never committed) |
@@ -751,11 +834,11 @@ request time and stored on the row, but nothing is debited until release.
 | `GLOBMINT_WITHDRAW_FEE_BPS` | withdrawal fee rate in basis points (default `20` = 0.2%; `0` disables fees) |
 | `GLOBMINT_WITHDRAW_FEE_MIN_MINOR` | minimum withdrawal fee in kobo (default `1000` = ₦10) |
 | `GLOBMINT_WITHDRAW_FEE_CAP_MINOR` | maximum withdrawal fee in kobo (default `10000` = ₦100) |
-| `GLOBMINT_PRIVACY_MODE` | `false` (default) or `true`. When `true`, the vault uses
-  commitment-based balance storage (`_privateBalances`) and the backend derives
-  commitments from `user_salts`. When `false`, raw-address mapping is used exactly
-  as before. New users linking a deposit address receive a fresh random salt; the
-  one-off migration `0013_privacy_salts.sql` populates existing rows. |
+| `GLOBMINT_PRIVACY_MODE` | `false` (default) or `true`. When `true`, balances use
+  commitment-based storage (`_privateBalances`), clones boot privacy-enabled
+  (`depositFor`/`withdrawWithSalt` only, commitment-only events), and the backend derives
+  commitments from `user_salts`. New users linking a deposit address receive a fresh random
+  salt; the one-off migration `0013_privacy_salts.sql` populates existing rows. |
 
 > ⚠️ The canonical mainnet USDC is `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48` (note the
 > trailing `8`). A one-character error here would route production deposits to a non-token.
@@ -809,7 +892,7 @@ flowchart LR
 | auth | welcome, login (Password → 2FA step), register with Terms/Privacy consent links, PIN creation, verification |
 | home | dashboard, **one balance only: your own money** (personal ledger total + USDT equivalent), **currency selector** (NGN/USD/USDT), live rate line, quick actions, recent activity |
 | pay | transfers, send-to-beneficiary, OTC/withdraw-to-address |
-| savings | add money (deposit address + watch-only note + risk disclosure; "deposits unavailable" empty-state without a vault), withdraw + review (fee preview: amount, 0.2% fee, total charged, USDC received) |
+| savings | add money (per-user clone deposit address + **privacy badge** "Privacy-protected balance" when `GLOBMINT_PRIVACY_MODE=true` + watch-only note + risk disclosure; "deposits unavailable" empty-state without a vault), withdraw + review (fee preview: amount, 0.2% fee, total charged, USDC received) |
 | activity | full transaction list with status/type badges and destination rendering |
 | profile | security center (**2FA enable/disable**, biometric, alerts), change PIN / password, beneficiaries, FAQ + Privacy Policy + Terms of Service pages |
 | legal | sectioned Privacy/Terms reader + expandable FAQ (`lib/features/legal`), served on public `/legal/*` routes |
@@ -876,11 +959,13 @@ figures cannot, so they are never merged into what the user sees as theirs.
 | `0011_indexer_events_and_elevations` | `indexer_events` replay log `(tx_hash, log_index)` PK + `withdrawal_elevations` time-lock table with the one-pending-per-content unique index |
 | `0012_withdrawal_fees` | `withdrawal_elevations.fee_minor` + seeded platform fee owner/account |
 | `0013_privacy_salts` | `user_salts` table (`user_id`, `salt BYTEA`) + `deposit_addresses.salt` column; enables `GLOBMINT_PRIVACY_MODE=true` |
+| `0014_unattributed_indexer_events` | flags unlinked direct vault sends as `unattributed` in `indexer_events` so operators can attribute them |
+| `0015_user_vault_clones` | per-user clone deposit addresses (`user_vault_clones`: user id → deterministic clone, factory, chain) |
 
 Key tables: `users`, `sessions`, `accounts`, `transactions`, `balance_ledger`,
-`exchange_rates`, `deposit_addresses`, `indexer_state`, `indexer_events`,
-`withdrawal_elevations`, `security_events`, `audit_log`, `beneficiaries`,
-`bank_accounts`, `notifications`.
+`exchange_rates`, `deposit_addresses`, `user_salts`, `user_vault_clones`,
+`indexer_state`, `indexer_events`, `withdrawal_elevations`, `security_events`,
+`audit_log`, `beneficiaries`, `bank_accounts`, `notifications`.
 
 Migrations auto-apply on server boot (idempotent, tracked in a schema_migrations-style
 table). The backup script archives the whole schema + data for point-in-time restores.
@@ -913,7 +998,27 @@ Demo login (testnet): `demo@globmint.local` / `DemoPass123!`, PIN `123456`.
 | `gentestwallet` | Generate a keypair + wallet file; `-verify` cross-checks that the `.env` key matches the file without printing it. |
 | `usdcsend` | One-shot USDC transfer CLI (raw stablecoin movement) — the signer-equivalent for scripts. |
 | `verifychain` | Read-only on-chain sanity checks (vault address, stablecoin, permissions) before/after deploy. |
-| `devsetup` / `devdepositor` (contracts/scripts) | Seed a local persistent hardhat node with USDC and simulate deposits so the indexer can be exercised without a faucet. |
+| `devsetup` (contracts/scripts) | Deploys MockUSDC + `GlobmintVault` + **`GlobmintVaultFactory` (privacy on)** and mints USDC to the signer and a demo depositor; writes `deployments/dev.json`. |
+| `devcreditclones` (contracts/scripts) | One-shot crediting of the per-user clones: `CLONE_TARGETS="0x…" SEND_AMOUNT=50 npx hardhat run scripts/devcreditclones.js --network localhost`. With `CLONE_USER=0x…` + `CLONE_SALT=0x…`(bytes32) it credits through the privacy entry `depositFor`; without them it falls back to a plain mint + transfer. |
+| `devdepositor` (contracts/scripts) | Simulates deposits to the shared vault/depositor so the indexer is exercised without a faucet. |
+
+**Local chain (exercises the real indexer + privacy path):**
+
+```bash
+cd backend/contracts
+npx hardhat node &                      # fresh chain on 127.0.0.1:8545
+npx hardhat run scripts/devsetup.js --network localhost   # deploys the privacy-enabled factory
+# from the repo root: point .env.hardhat at deployments/dev.json and add
+# GLOBMINT_CLONE_FACTORY_ADDRESS=<factory> + GLOBMINT_PRIVACY_MODE=true
+cd ../..
+set -a; source .env.hardhat; set +a
+cd backend && go build -o server ./cmd/server && ./server
+```
+
+On a fresh node you must also clear stale state from a previous chain: delete the demo
+user's `user_vault_clones` row (so `EnsureClone` re-deploys at the deterministic CREATE2
+address) and reset `indexer_state.last_block`. The per-account deposit address is then the
+**clone** (`GET /savings/deposit-info` → `privacy_enabled: true` when the mode is on).
 
 When running with `GLOBMINT_BLOCKCHAIN_MODE=mock` no chain calls happen at all — ideal for
 quick UI iteration; flipping to `real` against Sepolia turns on indexing and signed
@@ -926,14 +1031,15 @@ while no vault address is configured.
 
 ```bash
 cd backend/contracts
-npx hardhat test                                        # 9 contract tests
+npx hardhat test                                        # 48 contract tests
 STABLECOIN_ADDRESS=0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238 \
   npx hardhat run scripts/deploy.js --network sepolia   # mainnet: use 0xA0b8…B48
 ```
 
 `deploy.js` writes `deployments/address.json`; point the backend at it with
 `GLOBMINT_VAULT_CONTRACT_ADDRESS` / `GLOBMINT_VAULT_ADDRESS`. `devsetup.js` +
-`devdepositor.js` exercise deposits on the local chain for dev.
+`devcreditclones.js` / `devdepositor.js` exercise deposits and per-user clone crediting on
+the local chain for dev.
 
 ### 12.3 Mainnet checklist (real money)
 
@@ -993,7 +1099,7 @@ when host `pg_dump` is missing.
 | Go unit | `go test ./internal/domain/...` | money arithmetic, rounding, negatives; withdrawal-fee schedule (min/cap/percentage/disabled, overflow-safe) |
 | Go integration | `go test ./internal/services/...` | real Postgres (docker on :5434): credits/debits, idempotency (incl. concurrent), transfers, conversion, beneficiary CRUD, indexer resumability (restart, crash-safe cursor, RPC faults, confirmation window), parallel crediting, leader election, the elevation lifecycle (time-lock, cancel, exactly-once sweep, insufficient pre-check), and withdrawal fees (instant debit + platform settlement, stored-then-swept elevated fee, cancel charges nothing, daily cap ignores fees) |
 | Load/chaos | `go run ./cmd/loadtest` + `scripts/chaos-test.sh` | end-to-end hot path against an in-process server (register → login→2FA → convert → transfer), plus injected-fault runs asserting graceful 503s/latency (see §15) |
-| Solidity | `npx hardhat test` | 9 tests: deposit, depositFor, withdraw, over-withdrawal revert, no-admin isolation, totalDeposits |
+| Solidity | `npx hardhat test` | 48 tests across three suites: V1 `GlobmintVault` (13); V2 privacy `GlobmintVaultV2` (9: commitment credits, wrong-salt reverts, toggle preserves balances, cross-user drain block, boot-mode reverts); clones `GlobmintVaultClone` (26: privacy-enabled fleet boot, gated `deposit`/`withdraw`/`withdrawWithSig`, `depositFor` commitment credits, `withdrawWithSalt` + wrong-salt revert, factory-only `setPrivacyEnabled`, plain-transfer custody) |
 | Flutter unit/widget | `flutter test` | formatters (incl. `vaultUsdc`), auth service (login + 2FA verify, token persistence), balance service mapping, login-page 2FA widget flow |
 | Flutter lint | `flutter analyze` + `flutter build web` | static analysis + web compile |
 
@@ -1079,9 +1185,12 @@ Every privacy-mode launch gate runs:
 [`docs/privacy_test_plan.md`](docs/privacy_test_plan.md). The automated
 portion is already covered by existing suites:
 
-- **Contract:** `backend/contracts$ npx hardhat test` — 18 tests (incl.
-  `GlobmintVaultV2.test.js` boot-mode revert behavior, commitment credits,
-  wrong-salt reverts, toggle-preserves-balances, cross-user drain block).
+- **Contract:** `backend/contracts$ npx hardhat test` — 48 tests across three suites: V1
+  `GlobmintVault` (13), V2 privacy `GlobmintVaultV2` (9: commitment credits, wrong-salt
+  reverts, toggle-preserves-balances, cross-user drain block, boot-mode reverts), and the
+  clone suite `GlobmintVaultClone` (26: privacy-enabled fleet boot, `depositFor` /
+  `withdrawWithSalt`, gated `deposit`/`withdraw`/`withdrawWithSig`, factory-only
+  `setPrivacyEnabled`, plain-transfer custody).
 - **Backend:** `backend$ go test ./...` — incl. savings privacy integration
   (salt created on link, no leak in JSON, relink preserves salt, legacy mode
   adds no salt) and vault privacy integration (matched commitment credited,

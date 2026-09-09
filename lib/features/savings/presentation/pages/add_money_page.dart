@@ -7,17 +7,15 @@ import 'package:qr_flutter/qr_flutter.dart';
 import '../../../../app/providers.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/theme_extensions.dart';
+import '../../../../core/widgets/app_info_dialog.dart';
 import '../../../../shared/services/savings_client.dart';
 import '../../../../shared/widgets/privacy_notice.dart';
 import '../../../../shared/widgets/stablecoin_risk_disclosure.dart';
 
-/// Personal savings vault. You top it up by sending USDC on-chain to the
-/// deposit address shown here — from the wallet linked to your account. The
-/// app watches that address and reflects every incoming deposit as vault
-/// holdings (valued in NGN at the live rate) and in your transaction history.
-/// A generic "Send" from the linked wallet is detected automatically; sends
-/// from an unlinked wallet land in vault custody and must be attributed by
-/// support.
+/// Top up your savings by sending USDC on-chain to your personal deposit
+/// address. The address is a per-user vault clone: anyone can send to it from
+/// any wallet and the deposit is credited to this account automatically — no
+/// wallet linking, approval, or manual attribution is needed.
 class AddMoneyPage extends ConsumerStatefulWidget {
   const AddMoneyPage({super.key});
 
@@ -60,6 +58,33 @@ class _AddMoneyPageState extends ConsumerState<AddMoneyPage> {
     });
   }
 
+  void _showHowTo(DepositInfo deposit) {
+    InfoDialog.show(
+      context: context,
+      title: 'How to add money',
+      icon: Icons.account_balance_wallet,
+      body: [
+        _step(context, '1', 'Copy the address below — or scan the QR code.'),
+        _step(context, '2', 'In any wallet, choose Send and paste this address.'),
+        _step(
+            context,
+            '3',
+            'Send ${deposit.stablecoinSymbol} on ${deposit.networkLabel} '
+            '(any amount).'),
+        _step(context, '4', 'Done — your balance updates automatically.'),
+        const SizedBox(height: 16),
+        Text(
+          'Send only ${deposit.stablecoinSymbol} on ${deposit.networkLabel}. '
+          'A different coin or network sent to this address cannot be '
+          'recovered, and no PIN or approval is needed.',
+          style: context.typography.bodySmall.copyWith(
+            color: AppColors.warning,
+          ),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final deposit = _deposit;
@@ -98,65 +123,10 @@ class _AddMoneyPageState extends ConsumerState<AddMoneyPage> {
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      'Send USDC to this address from the wallet linked to '
-                      'your account. The app watches the chain and credits '
-                      'deposits automatically.',
+                      'Anyone can send USDC here from any wallet — it is '
+                      'credited to your account automatically. No linking, '
+                      'approval, or PIN.',
                       style: context.typography.bodySmall,
-                    ),
-                    const SizedBox(height: 12),
-                    _step(context, '1', 'Link your wallet in Profile'),
-                    _step(context,
-                        '2', 'Approve USDC spend for the vault contract'),
-                    _step(context,
-                        '3', 'Confirm the deposit from that wallet'),
-                    const SizedBox(height: 12),
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: AppColors.surfaceHighlight,
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                            color: AppColors.border, width: 1),
-                      ),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Icon(Icons.warning_amber_rounded,
-                              color: AppColors.warning, size: 18),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              'A transfer sent from a wallet that is not '
-                              'linked to your account is not credited '
-                              'automatically — it stays in vault custody '
-                              'until support attributes it. Always send from '
-                              'your linked wallet.',
-                              style: context.typography.bodySmall.copyWith(
-                                  color: AppColors.textSecondary),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Icon(Icons.visibility_outlined,
-                            color: AppColors.textSecondary, size: 16),
-                        const SizedBox(width: 6),
-                        Expanded(
-                          child: Text(
-                            'Watch-only address: the app observes this address '
-                            'to credit you, but cannot spend from it — funds '
-                            'are held by the vault smart contract under its '
-                            'own key.',
-                            style: context.typography.bodySmall.copyWith(
-                                color: AppColors.textSecondary),
-                          ),
-                        ),
-                      ],
                     ),
                     const SizedBox(height: 16),
                     if (deposit != null && deposit.privacyEnabled) ...[
@@ -191,20 +161,20 @@ class _AddMoneyPageState extends ConsumerState<AddMoneyPage> {
                             Row(
                               children: [
                                 const Icon(Icons.cloud_off_outlined,
-                                    color: AppColors.textSecondary,
-                                    size: 20),
+                                    color: AppColors.textSecondary, size: 20),
                                 const SizedBox(width: 8),
                                 Expanded(
-                                  child: Text(
-                                    'Deposits unavailable',
-                                    style: context.typography.title,
-                                  ),
+                                  child: Text('Deposits unavailable',
+                                      style: context.typography.title),
                                 ),
                               ],
                             ),
                             const SizedBox(height: 8),
                             Text(
-                              'This server has no vault address configured, so there is no deposit address to show yet. Deposits open automatically once the vault is deployed and connected.',
+                              'This server has no vault address configured, '
+                              'so there is no deposit address to show yet. '
+                              'Deposits open automatically once the vault is '
+                              'deployed and connected.',
                               style: context.typography.bodySmall.copyWith(
                                   color: AppColors.textSecondary),
                             ),
@@ -214,7 +184,8 @@ class _AddMoneyPageState extends ConsumerState<AddMoneyPage> {
                     ] else ...[
                       _label(context, 'Deposit address'),
                       const SizedBox(height: 6),
-                      _addressBox(context, deposit.address, onCopy: _copyAddress),
+                      _addressBox(context, deposit.address,
+                          onCopy: _copyAddress),
                       const SizedBox(height: 16),
                       Center(
                         child: Column(
@@ -246,25 +217,22 @@ class _AddMoneyPageState extends ConsumerState<AddMoneyPage> {
                         spacing: 16,
                         runSpacing: 8,
                         children: [
-                          _chip(context, 'Network', deposit.network),
-                          _chip(context, 'Chain', '${deposit.chainId}'),
-                          _chip(
-                            context,
-                            'Asset',
-                            '${deposit.stablecoinSymbol} · ${deposit.stablecoinName}',
-                          ),
+                          _chip(context, 'Network', deposit.networkLabel),
+                          _chip(context, 'Asset', deposit.assetLabel),
                         ],
                       ),
-                      if (deposit.vaultContract.isNotEmpty) ...[
-                        const SizedBox(height: 12),
-                        _label(context, 'Vault contract'),
-                        const SizedBox(height: 6),
-                        SelectableText(
-                          deposit.vaultContract,
-                          style: context.typography.bodySmall.copyWith(
-                              color: AppColors.textSecondary),
+                      const SizedBox(height: 12),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: TextButton.icon(
+                          onPressed: () => _showHowTo(deposit),
+                          icon: const Icon(Icons.help_outline, size: 18),
+                          label: const Text('How to add money'),
+                          style: TextButton.styleFrom(
+                            foregroundColor: AppColors.primary,
+                          ),
                         ),
-                      ],
+                      ),
                     ],
                   ],
                 ),
@@ -276,9 +244,10 @@ class _AddMoneyPageState extends ConsumerState<AddMoneyPage> {
               ],
               Center(
                 child: Text(
-                  deposit?.network != null && deposit!.network.isNotEmpty
-                      ? 'Live on ${deposit.network} — USDC (${deposit.stablecoinSymbol})'
-                      : 'Sending to the vault is detected automatically',
+                  deposit != null
+                      ? 'Live on ${deposit.networkLabel} — USDC '
+                          '(${deposit.stablecoinSymbol})'
+                      : 'Send USDC to your vault to start saving',
                   textAlign: TextAlign.center,
                   style: context.typography.bodySmall,
                 ),

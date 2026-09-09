@@ -51,6 +51,22 @@ type BlockchainService interface {
 	// VaultAddress returns the on-chain address users send deposits to. Empty in
 	// mock mode (no signer configured).
 	VaultAddress() string
+	// PredictClone computes the CREATE2 address the vault factory will deploy for
+	// `userKey` WITHOUT broadcasting anything. userKey is a per-account bytes32
+	// (e.g. keccak256(userID)) so every account's clone is unique even before
+	// it has its own wallet. Deterministic per key.
+	PredictClone(ctx context.Context, userKey string) (string, error)
+	// CloneByUserKey resolves the deployed clone address for `userKey`, or ""
+	// when no clone has been deployed for it yet.
+	CloneByUserKey(ctx context.Context, userKey string) (string, error)
+	// DeployClone deploys (or finds) the per-user vault clone for `userKey` and
+	// returns the broadcast tx hash and the clone address. `owner` is the clone
+	// owner seat: the user's linked wallet, or the platform signer as a
+	// placeholder the user can later claim.
+	DeployClone(ctx context.Context, userKey, owner string) (txHash, cloneAddr string, err error)
+	// CloneFactoryAddress returns the configured vault clone factory address, or
+	// "" when none is configured.
+	CloneFactoryAddress() string
 	// FilterTokenTransfers returns decoded stablecoin Transfer events from
 	// `fromBlock`..`toBlock` (inclusive) where `to` equals `address` (or all
 	// addresses when `address` is empty).
@@ -76,9 +92,11 @@ type MockBlockchainService struct {
 	balances map[string]string
 	transfers []TokenTransfer
 	vaultDeposits []VaultDeposit
+	clones    map[string]string // owner(+predicted) -> deployed clone addr
 	latest    uint64
 	headErr   error
 	filterErr error
+	cloneFactory string
 }
 
 // ---------- Mock ----------
@@ -87,7 +105,26 @@ type MockBlockchainService struct {
 func NewMockBlockchainService() *MockBlockchainService {
 	return &MockBlockchainService{
 		balances: make(map[string]string),
+		clones:   make(map[string]string),
 	}
+}
+
+// SetCloneFactory records the factory address the mock reports via
+// CloneFactoryAddress (mock-only, for tests/ops).
+func (m *MockBlockchainService) SetCloneFactory(addr string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cloneFactory = addr
+}
+
+// SetClone seeds a deployed clone for a user key (mock-only, for tests).
+// CloneByUserKey/DeployClone will then return it.
+func (m *MockBlockchainService) SetClone(userKey string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	predicted, _ := mockPredictClone(userKey)
+	m.clones[userKey] = predicted
+	return predicted
 }
 
 // SetLatest sets the head block the mock reports (mock-only, for tests).
@@ -145,6 +182,45 @@ func (m *MockBlockchainService) TransferToken(ctx context.Context, recipient str
 
 // VaultAddress returns empty in mock mode (no signer configured).
 func (m *MockBlockchainService) VaultAddress() string { return "" }
+
+// CloneFactoryAddress returns the configured factory address ("" if unset).
+func (m *MockBlockchainService) CloneFactoryAddress() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cloneFactory
+}
+
+// mockPredictClone derives a deterministic pseudo-address for a user key,
+// mirroring the factory's CREATE2 determinism for tests.
+func mockPredictClone(userKey string) (string, error) {
+	hash := crypto.Keccak256Hash([]byte("globmint:vaultclone:" + userKey))
+	return common.BytesToAddress(hash.Bytes()[12:]).Hex(), nil
+}
+
+// PredictClone returns the deterministic pseudo-address for `userKey` (mock).
+func (m *MockBlockchainService) PredictClone(ctx context.Context, userKey string) (string, error) {
+	return mockPredictClone(userKey)
+}
+
+// CloneByUserKey returns the deployed clone for `userKey`, or "" when none was
+// seeded via SetClone (mock).
+func (m *MockBlockchainService) CloneByUserKey(ctx context.Context, userKey string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.clones[userKey], nil
+}
+
+// DeployClone seeds the user key's clone and returns (txHash, cloneAddr) (mock).
+func (m *MockBlockchainService) DeployClone(ctx context.Context, userKey, owner string) (string, string, error) {
+	addr, err := mockPredictClone(userKey)
+	if err != nil {
+		return "", "", err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.clones[userKey] = addr
+	return "0x" + fmt.Sprintf("%064x", time.Now().UnixNano()), addr, nil
+}
 
 // FilterTokenTransfers returns any transfers seeded via AddTransfer for tests.
 func (m *MockBlockchainService) FilterTokenTransfers(ctx context.Context, fromBlock, toBlock uint64, address string) ([]TokenTransfer, error) {
@@ -217,6 +293,7 @@ type EthereumService struct {
 	token         common.Address
 	tokenSymbol   string
 	tokenDecimals int
+	cloneFactory  common.Address // GlobmintVaultFactory (per-user vault clones)
 	signerKey     *ecdsa.PrivateKey // derive from hex key in config; never logged
 	from          common.Address
 }
@@ -228,6 +305,9 @@ type EthereumConfig struct {
 	StablecoinSymbol   string
 	StablecoinDecimals int
 	StablecoinContract string
+	// CloneFactoryContract is the deployed GlobmintVaultFactory address that
+	// creates per-user vault clones. Empty disables clone operations.
+	CloneFactoryContract string
 	// PrivateKeyHex is the hex-encoded signer private key used for transfers.
 	// It is read from the environment and must never be logged or committed.
 	PrivateKeyHex string
@@ -245,6 +325,9 @@ func NewEthereumService(ctx context.Context, cfg EthereumConfig) (*EthereumServi
 		token:         common.HexToAddress(cfg.StablecoinContract),
 		tokenSymbol:   cfg.StablecoinSymbol,
 		tokenDecimals: cfg.StablecoinDecimals,
+	}
+	if cfg.CloneFactoryContract != "" {
+		svc.cloneFactory = common.HexToAddress(cfg.CloneFactoryContract)
 	}
 	if cfg.PrivateKeyHex != "" {
 		key, err := crypto.HexToECDSA(strings.TrimPrefix(cfg.PrivateKeyHex, "0x"))
@@ -428,6 +511,36 @@ func encodeBalanceOf(owner common.Address) []byte {
 	return data
 }
 
+// encodeBytes32Arg builds a 4-byte selector + one 32-byte word, used for the
+// factory's predict(userKey) and cloneOfUser(userKey) calls.
+func encodeBytes32Arg(selector string, key [32]byte) []byte {
+	data := make([]byte, 4+32)
+	copy(data[:4], common.FromHex(selector))
+	copy(data[4:], key[:])
+	return data
+}
+
+// encodeCreateClone builds the ABI payload for createClone(bytes32,address):
+// 4-byte selector + userKey word + right-aligned owner address word.
+func encodeCreateClone(key [32]byte, owner common.Address) []byte {
+	data := make([]byte, 4+32+32)
+	copy(data[:4], common.FromHex("eada2203"))
+	copy(data[4:], key[:])
+	copy(data[4+32+12:], owner.Bytes()) // right-align the 20-byte address
+	return data
+}
+
+// parseBytes32 accepts a 0x-prefixed (or bare) 64-hex-char bytes32 string.
+func parseBytes32(s string) ([32]byte, error) {
+	var key [32]byte
+	r := common.FromHex(s)
+	if len(r) != 32 {
+		return key, fmt.Errorf("expected 32 bytes, got %d", len(r))
+	}
+	copy(key[:], r)
+	return key, nil
+}
+
 // encodeTransfer builds the ABI payload for transfer(address,uint256).
 // selector transfer(address,uint256): 0xa9059cbb
 func encodeTransfer(to common.Address, value *big.Int) []byte {
@@ -453,6 +566,114 @@ func (s *EthereumService) VaultAddress() string {
 		return ""
 	}
 	return s.from.Hex()
+}
+
+// CloneFactoryAddress returns the configured GlobmintVaultFactory address.
+func (s *EthereumService) CloneFactoryAddress() string {
+	if s.cloneFactory == (common.Address{}) {
+		return ""
+	}
+	return s.cloneFactory.Hex()
+}
+
+// PredictClone computes `factory.predict(userKey)` via eth_call, without
+// broadcasting. The result is the deterministic CREATE2 address the factory
+// would deploy for this per-user key.
+func (s *EthereumService) PredictClone(ctx context.Context, userKey string) (string, error) {
+	if s.cloneFactory == (common.Address{}) {
+		return "", fmt.Errorf("clone factory not configured")
+	}
+	key, err := parseBytes32(userKey)
+	if err != nil {
+		return "", fmt.Errorf("invalid user key: %w", err)
+	}
+	out, err := s.callContract(ctx, s.cloneFactory, encodeBytes32Arg("0e787cce", key))
+	if err != nil {
+		return "", fmt.Errorf("predict clone: %w", err)
+	}
+	return common.BytesToAddress(out).Hex(), nil
+}
+
+// CloneByUserKey resolves `factory.cloneOfUser(userKey)`, returning "" when no
+// clone has been deployed yet (the factory map yields zero address).
+func (s *EthereumService) CloneByUserKey(ctx context.Context, userKey string) (string, error) {
+	if s.cloneFactory == (common.Address{}) {
+		return "", fmt.Errorf("clone factory not configured")
+	}
+	key, err := parseBytes32(userKey)
+	if err != nil {
+		return "", fmt.Errorf("invalid user key: %w", err)
+	}
+	out, err := s.callContract(ctx, s.cloneFactory, encodeBytes32Arg("416fe6ad", key))
+	if err != nil {
+		return "", fmt.Errorf("lookup clone: %w", err)
+	}
+	addr := common.BytesToAddress(out)
+	if addr == (common.Address{}) {
+		return "", nil
+	}
+	return addr.Hex(), nil
+}
+
+// DeployClone calls `factory.createClone(userKey, owner)` with the signer key
+// and returns the broadcast tx hash plus the (deterministic) clone address.
+// Any account can have a unique clone even before it has a wallet: the user
+// key drives CREATE2 while `owner` is the wallet seat (or the platform signer
+// as a placeholder the user can later claim).
+func (s *EthereumService) DeployClone(ctx context.Context, userKey, owner string) (string, string, error) {
+	if s.cloneFactory == (common.Address{}) {
+		return "", "", fmt.Errorf("clone factory not configured")
+	}
+	if s.signerKey == nil {
+		return "", "", fmt.Errorf("signer key not configured")
+	}
+	key, err := parseBytes32(userKey)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid user key: %w", err)
+	}
+	if !common.IsHexAddress(owner) {
+		return "", "", fmt.Errorf("invalid owner address %q", owner)
+	}
+	predicted, err := s.PredictClone(ctx, userKey)
+	if err != nil {
+		return "", "", err
+	}
+	data := encodeCreateClone(key, common.HexToAddress(owner))
+	txHash, err := s.sendTx(ctx, s.cloneFactory, data)
+	if err != nil {
+		return "", "", fmt.Errorf("deploy clone: %w", err)
+	}
+	return txHash, predicted, nil
+}
+
+// sendTx broadcasts a signed transaction to `to` with `data` (zero value) from
+// the signer account. Shared by transfers and clone deployment.
+func (s *EthereumService) sendTx(ctx context.Context, to common.Address, data []byte) (string, error) {
+	nonce, err := s.client.PendingNonceAt(ctx, s.from)
+	if err != nil {
+		return "", fmt.Errorf("get nonce: %w", err)
+	}
+	gasLimit := uint64(300000)
+	gasPrice, err := s.client.SuggestGasPrice(ctx)
+	if err != nil {
+		return "", fmt.Errorf("suggest gas price: %w", err)
+	}
+	tx := types.NewTx(&types.LegacyTx{
+		Nonce:    nonce,
+		To:       &to,
+		Value:    big.NewInt(0),
+		Gas:      gasLimit,
+		GasPrice: gasPrice,
+		Data:     data,
+	})
+	signed, err := types.SignTx(tx, types.LatestSignerForChainID(big.NewInt(s.chainID)), s.signerKey)
+	if err != nil {
+		return "", fmt.Errorf("sign tx: %w", err)
+	}
+	if err := s.client.SendTransaction(ctx, signed); err != nil {
+		return "", fmt.Errorf("send tx: %w", err)
+	}
+	return signed.Hash().Hex(), nil
 }
 
 // LatestBlock returns the current head block number.
@@ -647,13 +868,30 @@ func (f BlockchainServiceFactory) CreateReal(ctx context.Context, cfg EthereumCo
 
 // NewFromConfig creates the appropriate service based on the configured mode.
 // Mode "mock" (default) returns a mock; any other mode dials the live network.
+// The mock is seeded so the per-user clone deposit flow is exercisable end to
+// end without a chain: a deterministic factory address is always visible (the
+// configured one when set, else a keccak-derived placeholder) so every account
+// resolves its own stable, unique deposit address.
 func NewFromConfig(ctx context.Context, mode string, cfg EthereumConfig) (BlockchainService, func(), error) {
 	if mode == "" || mode == "mock" {
-		return NewMockBlockchainService(), func() {}, nil
+		m := NewMockBlockchainService()
+		factory := cfg.CloneFactoryContract
+		if factory == "" {
+			factory = mockPseudoAddress("globmint:mock-vault-factory:" + cfg.StablecoinSymbol)
+		}
+		m.SetCloneFactory(factory)
+		return m, func() {}, nil
 	}
 	svc, err := NewEthereumService(ctx, cfg)
 	if err != nil {
 		return nil, nil, err
 	}
 	return svc, svc.Close, nil
+}
+
+// mockPseudoAddress derives a deterministic 0x address from a seed, giving the
+// mock stable stand-ins for on-chain contracts (no real chain involved).
+func mockPseudoAddress(seed string) string {
+	h := crypto.Keccak256Hash([]byte(seed))
+	return common.BytesToAddress(h.Bytes()[12:]).Hex()
 }

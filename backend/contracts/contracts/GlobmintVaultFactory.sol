@@ -10,10 +10,19 @@ import "./GlobmintVaultClone.sol";
  *         address. The factory itself never holds funds and has no withdrawal
  *         authority — each clone is owned by its account.
  *
- * CREATE2 salt = keccak256(abi.encodePacked(owner)), so `predict(owner)` is
- * stable and the app can show a deposit address before any deploy gas is
- * spent. A clone address on chain is just a hash of (factory, owner) — no
- * personal data is exposed by looking it up.
+ * Uniqueness: the CREATE2 salt is derived from a PER-USER KEY (a bytes32 the
+ * backend derives from the account id, e.g. keccak256(userID)), NOT from the
+ * clone's owner. This matters because an account may not have its own wallet
+ * yet — the owner seat is then held by the platform signer so funds are never
+ * locked, and the user can later claim the clone via transferOwnershipBySig.
+ * If the salt were keccak256(owner), every signer-owned (unlinked) account
+ * would resolve to the SAME address. With a per-user key every account's
+ * address is unique, stable across re-links, and needs no wallet to receive.
+ *
+ * `predict(userKey)` is pure deterministic address math, so the app can show a
+ * deposit address before any deploy gas is spent. A clone address on chain is
+ * just a hash of (factory, userKey) — no personal data is exposed by looking
+ * it up.
  *
  * The clone deployment bytecode + address prediction use the canonical minimal
  * proxy construction (OpenZeppelin v5 Clones, MIT) to guarantee deploy() and
@@ -25,43 +34,59 @@ contract GlobmintVaultFactory {
     address public immutable implementation;
     /// @notice Stablecoin the clones hold.
     address public immutable stablecoin;
+    /// @notice Privacy policy applied to every clone this factory deploys:
+    ///         clones boot with commitment-based balances (depositFor/
+    ///         withdrawWithSalt) when true. Fixed at deploy time; the whole
+    ///         fleet follows one policy so the indexer can rely on a match.
+    bool public immutable initialPrivacy;
 
-    /// @notice owner -> clone (mapping updated on createClone).
-    mapping(address => address) public ownerToClone;
+    /// @notice per-user deployment key -> clone (mapping updated on createClone).
+    mapping(bytes32 => address) public cloneOfUser;
 
-    /// @notice owner -> clone address.
-    event CloneCreated(address indexed owner, address indexed clone);
+    /// @notice a per-user clone was created.
+    event CloneCreated(bytes32 indexed userKey, address indexed owner, address indexed clone);
 
     /// @param stablecoin_ The ERC-20 stablecoin the clones will hold.
+    /// @param initialPrivacy_ Whether newly deployed clones boot in privacy mode.
     /// @dev The factory deploys its own clone implementation, so the
     ///      implementation's `factory` reference can be this contract without a
     ///      circular deploy step.
-    constructor(address stablecoin_) {
+    constructor(address stablecoin_, bool initialPrivacy_) {
         require(stablecoin_ != address(0), "invalid stablecoin");
         stablecoin = stablecoin_;
+        initialPrivacy = initialPrivacy_;
         implementation = address(new GlobmintVaultClone(stablecoin_, address(this)));
     }
 
-    /// @notice Deterministic clone address for `owner_` (deployed or not).
-    function predict(address owner_) public view returns (address) {
-        return _predictDeterministicAddress(keccak256(abi.encodePacked(owner_)));
+    /// @notice Deterministic clone address for `userKey_` (deployed or not).
+    function predict(bytes32 userKey_) public view returns (address) {
+        return _predictDeterministicAddress(_salt(userKey_));
     }
 
-    /// @notice Deploy (idempotently) and return the clone for `owner_`.
-    function createClone(address owner_) external returns (address clone) {
-        bytes32 salt = keccak256(abi.encodePacked(owner_));
+    /// @notice Deploy (idempotently) and return the clone for `userKey_`, owned
+    ///         by `owner_` (the account's wallet, or the platform signer as a
+    ///         placeholder the user can later claim).
+    function createClone(bytes32 userKey_, address owner_) external returns (address clone) {
+        require(owner_ != address(0), "invalid owner");
+        bytes32 salt = _salt(userKey_);
         clone = _predictDeterministicAddress(salt);
-        address existing = ownerToClone[owner_];
+        address existing = cloneOfUser[userKey_];
         if (existing != address(0)) {
             return existing;
         }
         clone = _cloneDeterministic(implementation, salt);
         // Set ownership atomically in the same transaction — no window for
-        // anyone to squat on an uninitialized clone.
+        // anyone to squat on an uninitialized clone. Apply the fleet privacy
+        // policy so every clone boots in the same mode the indexer expects.
         GlobmintVaultClone(payable(clone)).initializer(owner_);
-        ownerToClone[owner_] = clone;
-        emit CloneCreated(owner_, clone);
+        GlobmintVaultClone(payable(clone)).setPrivacyEnabled(initialPrivacy);
+        cloneOfUser[userKey_] = clone;
+        emit CloneCreated(userKey_, owner_, clone);
         return clone;
+    }
+
+    function _salt(bytes32 userKey_) internal pure returns (bytes32) {
+        return keccak256(abi.encodePacked(userKey_));
     }
 
     function _cloneDeterministic(address impl, bytes32 salt) internal returns (address instance) {

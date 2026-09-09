@@ -108,37 +108,30 @@ class SavingsDetailsPage extends ConsumerWidget {
               style: context.typography.bodyMedium,
             )
           else ...[
-            _detailRow(context, 'Network', deposit.network),
+            _detailRow(context, 'Network', deposit.networkLabel),
             _detailRow(context, 'Chain ID', '${deposit.chainId}'),
-            _detailRow(
-                context, 'Asset', '${deposit.stablecoinSymbol} · ${deposit.stablecoinName}'),
+            _detailRow(context, 'Asset', deposit.assetLabel),
             const Divider(height: 20, color: AppColors.border),
-            if (deposit.vaultContract.isNotEmpty)
+            if (deposit.hasAddress)
               _detailRow(
                 context,
-                'Vault contract (send asset to this address)',
-                deposit.vaultContract,
+                'Deposit address',
+                deposit.address,
                 highlight: true,
               )
             else
               Padding(
                 padding: const EdgeInsets.only(bottom: 4),
                 child: Text(
-                  'Link your own wallet below — you fund savings by sending USDC on ${deposit.network}.',
+                  'Top up by sending USDC on ${deposit.networkLabel} to your '
+                  'deposit address.',
                   style: context.typography.bodySmall,
                 ),
               ),
-            if (deposit.hasAddress) ...[
+            if (deposit.vaultContract.isNotEmpty) ...[
               const SizedBox(height: 8),
-              _detailRow(context, 'Your linked wallet', deposit.address),
-            ] else
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Text(
-                  'Link your wallet address to receive on-chain deposits.',
-                  style: context.typography.bodySmall,
-                ),
-              ),
+              _detailRow(context, 'Vault contract', deposit.vaultContract),
+            ],
           ],
         ],
       ),

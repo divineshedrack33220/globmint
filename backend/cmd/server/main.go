@@ -56,12 +56,13 @@ func main() {
 	// Blockchain settlement layer. Uses the mock service unless the configured
 	// mode is "real" and a valid RPC URL is present.
 	chainSvc, closeChain, err := blockchain.NewFromConfig(ctx, cfg.Blockchain.Mode, blockchain.EthereumConfig{
-		RPCURL:             cfg.Blockchain.RPCURL,
-		ChainID:            cfg.Blockchain.ChainID,
-		StablecoinSymbol:   cfg.Blockchain.Stablecoin,
-		StablecoinDecimals: cfg.Blockchain.StablecoinDecimals,
-		StablecoinContract: cfg.Blockchain.StablecoinContract,
-		PrivateKeyHex:      cfg.Blockchain.PrivateKeyHex,
+		RPCURL:               cfg.Blockchain.RPCURL,
+		ChainID:              cfg.Blockchain.ChainID,
+		StablecoinSymbol:     cfg.Blockchain.Stablecoin,
+		StablecoinDecimals:   cfg.Blockchain.StablecoinDecimals,
+		StablecoinContract:   cfg.Blockchain.StablecoinContract,
+		CloneFactoryContract: cfg.Blockchain.CloneFactoryContract,
+		PrivateKeyHex:        cfg.Blockchain.PrivateKeyHex,
 	})
 	if err != nil {
 		log.Fatalf("initialize blockchain service: %v", err)
@@ -108,6 +109,7 @@ func main() {
 		VaultContract: cfg.Blockchain.VaultContract, StablecoinSymbol: cfg.Blockchain.Stablecoin,
 		StablecoinDecimals:              cfg.Blockchain.StablecoinDecimals,
 		Mode:                            cfg.Blockchain.Mode,
+		ChainID:                         cfg.Blockchain.ChainID,
 		PollInterval:                    8 * time.Second,
 		StartBlock:                      uint64(cfg.VaultStartBlock),
 		FallbackUserID:                  cfg.VaultFallbackUserID,

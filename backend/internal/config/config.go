@@ -88,6 +88,11 @@ type BlockchainConfig struct {
 	// VaultAddress is the custodial deposit address (the backend signer) that
 	// users send USD deposits to. Empty in mock mode.
 	VaultAddress string
+	// CloneFactoryContract is the deployed GlobmintVaultFactory address. When
+	// set, every account is assigned its own per-user clone deposit address via
+	// CREATE2 (no wallet linking is required to receive). Empty disables clones
+	// and the shared vault address is used as the deposit destination.
+	CloneFactoryContract string
 	Mode         string // "mock" or "real"
 	// PrivateKeyHex is the signer private key for on-chain transfers. It is
 	// read from the environment and must never be logged or committed.
@@ -124,18 +129,19 @@ func Load() Config {
 		ChaosFailureRate:                     float64Env("GLOBMINT_CHAOS_FAILURE_RATE", 0),
 		ChaosLatencyMaxMS:                    intEnv("GLOBMINT_CHAOS_LATENCY_MAX_MS", 0),
 		Blockchain: BlockchainConfig{
-			Network:            envOr("GLOBMINT_BLOCKCHAIN_NETWORK", "mock"),
-			RPCURL:             os.Getenv("GLOBMINT_BLOCKCHAIN_RPC_URL"),
-			ChainID:            int64Env("GLOBMINT_BLOCKCHAIN_CHAIN_ID", 11155111), // Sepolia default
-			Stablecoin:         envOr("GLOBMINT_STABLECOIN_SYMBOL", "USDC"),
-			StablecoinName:     envOr("GLOBMINT_STABLECOIN_NAME", "USD Coin"),
-			StablecoinDecimals: intEnv("GLOBMINT_STABLECOIN_DECIMALS", 6),
-			StablecoinEnabled:  boolEnv("GLOBMINT_STABLECOIN_ENABLED", true),
-			StablecoinContract: envOr("GLOBMINT_STABLECOIN_CONTRACT_ADDRESS", "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238"),
-			VaultContract:      envOr("GLOBMINT_VAULT_CONTRACT_ADDRESS", ""),
-			VaultAddress:       envOr("GLOBMINT_VAULT_ADDRESS", ""),
-			Mode:               envOr("GLOBMINT_BLOCKCHAIN_MODE", "mock"),
-			PrivateKeyHex:      os.Getenv("GLOBMINT_STABLECOIN_PRIVATE_KEY"),
+			Network:              envOr("GLOBMINT_BLOCKCHAIN_NETWORK", "mock"),
+			RPCURL:               os.Getenv("GLOBMINT_BLOCKCHAIN_RPC_URL"),
+			ChainID:              int64Env("GLOBMINT_BLOCKCHAIN_CHAIN_ID", 11155111), // Sepolia default
+			Stablecoin:           envOr("GLOBMINT_STABLECOIN_SYMBOL", "USDC"),
+			StablecoinName:       envOr("GLOBMINT_STABLECOIN_NAME", "USD Coin"),
+			StablecoinDecimals:   intEnv("GLOBMINT_STABLECOIN_DECIMALS", 6),
+			StablecoinEnabled:    boolEnv("GLOBMINT_STABLECOIN_ENABLED", true),
+			StablecoinContract:   envOr("GLOBMINT_STABLECOIN_CONTRACT_ADDRESS", "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238"),
+			VaultContract:        envOr("GLOBMINT_VAULT_CONTRACT_ADDRESS", ""),
+			VaultAddress:         envOr("GLOBMINT_VAULT_ADDRESS", ""),
+			CloneFactoryContract: envOr("GLOBMINT_CLONE_FACTORY_ADDRESS", ""),
+			Mode:                 envOr("GLOBMINT_BLOCKCHAIN_MODE", "mock"),
+			PrivateKeyHex:        os.Getenv("GLOBMINT_STABLECOIN_PRIVATE_KEY"),
 		},
 	}
 }

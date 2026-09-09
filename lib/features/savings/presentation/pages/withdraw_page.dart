@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -7,6 +9,7 @@ import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/widgets/app_button.dart';
 import '../../../../core/widgets/app_text_field.dart';
 import '../../../../shared/models/models.dart';
+import '../../../../shared/services/conversion_service.dart';
 import '../../../../shared/widgets/stablecoin_risk_disclosure.dart';
 
 class WithdrawPage extends ConsumerStatefulWidget {
@@ -42,9 +45,12 @@ class _WithdrawPageState extends ConsumerState<WithdrawPage> {
   final _addressController = TextEditingController();
   bool _loading = false;
   _WithdrawNetwork _network = _networks.first;
+  Timer? _quoteDebounce;
 
   double? _usdcEstimate;
   String? _savedAddress;
+
+  static final _addressPattern = RegExp(r'^0x[0-9a-fA-F]{40}$');
 
   @override
   void initState() {
@@ -58,6 +64,7 @@ class _WithdrawPageState extends ConsumerState<WithdrawPage> {
 
   @override
   void dispose() {
+    _quoteDebounce?.cancel();
     _amountController.removeListener(_updateQuote);
     _addressController.removeListener(_onAddressChanged);
     _amountController.dispose();
@@ -74,6 +81,10 @@ class _WithdrawPageState extends ConsumerState<WithdrawPage> {
   }
 
   void _onAddressChanged() {
+    final typed = _addressController.text.trim();
+    if (_savedAddress != null && typed != _savedAddress) {
+      setState(() => _savedAddress = null);
+    }
     if (mounted) setState(() {});
   }
 
@@ -119,21 +130,31 @@ class _WithdrawPageState extends ConsumerState<WithdrawPage> {
   }
 
   void _updateQuote() {
-    final parsed = double.tryParse(_amountController.text.replaceAll(',', ''));
+    _quoteDebounce?.cancel();
+    _quoteDebounce = Timer(const Duration(milliseconds: 400), _fetchQuote);
+  }
+
+  Future<void> _fetchQuote() async {
+    final text = _amountController.text.replaceAll(',', '');
+    final parsed = double.tryParse(text);
     if (parsed == null || parsed <= 0) {
       if (_usdcEstimate != null && mounted) setState(() => _usdcEstimate = null);
       return;
     }
-    ref
-        .read(conversionServiceProvider)
-        .getQuote(amount: parsed, fromCurrency: 'NGN', toCurrency: 'USDC')
-        .then((q) {
+    if (parsed < ConversionService.minQuoteAmount) {
+      if (_usdcEstimate != null && mounted) setState(() => _usdcEstimate = null);
+      return;
+    }
+    try {
+      final q = await ref
+          .read(conversionServiceProvider)
+          .getQuote(amount: parsed, fromCurrency: 'NGN', toCurrency: 'USDC');
       if (mounted && _amountController.text.isNotEmpty) {
         setState(() => _usdcEstimate = q.outputAmount);
       }
-    }).catchError((_) {
+    } catch (_) {
       if (mounted) setState(() => _usdcEstimate = null);
-    });
+    }
   }
 
   Future<void> _continue() async {
@@ -146,7 +167,8 @@ class _WithdrawPageState extends ConsumerState<WithdrawPage> {
     }
     if (!_formKey.currentState!.validate()) return;
     final amount = double.parse(_amountController.text.replaceAll(',', ''));
-    final address = _savedAddress ?? _addressController.text.trim();
+    final typed = _addressController.text.trim();
+    final address = typed.isNotEmpty ? typed : (_savedAddress ?? '');
     if (address.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Enter a destination crypto address')),
@@ -240,36 +262,27 @@ class _WithdrawPageState extends ConsumerState<WithdrawPage> {
                 const SizedBox(height: 6),
                 Text(
                   _network.available
-                      ? 'USDC will be sent here on-chain from your vault.'
+                      ? 'USDC is sent from your vault to this address.'
                       : 'This network is not available yet.',
                   style: context.typography.bodySmall,
                 ),
                 const SizedBox(height: 12),
-                if (suggestionsActive) ...[
-                  Text('Saved addresses', style: context.typography.labelLarge),
-                  const SizedBox(height: 8),
-                  ...suggestions.map(
-                    (b) => Padding(
-                      padding: const EdgeInsets.only(bottom: 8),
-                      child: _SavedAddressChip(
-                        name: b.name,
-                        address: b.address,
-                        isSelected: _savedAddress == b.address,
-                        onTap: () => _pickAddress(b),
-                        onRemoved: _clearSaved,
-                      ),
-                    ),
-                  ),
-                  if (_savedAddress == null) ...[
-                    const SizedBox(height: 4),
-                    Text(
-                      'Suggestions come from your saved addresses.',
-                      style: context.typography.bodySmall.copyWith(
-                        color: AppColors.textSecondary,
+if (suggestionsActive) ...[
+                    Text('Saved addresses', style: context.typography.labelLarge),
+                    const SizedBox(height: 8),
+                    ...suggestions.map(
+                      (b) => Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: _SavedAddressChip(
+                          name: b.name,
+                          address: b.address,
+                          isSelected: _savedAddress == b.address,
+                          onTap: () => _pickAddress(b),
+                          onRemoved: _clearSaved,
+                        ),
                       ),
                     ),
                   ],
-                ],
                 TextFormField(
                   controller: _addressController,
                   style: context.typography.bodyMedium,
@@ -277,6 +290,9 @@ class _WithdrawPageState extends ConsumerState<WithdrawPage> {
                     final value = v?.trim() ?? '';
                     if (value.isEmpty) return 'Enter a destination address';
                     if (value.contains(RegExp(r'\s'))) return 'Address must not contain spaces';
+                    if (!_addressPattern.hasMatch(value)) {
+                      return 'Enter a valid crypto address (0x + 40 hex characters)';
+                    }
                     return null;
                   },
                   decoration: InputDecoration(

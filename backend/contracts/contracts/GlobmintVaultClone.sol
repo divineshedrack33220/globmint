@@ -38,21 +38,38 @@ contract GlobmintVaultClone {
     /// @notice The stablecoin this clone holds (USDC/USDT-compatible).
     address public immutable stablecoin;
     /// @notice The factory that deploys and initializes clones. Only the
-    ///         factory may set a clone's initial owner.
+    ///         factory may set a clone's initial owner or privacy flag.
     address public immutable factory;
 
     bytes32 private constant EIP712_DOMAIN_TYPEHASH =
         keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
     bytes32 private constant WITHDRAW_TYPEHASH =
         keccak256("WithdrawRequest(address to,uint256 amount,uint256 nonce,uint256 deadline)");
+    bytes32 private constant TRANSFER_TYPEHASH =
+        keccak256("TransferOwnership(address newOwner,uint256 nonce,uint256 deadline)");
 
     /// @notice owner of each clone (keyed by clone address).
     mapping(address => address) private _owners;
     /// @notice per-clone EIP-712 withdrawal nonce.
     mapping(address => uint256) private _nonces;
 
+    /// @notice per-clone privacy flag. When true the raw-address `deposit` and
+    ///         `withdraw` revert; deposits go through `depositFor(user, salt,
+    ///         amount)` and withdrawals through `withdrawWithSalt`, and only
+    ///         keccak256(user, salt) commitments ever appear in events, never a
+    ///         raw user address.
+    mapping(address => bool) private _privacyEnabled;
+    /// @notice per-clone commitment balances: clone -> commitment -> amount.
+    ///         The commitment is keccak256(abi.encodePacked(user, salt)).
+    mapping(address => mapping(bytes32 => uint256)) private _privateBalances;
+
     event Deposited(address indexed owner, uint256 amount);
     event Withdrawn(address indexed to, uint256 amount);
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    /// @notice Privacy-mode deposit. Carries ONLY the commitment.
+    event DepositedPrivate(bytes32 indexed commitment, uint256 amount);
+    /// @notice Privacy-mode withdrawal. Carries ONLY the commitment.
+    event WithdrawnPrivate(bytes32 indexed commitment, uint256 amount);
 
     constructor(address stablecoin_, address factory_) {
         require(stablecoin_ != address(0), "invalid stablecoin");
@@ -85,6 +102,36 @@ contract GlobmintVaultClone {
         return _nonces[address(this)];
     }
 
+    /// @notice Whether this clone is in commitment-based privacy mode. When
+    ///         true, raw-address deposits/withdrawals revert and only
+    ///         keccak256(user, salt) commitments appear on chain.
+    function privacyEnabled() public view returns (bool) {
+        return _privacyEnabled[address(this)];
+    }
+
+    /// @notice Balance held for a keccak256(abi.encodePacked(user, salt))
+    ///         commitment. In privacy mode only the user/backend that knows the
+    ///         salt can compute the commitment that resolves to a real balance.
+    function balanceOfCommitment(bytes32 commitment) public view returns (uint256) {
+        return _privateBalances[address(this)][commitment];
+    }
+
+    /// @notice Commitment for a user + salt: keccak256(abi.encodePacked(user, salt)).
+    function commitmentKey(address user, bytes32 salt) public pure returns (bytes32) {
+        return keccak256(abi.encodePacked(user, salt));
+    }
+
+    /// @notice Toggle privacy mode for THIS clone. Only the factory may call.
+    ///         Called by the factory at deploy time to set the initial mode;
+    ///         the factory keeps the seat so the whole fleet's privacy policy
+    ///         stays operator-controlled. Does not touch stored balances — the
+    ///         raw `_owners`/token-balance and commitment mappings are disjoint,
+    ///         so flipping the flag just changes which API is usable.
+    function setPrivacyEnabled(bool enabled) external {
+        require(msg.sender == factory, "not factory");
+        _privacyEnabled[address(this)] = enabled;
+    }
+
     /// @notice EIP-712 domain separator bound to THIS clone address.
     function domainSeparator() public view returns (bytes32) {
         return keccak256(
@@ -101,8 +148,9 @@ contract GlobmintVaultClone {
     /// @notice Approve + deposit: pulls USDC from the caller into the clone.
     /// @dev Emits Deposited for the indexer. Same as a direct transfer from a
     ///      UX standpoint; exists so wallets can stay in the approve+deposit
-    ///      pattern.
+    ///      pattern. REVERTS in privacy mode — use `depositFor` there.
     function deposit(uint256 amount) external {
+        require(!_privacyEnabled[address(this)], "privacy mode: use depositFor");
         require(amount > 0, "amount must be > 0");
         require(_owners[address(this)] != address(0), "not initialized");
         IERC20Minimal token = IERC20Minimal(stablecoin);
@@ -111,9 +159,48 @@ contract GlobmintVaultClone {
         emit Deposited(_owners[address(this)], amount);
     }
 
+    /// @notice Privacy-mode deposit on behalf of a user with a known salt. The
+    ///         commitment keccak256(abi.encodePacked(user, salt)) is credited and
+    ///         the event carries ONLY the commitment — the raw user address
+    ///         never appears in a topic. Works in both modes; in privacy mode it
+    ///         is the only deposit entry point (besides a plain transfer, which
+    ///         the indexer credits to this clone's account by construction).
+    /// @dev The caller must have approved this clone for `amount`.
+    function depositFor(address user, bytes32 salt, uint256 amount) external {
+        require(user != address(0), "invalid user");
+        require(amount > 0, "amount must be > 0");
+        require(ownerOfThis() != address(0), "not initialized");
+        IERC20Minimal token = IERC20Minimal(stablecoin);
+        require(token.allowance(msg.sender, address(this)) >= amount, "insufficient allowance");
+        require(token.transferFrom(msg.sender, address(this), amount), "transferFrom failed");
+
+        bytes32 commitment = keccak256(abi.encodePacked(user, salt));
+        _privateBalances[address(this)][commitment] += amount;
+        emit DepositedPrivate(commitment, amount);
+    }
+
     /// @notice Owner calls from their own wallet: withdraw `amount` to `to`.
+    ///         REVERTS in privacy mode — use `withdrawWithSalt` there.
     function withdraw(uint256 amount, address to) external {
+        require(!_privacyEnabled[address(this)], "privacy mode: use withdrawWithSalt");
         require(msg.sender == _owners[address(this)], "not owner");
+        _transferOut(to, amount);
+    }
+
+    /// @notice Privacy-mode withdrawal: proves knowledge of the salt by
+    ///         supplying it and withdraws the caller's OWN commitment balance to
+    ///         `to`. The commitment is keccak256(abi.encodePacked(msg.sender,
+    ///         salt)); a wrong salt resolves to an empty commitment and reverts.
+    /// @dev The USDC availability check is against the token balance of this
+    ///      clone (fallback for funds that arrived by plain transfer).
+    function withdrawWithSalt(bytes32 salt, uint256 amount, address to) external {
+        require(amount > 0, "amount must be > 0");
+        bytes32 commitment = keccak256(abi.encodePacked(msg.sender, salt));
+        require(_privateBalances[address(this)][commitment] >= amount, "insufficient private balance");
+        _privateBalances[address(this)][commitment] -= amount;
+        // The commitment is debited, but the actual USDC leaves the clone's
+        // pooled token balance (which may also hold plain-transfer funds).
+        emit WithdrawnPrivate(commitment, amount);
         _transferOut(to, amount);
     }
 
@@ -132,6 +219,7 @@ contract GlobmintVaultClone {
         bytes32 r,
         bytes32 s
     ) external {
+        require(!_privacyEnabled[address(this)], "privacy mode: use withdrawWithSalt");
         require(deadline >= block.timestamp, "signature expired");
         require(requestNonce == _nonces[address(this)], "invalid nonce");
         address owner = _owners[address(this)];
@@ -150,13 +238,59 @@ contract GlobmintVaultClone {
         _transferOut(to, amount);
     }
 
+    /// @notice Hand over clone ownership to a new address authoritatively, using
+    ///         an EIP-712 signature from the CURRENT owner.
+    ///
+    /// Why this matters: the app deploys an unlinked account's clone with the
+    ///         platform signer as a placeholder owner so funds are never locked.
+    ///         This lets the user later "sign to take custody": their signature
+    ///         moves that placeholder ownership to THEIR own wallet, at which
+    ///         point only they can withdraw. Shares the per-clone nonce with
+    ///         withdrawals, so signing one type never replays the other.
+    /// @param newOwner The address that will own the clone afterwards.
+    /// @param requestNonce Must equal this clone's current nonce (replay-protected).
+    /// @param deadline Unix timestamp; the signature expires after this.
+    function transferOwnershipBySig(
+        address newOwner,
+        uint256 requestNonce,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external {
+        require(deadline >= block.timestamp, "signature expired");
+        require(newOwner != address(0), "invalid new owner");
+        require(requestNonce == _nonces[address(this)], "invalid nonce");
+        address owner = _owners[address(this)];
+        require(owner != address(0), "not initialized");
+        require(newOwner != owner, "same owner");
+
+        bytes32 digest = keccak256(
+            abi.encodePacked(
+                "\x19\x01",
+                domainSeparator(),
+                keccak256(abi.encode(TRANSFER_TYPEHASH, newOwner, requestNonce, deadline))
+            )
+        );
+        require(_recover(digest, v, r, s) == owner, "invalid signer");
+
+        _nonces[address(this)] = requestNonce + 1;
+        _owners[address(this)] = newOwner;
+        emit OwnershipTransferred(owner, newOwner);
+    }
+
     function _transferOut(address to, uint256 amount) internal {
         require(amount > 0, "amount must be > 0");
         require(to != address(0), "invalid destination");
         IERC20Minimal token = IERC20Minimal(stablecoin);
         require(token.balanceOf(address(this)) >= amount, "insufficient balance");
         require(token.transfer(to, amount), "transfer failed");
-        emit Withdrawn(to, amount);
+        // In privacy mode the raw `Withdrawn(to, amount)` event must not be
+        // emitted: withdrawal data is exposed through `WithdrawnPrivate`
+        // (commitment-only) which the calling functions emit.
+        if (!_privacyEnabled[address(this)]) {
+            emit Withdrawn(to, amount);
+        }
     }
 
     /// @notice ECDSA recovery from the typed digest with malleability guards.

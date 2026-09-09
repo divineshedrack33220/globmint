@@ -2,7 +2,8 @@ import '../../core/constants/app_constants.dart';
 import 'api_client.dart';
 
 /// Deposit information returned by `GET /savings/deposit-info`. Describes the
-/// non-custodial vault contract plus the user's linked on-chain address.
+/// vault plus the user's own on-chain deposit address (a per-user clone that
+/// needs no wallet linking to receive).
 class DepositInfo {
   static const String zeroAddress = '0x0000000000000000000000000000000000000000';
 
@@ -35,6 +36,42 @@ class DepositInfo {
   final bool privacyEnabled;
 
   bool get hasAddress => address.isNotEmpty && address != '0x0000000000000000000000000000000000000000';
+
+  /// Human-friendly network name (e.g. "Ethereum (Sepolia)") derived from the
+  /// chain id, falling back to the raw backend network string.
+  String get networkLabel {
+    switch (chainId) {
+      case 1:
+        return 'Ethereum';
+      case 11155111:
+        return 'Ethereum (Sepolia)';
+      case 137:
+        return 'Polygon';
+      case 10:
+        return 'Optimism';
+      case 11155420:
+        return 'Optimism (Sepolia)';
+      case 8453:
+        return 'Base';
+      case 84532:
+        return 'Base (Sepolia)';
+      case 42161:
+        return 'Arbitrum One';
+      case 421614:
+        return 'Arbitrum (Sepolia)';
+      case 56:
+        return 'BSC';
+      case 1337:
+      case 31337:
+        return 'Local testnet';
+    }
+    return network.isNotEmpty ? network : 'on-chain';
+  }
+
+  /// The stablecoin identity, e.g. "USDC · USD Coin".
+  String get assetLabel => stablecoinName.isNotEmpty
+      ? '$stablecoinSymbol · $stablecoinName'
+      : stablecoinSymbol;
 
   factory DepositInfo.fromJson(Map<String, dynamic> j) => DepositInfo(
         address: j['address'] as String? ?? '',
@@ -93,6 +130,38 @@ class VaultStatus {
   final int withdrawDailyCapMinor;
   final int elevationThresholdMinor;
   final int elevationDelaySeconds;
+
+  /// Human-friendly network name (e.g. "Ethereum (Sepolia)") derived from the
+  /// chain id, falling back to the raw backend network string. Mirrors
+  /// DepositInfo.networkLabel.
+  String get networkLabel {
+    switch (chainId) {
+      case 1:
+        return 'Ethereum';
+      case 11155111:
+        return 'Ethereum (Sepolia)';
+      case 137:
+        return 'Polygon';
+      case 10:
+        return 'Optimism';
+      case 11155420:
+        return 'Optimism (Sepolia)';
+      case 8453:
+        return 'Base';
+      case 84532:
+        return 'Base (Sepolia)';
+      case 42161:
+        return 'Arbitrum One';
+      case 421614:
+        return 'Arbitrum (Sepolia)';
+      case 56:
+        return 'BSC';
+      case 1337:
+      case 31337:
+        return 'Local testnet';
+    }
+    return network.isNotEmpty ? network : 'on-chain';
+  }
 
   bool get hasAddress => address.isNotEmpty && address != '0x0000000000000000000000000000000000000000';
 

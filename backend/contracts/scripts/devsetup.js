@@ -3,14 +3,16 @@
 // Runs against the local hardhat node (npx hardhat node, http://127.0.0.1:8545):
 //   1. Deploys MockUSDC.
 //   2. Deploys GlobmintVault bound to MockUSDC (kept for API exposure).
-//   3. Mints USDC to the vault/signer (Account #0) so withdrawals can pay out.
-//   4. Mints USDC to a "demo depositor" (Account #1) so the deposit indexer
+//   3. Deploys GlobmintVaultFactory bound to MockUSDC (per-user clones).
+//   4. Mints USDC to the vault/signer (Account #0) so withdrawals can pay out.
+//   5. Mints USDC to a "demo depositor" (Account #1) so the deposit indexer
 //      has a distinct sender to detect.
 //
 // Writes machine-consumable configuration to deployments/dev.json (gitignored):
 //   {
 //     "vault":    "<signer address that holds & moves USDC>",
 //     "vault_contract": "<GlobmintVault address>",
+//     "clone_factory": "<GlobmintVaultFactory address>",
 //     "stablecoin": "<MockUSDC address>",
 //     "chain_id":  1337,
 //     "rpc_url":  "http://127.0.0.1:8545",
@@ -44,6 +46,12 @@ async function main() {
   const contractAddress = await vc.getAddress();
   console.log("GlobmintVault =", contractAddress);
 
+  const GlobmintVaultFactory = await ethers.getContractFactory("GlobmintVaultFactory");
+  const factory = await GlobmintVaultFactory.deploy(tokenAddress, true);
+  await factory.waitForDeployment();
+  const factoryAddress = await factory.getAddress();
+  console.log("GlobmintVaultFactory (privacy on) =", factoryAddress);
+
   // Mint 100,000 USDC to the vault/signer so it can pay out withdrawals.
   const mintVault = await token.mint(vaultAddress, ethers.parseUnits("100000", 6));
   await mintVault.wait();
@@ -58,6 +66,7 @@ async function main() {
   const out = {
     vault: vaultAddress,
     vault_contract: contractAddress,
+    clone_factory: factoryAddress,
     stablecoin: tokenAddress,
     stablecoin_symbol: "USDC",
     stablecoin_name: "USD Coin (Mock)",

@@ -32,6 +32,9 @@ type VaultConfig struct {
 	StablecoinSymbol   string
 	StablecoinDecimals int
 	Mode               string
+	// ChainID identifies the EVM network the vault + clones live on (1, 11155111,
+	// 31337, ...). Persisted with each deployed clone for traceability.
+	ChainID int64
 	// PollInterval is how often the deposit indexer scans new blocks.
 	PollInterval time.Duration
 	// StartBlock is the first block the indexer scans from on first run.
@@ -105,6 +108,12 @@ type VaultService struct {
 	// cache of on-chain sender -> userID, refreshed per scan
 	addressUser map[string]string
 
+	// cloneUser maps each deployed clone's address (lowercased) to the user it
+	// belongs to, refreshed at the start of every scan. A Transfer whose `to`
+	// matches a clone belongs to that account by construction — no sender link
+	// is needed to receive.
+	cloneUser map[string]string
+
 	// userLocks serializes ledger writes per user so parallel indexer workers
 	// or concurrent withdrawals cannot lose a balance update.
 	userLocks sync.Map // string -> *sync.Mutex
@@ -133,6 +142,7 @@ func NewVaultService(store storage.Store, chain blockchain.BlockchainService, mo
 		cfg:         cfg,
 		lastBlock:   cfg.StartBlock,
 		addressUser: map[string]string{},
+		cloneUser:   map[string]string{},
 	}
 	v.rate.Store(rateMinor)
 	return v
@@ -162,6 +172,88 @@ func (v *VaultService) lockFor(userID string) *sync.Mutex {
 
 // DepositAddress returns the on-chain address users send deposits to.
 func (v *VaultService) DepositAddress() string { return v.cfg.VaultAddress }
+
+// mockSignerAddress is the deterministic stand-in for the platform signer used
+// as the placeholder clone owner when running without any configured signer in
+// mock mode. It lets the per-user deposit-address flow be exercised locally.
+func mockSignerAddress() string {
+	return common.BytesToAddress(crypto.Keccak256Hash([]byte("globmint:mock-signer")).Bytes()[12:]).Hex()
+}
+
+// EnsureClone returns the user's per-user vault clone deposit address, deploying
+// and persisting it on first use. Fundamentals:
+//   - Owner = the user's linked wallet when they have one, else the platform
+//     signer (so funds are never locked). A later transferOwnershipBySig lets
+//     the user take custody from the signer.
+//   - Deterministic CREATE2: the same owner always yields the same address, so
+//     a repeat call finds the existing clone instead of a second one.
+//   - The clone row (addr -> user) powers the indexer: any USDC sent there is
+//     credited to this account with no sender wallet needed.
+func (v *VaultService) EnsureClone(ctx context.Context, userID string) (*domain.VaultClone, error) {
+	if existing, err := v.store.VaultCloneRepo().ByUser(ctx, userID); err != nil {
+		return nil, err
+	} else if existing != nil {
+		return existing, nil
+	}
+
+	// The unique per-account CREATE2 key is derived from the user ID (never the
+	// owner): two accounts whose clone is owner-held by the same platform
+	// signer MUST still get distinct addresses.
+	userKey := crypto.Keccak256Hash([]byte(userID)).Hex()
+
+	// Resolve which on-chain address the clone's owner should be: the user's
+	// linked wallet if present, otherwise the platform signer (placeholder that
+	// the user can take over later via transferOwnershipBySig).
+	owner := ""
+	if link, err := v.store.DepositAddressRepo().FindByUser(ctx, userID); err == nil && link != nil && link.Address != "" {
+		owner = link.Address
+	} else if addr := v.DepositAddress(); addr != "" {
+		owner = addr // platform signer as placeholder owner
+	} else if v.cfg.Mode == "mock" {
+		owner = mockSignerAddress() // deterministic mock placeholder owner
+	}
+	if owner == "" {
+		return nil, fmt.Errorf("no signer and no linked wallet to own the clone")
+	}
+
+	txHash, cloneAddr, err := v.chain.DeployClone(ctx, userKey, owner)
+	if err != nil {
+		return nil, err
+	}
+
+	row := &domain.VaultClone{
+		UserID:         userID,
+		CloneAddress:   cloneAddr,
+		FactoryAddress: v.chain.CloneFactoryAddress(),
+		DeployTxHash:   txHash,
+		ChainID:        v.cfg.ChainID,
+	}
+	if err := v.store.VaultCloneRepo().Ensure(ctx, row); err != nil {
+		if errors.Is(err, domain.ErrConflict) {
+			// A concurrent request already created the row; trust it.
+			if existing, eerr := v.store.VaultCloneRepo().ByUser(ctx, userID); eerr == nil && existing != nil {
+				return existing, nil
+			}
+		}
+		return nil, err
+	}
+	log.Printf("vault clone: deployed %s for user %s (owner %s, tx %s)",
+		cloneAddr, userID, owner, txHash)
+	return row, nil
+}
+
+// CloneAddress returns the user's per-user clone deposit address if one has
+// been deployed, or "" when the account has no clone yet.
+func (v *VaultService) CloneAddress(ctx context.Context, userID string) (string, error) {
+	c, err := v.store.VaultCloneRepo().ByUser(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+	if c == nil {
+		return "", nil
+	}
+	return c.CloneAddress, nil
+}
 
 // -------- Deposit indexer --------
 
@@ -281,7 +373,17 @@ func (v *VaultService) scan(ctx context.Context) error {
 	}
 	toBlock := confirmedHead
 
-	tsf, err := v.chain.FilterTokenTransfers(ctx, scanFrom, toBlock, v.cfg.VaultAddress)
+	// Refresh the clone->user routing table: a deposit to any deployed clone is
+	// credited to its account without needing a sender link.
+	if err := v.refreshCloneUsers(ctx); err != nil {
+		return fmt.Errorf("load clone routing: %w", err)
+	}
+
+	// Scan the whole stablecoin contract. Transfers are routed in handleDeposit
+	// by recipient: clones first, then the shared vault address. (Empty address
+	// = all recipients; clone deposits land at per-user addresses the shared
+	// vault watch would otherwise miss.)
+	tsf, err := v.chain.FilterTokenTransfers(ctx, scanFrom, toBlock, "")
 	if err != nil {
 		return err
 	}
@@ -401,6 +503,27 @@ func (v *VaultService) processVaultDeposits(ctx context.Context, deposits []bloc
 	wg.Wait()
 }
 
+// refreshCloneUsers reloads the clone-address -> user routing table from the
+// database before each scan so newly deployed clones are observed as soon as
+// their deployments persist. The map is only swapped in after a successful
+// load so a DB blip never routes deposits through a stale/incomplete table.
+func (v *VaultService) refreshCloneUsers(ctx context.Context) error {
+	clones, err := v.store.VaultCloneRepo().All(ctx)
+	if err != nil {
+		return err
+	}
+	m := make(map[string]string, len(clones))
+	for _, c := range clones {
+		if c.CloneAddress != "" && c.UserID != "" {
+			m[strings.ToLower(c.CloneAddress)] = c.UserID
+		}
+	}
+	v.mu.Lock()
+	v.cloneUser = m
+	v.mu.Unlock()
+	return nil
+}
+
 // commitmentUserMap builds keccak256(address, salt) -> userID for every user
 // with a stored salt and a linked deposit address, so privacy-mode deposits can
 // be resolved without any raw-address lookup by external observers.
@@ -510,12 +633,39 @@ func (v *VaultService) handleVaultDeposit(ctx context.Context, d blockchain.Vaul
 	return nil
 }
 
-// handleDeposit credits the NGN balance of the user whose linked wallet (the
-// transfer sender) sent USDC into the vault. Duplicate tx hashes are ignored.
-// The event is first written to the durable indexer_events log (idempotent),
-// then credited under a per-user lock so parallel workers cannot lose writes.
+// handleDeposit credits the NGN balance of the user whose account received
+// USDC. Two routing paths, resolved by the transfer's recipient:
+//
+//   - A deposit to a DEPLOYED PER-USER CLONE belongs to that account by
+//     construction: anyone can send there without linking a wallet and the
+//     funds are credited automatically.
+//   - A deposit to the SHARED vault address is credited through the sender's
+//     deposit-address link (legacy path).
+//
+// Duplicate tx hashes are ignored. The event is first written to the durable
+// indexer_events log (idempotent), then credited under a per-user lock so
+// parallel workers cannot lose writes. Unroutable transfers (recipient is
+// neither a clone nor the vault) are silently skipped.
 func (v *VaultService) handleDeposit(ctx context.Context, t blockchain.TokenTransfer) error {
-	if !strings.EqualFold(t.To, v.cfg.VaultAddress) || t.Value == nil || t.Value.Sign() <= 0 {
+	if t.Value == nil || t.Value.Sign() <= 0 {
+		return nil
+	}
+	// Token mints emit Transfer(from=0x0) — never a user deposit. Ignore them
+	// so a dev/mint to the vault or a clone does not surface as an unattributed
+	// deposit needing operator action.
+	if strings.EqualFold(t.From, "0x0000000000000000000000000000000000000000") {
+		return nil
+	}
+
+	// Per-user clone route: credits the account that owns this clone address.
+	v.mu.Lock()
+	cloneUserID := v.cloneUser[strings.ToLower(t.To)]
+	v.mu.Unlock()
+	if cloneUserID != "" {
+		return v.creditTransfer(ctx, cloneUserID, t, "vault-clone-deposit-"+t.TxHash)
+	}
+
+	if !strings.EqualFold(t.To, v.cfg.VaultAddress) {
 		return nil
 	}
 	userID, err := v.senderUserID(ctx, t.From)
@@ -540,6 +690,12 @@ func (v *VaultService) handleDeposit(ctx context.Context, t blockchain.TokenTran
 		return nil
 	}
 
+	return v.creditTransfer(ctx, userID, t, "vault-deposit-"+t.TxHash)
+}
+
+// creditTransfer writes the durable event log and credits the user's NGN
+// balance for a confirmed deposit, under the user's lock, idempotent by key.
+func (v *VaultService) creditTransfer(ctx context.Context, userID string, t blockchain.TokenTransfer, key string) error {
 	// Durable, replayable event log (write-ahead for idempotency + audit).
 	if err := v.store.IndexerEventRepo().Insert(ctx, &domain.IndexerEvent{
 		TxHash:      t.TxHash,
@@ -568,7 +724,6 @@ func (v *VaultService) handleDeposit(ctx context.Context, t blockchain.TokenTran
 	defer lock.Unlock()
 
 	// Idempotent by tx hash so rescans never double-credit.
-	key := "vault-deposit-" + t.TxHash
 	if _, err := v.money.Deposit(ctx, userID, "NGN", ngnMinor, key); err != nil {
 		if errors.Is(err, domain.ErrConflict) {
 			// Replay of an already-credited deposit (crash mid-batch rescan).

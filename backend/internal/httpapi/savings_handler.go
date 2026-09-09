@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"log"
 	"net/http"
 
@@ -42,8 +43,30 @@ type setDepositAddressRequest struct {
 	Address string `json:"address"`
 }
 
-// handleGetDepositInfo returns the authenticated user's deposit info (vault
-// contract, stablecoin details, network) and their linked wallet address, if any.
+// depositInfoFor returns the user's deposit info with the on-chain ADDRESS
+// resolved to their per-user clone when clones are configured. The shared
+// vault (signer) address is the fallback until a per-user clone exists.
+func (d *Deps) depositInfoFor(ctx context.Context, userID string) (*services.DepositInfo, error) {
+	info, err := d.Savings.GetDepositInfo(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	// Per-user clones hold the deposit address: anyone can send to it and the
+	// funds belong to this account without any wallet linking. Deploy on first
+	// use (deterministic CREATE2, idempotent), so the address is stable.
+	if d.Vault != nil && d.Blockchain != nil && d.Blockchain.CloneFactoryAddress() != "" {
+		clone, cerr := d.Vault.EnsureClone(ctx, userID)
+		if cerr != nil {
+			log.Printf("deposit-info: ensure clone for %s: %v", userID, cerr)
+		} else if clone != nil && clone.CloneAddress != "" {
+			info.Address = clone.CloneAddress
+		}
+	}
+	return info, nil
+}
+
+// handleGetDepositInfo returns the authenticated user's deposit info and their
+// own (per-user clone) deposit address, which requires no wallet linking.
 func (d *Deps) handleGetDepositInfo(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserFrom(r.Context())
 	if user == nil {
@@ -54,7 +77,7 @@ func (d *Deps) handleGetDepositInfo(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, domain.ErrNotFound, "")
 		return
 	}
-	info, err := d.Savings.GetDepositInfo(r.Context(), user.ID)
+	info, err := d.depositInfoFor(r.Context(), user.ID)
 	if err != nil {
 		writeError(w, r, err, "")
 		return
@@ -79,7 +102,11 @@ func (d *Deps) handleSetDepositAddress(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err, "")
 		return
 	}
-	info, err := d.Savings.SetDepositAddress(r.Context(), user.ID, req.Address)
+	if _, err := d.Savings.SetDepositAddress(r.Context(), user.ID, req.Address); err != nil {
+		writeError(w, r, err, "")
+		return
+	}
+	info, err := d.depositInfoFor(r.Context(), user.ID)
 	if err != nil {
 		writeError(w, r, err, "")
 		return
@@ -99,13 +126,13 @@ func (d *Deps) handleVaultStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, domain.ErrNotFound, "")
 		return
 	}
-	info, err := d.Savings.GetDepositInfo(r.Context(), user.ID)
+	info, err := d.depositInfoFor(r.Context(), user.ID)
 	if err != nil {
 		writeError(w, r, err, "")
 		return
 	}
 	vaultUsdc := "0.000000"
-	bal, berr := d.Blockchain.GetTokenBalance(r.Context(), d.Vault.DepositAddress())
+	bal, berr := d.Blockchain.GetTokenBalance(r.Context(), info.Address)
 	if berr == nil {
 		vaultUsdc = bal
 	} else {
