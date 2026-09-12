@@ -29,6 +29,11 @@ var (
 	ErrTooManyAttempts     = errors.New("too many attempts, try again later")
 	ErrTwoFactorRequired   = errors.New("two-factor authentication required")
 	ErrTwoFactorInvalid    = errors.New("two-factor challenge expired or invalid")
+	// Withdrawal signature-gating (EIP-712) errors.
+	ErrWithdrawSignatureRequired = errors.New("a wallet signature is required for this withdrawal")
+	ErrInvalidSignature          = errors.New("invalid withdrawal signature")
+	ErrSignatureExpired          = errors.New("withdrawal signature expired")
+	ErrWithdrawRequiresCustody   = errors.New("take custody of your vault before withdrawing")
 )
 
 // ErrorCode maps a domain error to a stable API error code string.
@@ -54,6 +59,12 @@ func ErrorCode(err error) string {
 		return "INVALID_PIN"
 	case errors.Is(err, ErrInvalidCode):
 		return "INVALID_CODE"
+	case errors.Is(err, ErrInvalidSignature):
+		return "INVALID_SIGNATURE"
+	case errors.Is(err, ErrSignatureExpired):
+		return "SIGNATURE_EXPIRED"
+	case errors.Is(err, ErrWithdrawSignatureRequired), errors.Is(err, ErrWithdrawRequiresCustody):
+		return "SIGNATURE_REQUIRED"
 	case errors.Is(err, ErrLimitExceeded):
 		return "LIMIT_EXCEEDED"
 	case errors.Is(err, ErrFeatureDisabled):

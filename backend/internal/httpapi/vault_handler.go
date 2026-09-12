@@ -12,6 +12,32 @@ type vaultWithdrawRequest struct {
 	Amount      string `json:"amount"`
 	Destination string `json:"destination"`
 	Pin         string `json:"pin"`
+	// EIP-712 withdrawal signature over
+	// WithdrawRequest(to, amount, amount_minor_base, nonce, deadline):
+	// 0x-prefixed 65-byte hex signed by the clone owner's wallet. Required
+	// under GLOBMINT_REQUIRE_USER_SIGNATURE; optional in transitional mode.
+	Signature string `json:"signature,omitempty"`
+	// Deadline is the unix-second expiry the signature covers.
+	Deadline int64 `json:"deadline,omitempty"`
+	// Nonce is the clone nonce the signature covers (must match the chain
+	// nonce at verification time).
+	Nonce uint64 `json:"nonce,omitempty"`
+	// AmountMinorBase is the stablecoin base-unit amount the signature covers
+	// (the exact USDC that will leave the clone). Optional: when 0 the backend
+	// converts amount at the live rate and requires a matching signature.
+	AmountMinorBase int64 `json:"amount_minor_base,omitempty"`
+}
+
+func (r *vaultWithdrawRequest) signature() *domain.WithdrawSignature {
+	if r.Signature == "" {
+		return nil
+	}
+	return &domain.WithdrawSignature{
+		Signature:       r.Signature,
+		Deadline:        r.Deadline,
+		RelayNonce:      r.Nonce,
+		RelayAmountBase: r.AmountMinorBase,
+	}
 }
 
 // elevationResponse is the client-facing shape of a time-locked withdrawal.
@@ -23,6 +49,7 @@ type elevationResponse struct {
 	Status          string `json:"status"`
 	ReleaseAfter    string `json:"release_after"`
 	BroadcastTxHash string `json:"broadcast_tx_hash,omitempty"`
+	ExpiredReason   string `json:"expired_reason,omitempty"`
 }
 
 func toElevationResponse(e *domain.WithdrawalElevation) elevationResponse {
@@ -34,6 +61,7 @@ func toElevationResponse(e *domain.WithdrawalElevation) elevationResponse {
 		Status:          string(e.Status),
 		ReleaseAfter:    e.ReleaseAfter.UTC().Format(time.RFC3339),
 		BroadcastTxHash: e.BroadcastTxHash,
+		ExpiredReason:   e.ExpiredReason,
 	}
 	return r
 }
@@ -141,7 +169,7 @@ func (d *Deps) handleVaultWithdraw(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := d.Vault.WithdrawToAddress(r.Context(), user.ID, req.Destination, amountMinor, middleware.IdempotencyKeyFrom(r.Context()))
+	result, err := d.Vault.WithdrawToAddressSigned(r.Context(), user.ID, req.Destination, amountMinor, req.signature(), middleware.IdempotencyKeyFrom(r.Context()))
 	if err != nil {
 		writeError(w, r, err, "")
 		return

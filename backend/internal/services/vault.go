@@ -16,6 +16,7 @@ import (
 
 	"globmint/backend/internal/domain"
 	"globmint/backend/internal/domain/fees"
+	"globmint/backend/internal/eip712"
 	"globmint/backend/internal/events"
 	"globmint/backend/internal/infrastructure/blockchain"
 	"globmint/backend/internal/observability"
@@ -70,6 +71,13 @@ type VaultConfig struct {
 	// events (resolved through keccak256(address, salt) and the user_salts
 	// table) and never relies on a raw sender address. Env: GLOBMINT_PRIVACY_MODE.
 	PrivacyMode bool
+	// RequireUserSignature enforces EIP-712 signature-gated withdrawals: every
+	// withdrawal must carry the clone owner's own signature, the platform
+	// signer CANNOT sign on the user's behalf, and accounts still owned by the
+	// platform signer must take custody first. False = transitional mode where
+	// the platform placeholder owner may still sign. Env:
+	// GLOBMINT_REQUIRE_USER_SIGNATURE.
+	RequireUserSignature bool
 }
 
 // indexerLeaderKey is the Postgres advisory-lock key that gates single-leader
@@ -870,15 +878,40 @@ func (v *VaultService) withdrawalFee(amountNgnMinor int64) int64 {
 }
 
 // WithdrawToAddress converts `amountNgnMinor` kobo to USDC at the vault rate,
-// debits the user's NGN available balance (principal + fee), and sends the
-// USDC on-chain from the vault to `destination`. The on-chain tx hash is
-// stored as the provider ref.
+// debits the user's NGN available balance (principal + fee), and moves the
+// USDC on-chain to `destination`. The on-chain tx hash is stored as the
+// provider ref.
+//
+// Withdrawals are EIP-712 signature-gated: the USDC leaves the user's own
+// clone via `withdrawWithSig`, authorized by the clone owner's signature (see
+// WithdrawToAddressSigned). This legacy entry point keeps the transitional
+// behavior — no signature yet, so in !RequireUserSignature mode the platform
+// placeholder owner may sign, and accounts without a clone fall back to the
+// shared-signer transfer. Under GLOBMINT_REQUIRE_USER_SIGNATURE these paths
+// are refused.
 //
 // Withdrawals above WithdrawElevationThresholdMinor are time-locked instead:
 // the call returns a pending elevation and nothing leaves the vault until the
 // delay has passed (see RunElevationSweeper). The user can cancel meanwhile,
 // in which case no fee is ever charged.
 func (v *VaultService) WithdrawToAddress(ctx context.Context, userID, destination string, amountNgnMinor int64, key string) (*WithdrawalResult, error) {
+	return v.withdraw(ctx, userID, destination, amountNgnMinor, nil, key)
+}
+
+// WithdrawToAddressSigned is the self-custody withdrawal path: the amount and
+// destination are authorized by the user's own EIP-712 signature (signed in
+// their wallet over WithdrawRequest(to, amount, nonce, deadline)), and the
+// backend only relays `withdrawWithSig` on the user's clone — the signer can
+// never move funds the user did not sign for. `sig` carries the 65-byte
+// signature plus the deadline/nonce/amount the client signed; an expired or
+// stale (wrong nonce) signature is rejected before any broadcast.
+func (v *VaultService) WithdrawToAddressSigned(ctx context.Context, userID, destination string, amountNgnMinor int64, sig *domain.WithdrawSignature, key string) (*WithdrawalResult, error) {
+	return v.withdraw(ctx, userID, destination, amountNgnMinor, sig, key)
+}
+
+// withdraw validates the request then dispatches to the elevation or the
+// immediate-execution path.
+func (v *VaultService) withdraw(ctx context.Context, userID, destination string, amountNgnMinor int64, rel *domain.WithdrawSignature, key string) (*WithdrawalResult, error) {
 	if v.cfg.Mode == "mock" || v.cfg.VaultAddress == "" {
 		// Surface as a proper 403, not a 500: this deployment cannot move
 		// funds on-chain by configuration, nothing is broken.
@@ -895,6 +928,11 @@ func (v *VaultService) WithdrawToAddress(ctx context.Context, userID, destinatio
 	// the ledger debit + fee. The app also warns, this is the safety net.
 	if strings.EqualFold(destination, v.cfg.VaultAddress) ||
 		(v.cfg.VaultContract != "" && strings.EqualFold(destination, v.cfg.VaultContract)) {
+		return nil, domain.ErrInvalidAddress
+	}
+	// Also block the user's own deposit clone: funds returned there re-enter
+	// the vault as a fresh deposit while still debiting principal + fee.
+	if cloneAddr, err := v.CloneAddress(ctx, userID); err == nil && strings.EqualFold(strings.TrimSpace(cloneAddr), destination) {
 		return nil, domain.ErrInvalidAddress
 	}
 	if v.cfg.WithdrawMinMinor > 0 && amountNgnMinor < v.cfg.WithdrawMinMinor {
@@ -920,10 +958,10 @@ func (v *VaultService) WithdrawToAddress(ctx context.Context, userID, destinatio
 
 	// High-value withdrawals wait out the time-lock before broadcasting.
 	if v.cfg.WithdrawElevationThresholdMinor > 0 && amountNgnMinor > v.cfg.WithdrawElevationThresholdMinor {
-		return v.requestElevation(ctx, userID, destination, amountNgnMinor, fee, key)
+		return v.requestElevation(ctx, userID, destination, amountNgnMinor, fee, rel, key)
 	}
 
-	txn, err := v.executeWithdrawal(ctx, userID, destination, amountNgnMinor, fee, key)
+	txn, err := v.executeWithdrawal(ctx, userID, destination, amountNgnMinor, fee, rel, key)
 	if err != nil {
 		return nil, err
 	}
@@ -933,8 +971,10 @@ func (v *VaultService) WithdrawToAddress(ctx context.Context, userID, destinatio
 // requestElevation creates (or returns) the pending time-locked withdrawal for
 // this user/destination/amount. Idempotent: an identical pending elevation is
 // returned instead of duplicated. No funds move here — the fee is stored on
-// the row and only debited when the sweeper broadcasts.
-func (v *VaultService) requestElevation(ctx context.Context, userID, destination string, amountNgnMinor, feeMinor int64, key string) (*WithdrawalResult, error) {
+// the row and only debited when the sweeper broadcasts. A pre-signed intent
+// (`rel`) is persisted so the sweeper relays the EXACT signed withdrawWithSig
+// call at release time rather than a signature the platform fabricated.
+func (v *VaultService) requestElevation(ctx context.Context, userID, destination string, amountNgnMinor, feeMinor int64, rel *domain.WithdrawSignature, key string) (*WithdrawalResult, error) {
 	if existing, err := v.store.ElevationRepo().FindPendingByContent(ctx, userID, destination, amountNgnMinor); err == nil && existing != nil {
 		return &WithdrawalResult{Elevation: existing}, nil
 	}
@@ -947,16 +987,33 @@ func (v *VaultService) requestElevation(ctx context.Context, userID, destination
 	if !suff {
 		return nil, domain.ErrInsufficientBalance
 	}
+	// A signed intent must still be valid long enough to cover the delay, or
+	// the sweep will mark it expired at release.
+	if rel != nil && rel.HasSignature() {
+		if err := validateSignatureFresh(rel); err != nil {
+			return nil, err
+		}
+	}
 	now := time.Now().UTC()
 	e := &domain.WithdrawalElevation{
-		UserID:         userID,
-		Destination:    destination,
-		AmountNgnMinor: amountNgnMinor,
-		FeeMinor:       feeMinor,
-		Status:         domain.ElevationPending,
-		RequestedAt:    now,
-		ReleaseAfter:   now.Add(v.cfg.WithdrawElevationDelay),
-		IdempotencyKey: key,
+		UserID:          userID,
+		Destination:     destination,
+		AmountNgnMinor:  amountNgnMinor,
+		FeeMinor:        feeMinor,
+		Status:          domain.ElevationPending,
+		RequestedAt:     now,
+		ReleaseAfter:    now.Add(v.cfg.WithdrawElevationDelay),
+		IdempotencyKey:  key,
+		Signature:       "",
+		Deadline:        0,
+		SignedNonce:     0,
+		SignedAmountBase: 0,
+	}
+	if rel != nil && rel.HasSignature() {
+		e.Signature = rel.Signature
+		e.Deadline = rel.Deadline
+		e.SignedNonce = rel.RelayNonce
+		e.SignedAmountBase = rel.RelayAmountBase
 	}
 	if created, err := v.store.ElevationRepo().Create(ctx, e); err != nil {
 		// Concurrent duplicate request: the unique pending index fired, so
@@ -982,7 +1039,14 @@ func (v *VaultService) requestElevation(ctx context.Context, userID, destination
 // + fee (debited atomically, fee settled to the platform account); only the
 // principal is converted to USDC and broadcast. The NGN balance is
 // pre-checked (inside the ledger transaction too) before any gas is spent.
-func (v *VaultService) executeWithdrawal(ctx context.Context, userID, destination string, amountNgnMinor, feeMinor int64, key string) (*domain.Transaction, error) {
+//
+// Broadcast path: the USDC leaves the USER'S CLONE via `withdrawWithSig`
+// whenever the account has a clone — authorized by the caller's EIP-712
+// signature (`rel`), or, transitionally, by the platform placeholder owner
+// when GLOBMINT_REQUIRE_USER_SIGNATURE is off. Accounts without a clone fall
+// back to the shared-signer transfer (transitional only; refused under
+// RequireUserSignature).
+func (v *VaultService) executeWithdrawal(ctx context.Context, userID, destination string, amountNgnMinor, feeMinor int64, rel *domain.WithdrawSignature, key string) (*domain.Transaction, error) {
 	// Replay protection: if this idempotency key already produced a
 	// withdrawal, return the recorded transaction without touching the chain.
 	if key != "" {
@@ -1007,11 +1071,10 @@ func (v *VaultService) executeWithdrawal(ctx context.Context, userID, destinatio
 	}
 
 	// Broadcast the on-chain transfer first (it may fail on insufficient funds).
-	major := baseToMajorString(big.NewInt(usdcBase), v.cfg.StablecoinDecimals)
-	txHash, err := v.chain.TransferToken(ctx, destination, major)
+	txHash, err := v.broadcastWithdrawal(ctx, userID, destination, amountNgnMinor, usdcBase, rel)
 	if err != nil {
 		observability.Default.WithdrawalFailure("broadcast")
-		return nil, fmt.Errorf("on-chain send failed: %w", err)
+		return nil, err
 	}
 
 	// Debit NGN after the chain send succeeds: principal + fee, with the fee
@@ -1040,7 +1103,7 @@ func (v *VaultService) executeWithdrawal(ctx context.Context, userID, destinatio
 	// Inbox: the user asked to be told whenever money arrives or leaves.
 	v.money.notify(ctx, userID, domain.NotificationCategoryWithdrawal,
 		"Withdrawal broadcast",
-		formatMinor(amountNgnMinor, "NGN")+" (≈"+major+" USDC) sent to "+shortAddress(destination)+".")
+		formatMinor(amountNgnMinor, "NGN")+" (≈"+baseToMajorString(big.NewInt(usdcBase), v.cfg.StablecoinDecimals)+" USDC) sent to "+shortAddress(destination)+".")
 	if v.Hub != nil {
 		v.Hub.Publish(events.Event{
 			Type: "data.changed", UserID: userID, Kind: "all",
@@ -1048,6 +1111,175 @@ func (v *VaultService) executeWithdrawal(ctx context.Context, userID, destinatio
 		})
 	}
 	return txn, nil
+}
+
+// broadcastWithdrawal sends the USDC to `destination` via the most appropriate
+// path and returns the on-chain tx hash:
+//
+//   - user-signed relay: exact `withdrawWithSig` from the user's clone,
+//     verified against the clone owner before any gas is spent;
+//   - transitionally signed relay: the platform placeholder owner signs the
+//     same withdrawWithSig (only while RequireUserSignature is off and the
+//     clone is still owned by the platform signer);
+//   - legacy shared-signer transfer: accounts without a clone, transitional
+//     only (refused under RequireUserSignature).
+func (v *VaultService) broadcastWithdrawal(ctx context.Context, userID, destination string, amountNgnMinor, usdcBase int64, rel *domain.WithdrawSignature) (string, error) {
+	if rel != nil && rel.HasSignature() {
+		relay, err := v.buildUserSignedRelay(ctx, userID, destination, usdcBase, rel)
+		if err != nil {
+			return "", err
+		}
+		return v.chain.WithdrawFromCloneWithSig(ctx, *relay)
+	}
+
+	cloneAddr, err := v.CloneAddress(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+	if cloneAddr != "" {
+		if v.cfg.RequireUserSignature {
+			// The account has a clone but the request carried no user
+			// signature and the platform must not sign on the user's behalf.
+			return "", domain.ErrWithdrawSignatureRequired
+		}
+		relay, err := v.buildPlatformSignedRelay(ctx, userID, destination, usdcBase)
+		if err != nil {
+			return "", err
+		}
+		return v.chain.WithdrawFromCloneWithSig(ctx, *relay)
+	}
+
+	// Legacy path for accounts that have no per-user clone yet (their deposits
+	// sit in the shared vault address, not a clone). This IS operator power and
+	// is refused the moment signature-gating is enforced.
+	if v.cfg.RequireUserSignature {
+		return "", domain.ErrWithdrawRequiresCustody
+	}
+	major := baseToMajorString(big.NewInt(usdcBase), v.cfg.StablecoinDecimals)
+	return v.chain.TransferToken(ctx, destination, major)
+}
+
+// buildUserSignedRelay verifies the user's EIP-712 signature over the exact
+// withdrawWithSig relay and returns it ready to broadcast. The signature must
+// recover to the clone's owner (the user's wallet once they take custody); an
+// expired, stale, or mismatched signature is rejected off-chain so no gas is
+// spent on a relay the contract would revert.
+func (v *VaultService) buildUserSignedRelay(ctx context.Context, userID, destination string, usdcBase int64, rel *domain.WithdrawSignature) (*blockchain.WithdrawRelay, error) {
+	if err := validateSignatureFresh(rel); err != nil {
+		return nil, err
+	}
+	cloneAddr, err := v.CloneAddress(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if cloneAddr == "" {
+		return nil, domain.ErrWithdrawRequiresCustody
+	}
+	owner, err := v.chain.CloneOwner(ctx, cloneAddr)
+	if err != nil {
+		return nil, err
+	}
+	if owner == "" {
+		return nil, domain.ErrInvalidSignature
+	}
+	nonce := rel.RelayNonce
+	if nonce == 0 {
+		current, err := v.chain.CloneNonce(ctx, cloneAddr)
+		if err != nil {
+			return nil, err
+		}
+		nonce = current
+	}
+	amountBase := big.NewInt(usdcBase)
+	if rel.RelayAmountBase > 0 {
+		amountBase = big.NewInt(rel.RelayAmountBase)
+	}
+	digest := eip712.WithdrawDigest(v.cfg.ChainID, common.HexToAddress(cloneAddr), eip712.WithdrawRequest{
+		To:       common.HexToAddress(destination),
+		Amount:   amountBase,
+		Nonce:    nonce,
+		Deadline: rel.Deadline,
+	})
+	raw, derr := eip712.DecodeSignature(rel.Signature)
+	if derr != nil {
+		return nil, domain.ErrInvalidSignature
+	}
+	signer, serr := eip712.RecoverSigner(digest, raw)
+	if serr != nil {
+		return nil, domain.ErrInvalidSignature
+	}
+	if !strings.EqualFold(signer.Hex(), owner) {
+		// The signature is valid but does not belong to the clone owner. This
+		// must never happen with a genuine flow; fail closed, nothing moves.
+		log.Printf("vault: withdraw signature does not match clone owner (recovered %s, owner %s)", signer.Hex(), owner)
+		return nil, domain.ErrInvalidSignature
+	}
+	vr, rPart, sPart, err := eip712.ParseSignature(rel.Signature)
+	if err != nil {
+		return nil, domain.ErrInvalidSignature
+	}
+	return &blockchain.WithdrawRelay{
+		Clone:    cloneAddr,
+		To:       destination,
+		Amount:   amountBase,
+		Nonce:    nonce,
+		Deadline: rel.Deadline,
+		Sig:      blockchain.WithdrawSignature{V: vr, R: rPart, S: sPart},
+	}, nil
+}
+
+// buildPlatformSignedRelay signs the withdrawWithSig request with the platform
+// signer key. TRANSITIONAL ONLY: the clone must still be owned by the platform
+// signer (a placeholder seat the user has not claimed). If the clone belongs
+// to a user wallet, the platform cannot sign on their behalf even in
+// transitional mode.
+func (v *VaultService) buildPlatformSignedRelay(ctx context.Context, userID, destination string, usdcBase int64) (*blockchain.WithdrawRelay, error) {
+	cloneAddr, err := v.CloneAddress(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if cloneAddr == "" {
+		return nil, domain.ErrWithdrawRequiresCustody
+	}
+	owner, err := v.chain.CloneOwner(ctx, cloneAddr)
+	if err != nil {
+		return nil, err
+	}
+	if owner != "" && !strings.EqualFold(owner, v.cfg.VaultAddress) {
+		// The owner is a real (user) wallet — the platform signing would be
+		// operator power. The user must sign.
+		return nil, domain.ErrWithdrawSignatureRequired
+	}
+	nonce, err := v.chain.CloneNonce(ctx, cloneAddr)
+	if err != nil {
+		return nil, err
+	}
+	deadline := time.Now().UTC().Add(15 * time.Minute).Unix()
+	amountBase := big.NewInt(usdcBase)
+	sig, err := v.chain.SignWithdrawRelay(ctx, v.cfg.ChainID, cloneAddr, destination, amountBase, nonce, deadline)
+	if err != nil {
+		return nil, err
+	}
+	return &blockchain.WithdrawRelay{
+		Clone:    cloneAddr,
+		To:       destination,
+		Amount:   amountBase,
+		Nonce:    nonce,
+		Deadline: deadline,
+		Sig:      sig,
+	}, nil
+}
+
+// validateSignatureFresh rejects a signed intent whose deadline has already
+// passed (or a signed intent that carries no deadline at all).
+func validateSignatureFresh(rel *domain.WithdrawSignature) error {
+	if rel.Deadline <= 0 {
+		return domain.ErrInvalidSignature
+	}
+	if rel.Deadline < time.Now().UTC().Unix() {
+		return domain.ErrSignatureExpired
+	}
+	return nil
 }
 
 // hasSufficientNGN reports whether the user's available NGN balance covers a
@@ -1144,7 +1376,8 @@ func (v *VaultService) sweepDueElevations(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	for _, e := range due {
+	for i := range due {
+		e := &due[i]
 		claimed, err := v.store.ElevationRepo().ClaimForBroadcast(ctx, e.ID)
 		if err != nil {
 			log.Printf("elevation sweeper: claim %s: %v", e.ID, err)
@@ -1153,9 +1386,16 @@ func (v *VaultService) sweepDueElevations(ctx context.Context) error {
 		if !claimed {
 			continue // another instance won the claim
 		}
-		txn, err := v.executeWithdrawal(ctx, e.UserID, e.Destination, e.AmountNgnMinor, e.FeeMinor, e.IdempotencyKey)
-		if err != nil {
-			log.Printf("elevation sweeper: release %s failed: %v", e.ID, err)
+		txn, relErr := v.releaseElevation(ctx, e)
+		if relErr != nil {
+			if errors.Is(relErr, errElevationExpired) {
+				// Terminal: the pre-signed intent can no longer be relayed
+				// (deadline passed or the signed nonce was consumed). Already
+				// marked "expired"; the user re-requests.
+				log.Printf("elevation sweeper: %s expired without broadcast: %v", e.ID, relErr)
+				continue
+			}
+			log.Printf("elevation sweeper: release %s failed: %v", e.ID, relErr)
 			observability.Default.WithdrawalFailure("elevation")
 			_ = v.store.ElevationRepo().ReleaseClaim(ctx, e.ID) // retry next sweep
 			continue
@@ -1171,6 +1411,46 @@ func (v *VaultService) sweepDueElevations(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// errElevationExpired marks a terminal sweep outcome: the elevation was moved
+// to "expired" and must NOT be retried.
+var errElevationExpired = errors.New("elevation expired")
+
+// releaseElevation broadcasts a due elevation. Signed intents are relayed
+// EXACTLY as the user signed them (withdrawWithSig), after a liveness check:
+// the signature must not have expired and the signed nonce must still be the
+// clone's current nonce (a withdrawal in between invalidates the intent —
+// surfaced as "expired" so the user re-requests rather than being retried
+// forever). Transitional (unsigned) elevations sign at release time.
+func (v *VaultService) releaseElevation(ctx context.Context, e *domain.WithdrawalElevation) (*domain.Transaction, error) {
+	rel := &domain.WithdrawSignature{
+		Signature:       e.Signature,
+		Deadline:        e.Deadline,
+		RelayNonce:      e.SignedNonce,
+		RelayAmountBase: e.SignedAmountBase,
+	}
+	if e.HasSignedIntent() {
+		if e.Deadline > 0 && e.Deadline < time.Now().UTC().Unix() {
+			_ = v.store.ElevationRepo().MarkExpired(ctx, e.ID, "signature deadline passed before release")
+			return nil, fmt.Errorf("%w: signature deadline passed", errElevationExpired)
+		}
+		if e.SignedNonce > 0 {
+			cloneAddr, cerr := v.CloneAddress(ctx, e.UserID)
+			if cerr != nil {
+				return nil, cerr
+			}
+			current, nerr := v.chain.CloneNonce(ctx, cloneAddr)
+			if cloneAddr != "" && (nerr != nil || current != e.SignedNonce) {
+				if merr := v.store.ElevationRepo().MarkExpired(ctx, e.ID, "a newer withdrawal consumed the signed nonce; re-request"); merr != nil {
+					log.Printf("elevation sweeper: mark %s expired: %v", e.ID, merr)
+				}
+				return nil, fmt.Errorf("%w: signed nonce %d, chain nonce %d", errElevationExpired, e.SignedNonce, current)
+			}
+		}
+		return v.executeWithdrawal(ctx, e.UserID, e.Destination, e.AmountNgnMinor, e.FeeMinor, rel, e.IdempotencyKey)
+	}
+	return v.executeWithdrawal(ctx, e.UserID, e.Destination, e.AmountNgnMinor, e.FeeMinor, nil, e.IdempotencyKey)
 }
 
 // updateSignerBalanceMetric refreshes the signer-balance gauge used by the

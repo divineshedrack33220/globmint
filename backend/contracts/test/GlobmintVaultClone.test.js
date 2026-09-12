@@ -199,6 +199,83 @@ describe("GlobmintVaultFactory + GlobmintVaultClone (per-user deposit addresses)
       await expect(c.connect(relayer).withdrawWithSig(carol.address, ONE * 2n, 0, deadline, v, r, s))
         .to.be.revertedWith("insufficient balance");
     });
+
+    it("EIP-712 withdraw digest matches the backend binding", async function () {
+      // The backend (internal/eip712) builds the digest by hand:
+      //   0x1901 || domainSeparator || structHash
+      // and claims the signer recovered from it is the owner. This asserts the
+      // packed hash equals ethers' canonical TypedDataEncoder.hash — the exact
+      // digest a wallet signs for eth_signTypedData_v4 — so a server-side
+      // verification of a wallet-signed relay recovers the owner.
+      const chainId = (await ethers.provider.getNetwork()).chainId;
+      const deadline = (await ethers.provider.getBlock("latest")).timestamp + 600;
+      let domain;
+      {
+        const x = clone;
+        domain = { name: DOMAIN_NAME, version: DOMAIN_VERSION, chainId, verifyingContract: x };
+      }
+      const msg = { to: carol.address, amount: ONE * 2n, nonce: 0, deadline };
+
+      const typed = ethers.TypedDataEncoder.hash(domain, WITHDRAW_TYPES, msg);
+      const domainSeparator = ethers.TypedDataEncoder.hashDomain(domain);
+      const structHash = ethers.TypedDataEncoder.hashStruct(
+        "WithdrawRequest",
+        WITHDRAW_TYPES,
+        msg
+      );
+      const manual = ethers.keccak256(
+        ethers.concat(["0x1901", domainSeparator, structHash])
+      );
+      expect(manual).to.equal(typed);
+
+      // And a wallet-signed digest of that shape recovers the owner.
+      const sig = await alice.signTypedData(domain, WITHDRAW_TYPES, msg);
+      const recovered = ethers.verifyTypedData(domain, WITHDRAW_TYPES, msg, sig);
+      expect(recovered).to.equal(alice.address);
+    });
+  });
+
+  describe("direct withdraw kill-switch (factory-gated)", function () {
+    async function seed(amount) {
+      await fundAndAllow(alice, amount, clone);
+      const c = await ethers.getContractAt("GlobmintVaultClone", clone);
+      await c.connect(alice).deposit(amount);
+      return c;
+    }
+
+    it("is enabled by default on clones (zeroed EIP-1167 storage)", async function () {
+      const c = await ethers.getContractAt("GlobmintVaultClone", clone);
+      expect(await c.directWithdrawDisabled()).to.equal(false);
+    });
+
+    it("only the factory can flip the kill-switch", async function () {
+      const c = await ethers.getContractAt("GlobmintVaultClone", clone);
+      await expect(c.connect(alice).setDirectWithdrawDisabled(true)).to.be.revertedWith("not factory");
+      await expect(c.connect(relayer).setDirectWithdrawDisabled(false)).to.be.revertedWith("not factory");
+    });
+
+    it("blocks owner direct withdrawals but still allows relayed (signed) withdrawals", async function () {
+      const c = await seed(ONE * 6n);
+
+      // Factory flips the fleet policy off for direct owner withdrawals.
+      await factory.setDirectWithdrawDisabled(await c.getAddress(), true);
+      expect(await c.directWithdrawDisabled()).to.equal(true);
+      await expect(c.connect(alice).withdraw(ONE, bob.address)).to.be.revertedWith("direct withdraw disabled");
+
+      // The EIP-712 relay path is unaffected: the owner's signature still moves
+      // the exact signed amount.
+      const deadline = (await ethers.provider.getBlock("latest")).timestamp + 600;
+      const sig = await signWithdraw(alice, carol.address, ONE * 2n, 0, deadline);
+      await c.connect(relayer).withdrawWithSig(carol.address, ONE * 2n, 0, deadline, sig.v, sig.r, sig.s);
+      expect(await usdc.balanceOf(carol.address)).to.equal(ONE * 2n);
+      expect(await c.nonce()).to.equal(1);
+
+      // Re-enabling restores the direct path.
+      await factory.setDirectWithdrawDisabled(await c.getAddress(), false);
+      expect(await c.directWithdrawDisabled()).to.equal(false);
+      await c.connect(alice).withdraw(ONE * 4n, bob.address);
+      expect(await usdc.balanceOf(bob.address)).to.equal(ONE * 4n);
+    });
   });
 
   describe("ownership handover (sign to take custody)", function () {

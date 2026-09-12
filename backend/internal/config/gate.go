@@ -55,6 +55,12 @@ func ValidateProduction(cfg Config) error {
 	if cfg.VaultMinConfirmations < 12 {
 		problems = append(problems, "GLOBMINT_VAULT_MIN_CONFIRMATIONS must be >= 12 on mainnet")
 	}
+	if !cfg.RequireUserSignature {
+		problems = append(problems, "GLOBMINT_REQUIRE_USER_SIGNATURE must be true on mainnet (no operator-signed withdrawals)")
+	}
+	if cfg.Blockchain.CloneFactoryContract == "" {
+		problems = append(problems, "GLOBMINT_CLONE_FACTORY_ADDRESS must be set on mainnet (withdrawals relay from per-user clones via withdrawWithSig)")
+	}
 	if len(problems) > 0 {
 		return fmt.Errorf("production config check failed:\n  - %s", strings.Join(problems, "\n  - "))
 	}

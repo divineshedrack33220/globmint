@@ -59,6 +59,14 @@ contract GlobmintVaultClone {
     ///         keccak256(user, salt) commitments ever appear in events, never a
     ///         raw user address.
     mapping(address => bool) private _privacyEnabled;
+    /// @notice per-clone "no direct owner withdrawal" flag. When true the
+    ///         owner's own `withdraw(amount, to)` reverts and the ONLY way out
+    ///         is `withdrawWithSig` (an EIP-712 signature authorizing that
+    ///         single withdrawal). Defaults to false (direct withdraw allowed)
+    ///         so already-deployed clones keep working; the factory controls it
+    ///         so the platform can flip the whole fleet to signature-only
+    ///         withdrawal once signature-gating is enforced.
+    mapping(address => bool) private _directWithdrawDisabled;
     /// @notice per-clone commitment balances: clone -> commitment -> amount.
     ///         The commitment is keccak256(abi.encodePacked(user, salt)).
     mapping(address => mapping(bytes32 => uint256)) private _privateBalances;
@@ -107,6 +115,23 @@ contract GlobmintVaultClone {
     ///         keccak256(user, salt) commitments appear on chain.
     function privacyEnabled() public view returns (bool) {
         return _privacyEnabled[address(this)];
+    }
+
+    /// @notice Whether direct owner `withdraw` is disabled on this clone. When
+    ///         true the only way to move funds out is `withdrawWithSig`, which
+    ///         requires an EIP-712 signature authorizing the exact transfer.
+    function directWithdrawDisabled() public view returns (bool) {
+        return _directWithdrawDisabled[address(this)];
+    }
+
+    /// @notice Toggle direct owner `withdraw` for THIS clone. Only the factory
+    ///         may call, and the factory is the app's deployer seat — this is
+    ///         how the platform proves on-chain that the operator's direct
+    ///         withdrawal path is off for a clone. Does not affect
+    ///         `withdrawWithSig` (which always works for the clone owner).
+    function setDirectWithdrawDisabled(bool disabled) external {
+        require(msg.sender == factory, "not factory");
+        _directWithdrawDisabled[address(this)] = disabled;
     }
 
     /// @notice Balance held for a keccak256(abi.encodePacked(user, salt))
@@ -180,9 +205,12 @@ contract GlobmintVaultClone {
     }
 
     /// @notice Owner calls from their own wallet: withdraw `amount` to `to`.
-    ///         REVERTS in privacy mode — use `withdrawWithSalt` there.
+    ///         REVERTS in privacy mode — use `withdrawWithSalt` there. Also
+    ///         REVERTS when direct withdraw is disabled (`setDirectWithdrawDisabled`),
+    ///         leaving `withdrawWithSig` as the only way out.
     function withdraw(uint256 amount, address to) external {
         require(!_privacyEnabled[address(this)], "privacy mode: use withdrawWithSalt");
+        require(!_directWithdrawDisabled[address(this)], "direct withdraw disabled");
         require(msg.sender == _owners[address(this)], "not owner");
         _transferOut(to, amount);
     }

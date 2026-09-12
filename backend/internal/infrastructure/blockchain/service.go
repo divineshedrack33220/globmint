@@ -14,6 +14,8 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
+
+	"globmint/backend/internal/eip712"
 )
 
 // TokenTransfer is a decoded stablecoin Transfer event.
@@ -39,6 +41,26 @@ type VaultDeposit struct {
 	TxHash      string
 	LogIndex    uint64
 	BlockNumber uint64
+}
+
+// WithdrawSignature is an EIP-712 signature broken into the (v, r, s) parts the
+// clone contract's withdrawWithSig accepts. v is normalized to 27/28.
+type WithdrawSignature struct {
+	V uint8
+	R [32]byte
+	S [32]byte
+}
+
+// WithdrawRelay is a fully-built withdrawWithSig call ready to broadcast: the
+// destination, the base-unit amount, the exact nonce + deadline the signature
+// covers, and the signature itself.
+type WithdrawRelay struct {
+	Clone    string
+	To       string
+	Amount   *big.Int // stablecoin base units
+	Nonce    uint64
+	Deadline int64
+	Sig      WithdrawSignature
 }
 
 // BlockchainService defines the interface for blockchain operations.
@@ -80,6 +102,23 @@ type BlockchainService interface {
 	FilterVaultDeposits(ctx context.Context, fromBlock, toBlock uint64, vaultContract string) ([]VaultDeposit, error)
 	// LatestBlock returns the current head block number.
 	LatestBlock(ctx context.Context) (uint64, error)
+
+	// CloneOwner returns the clone's owner seat (`ownerOfThis()`): the user's
+	// wallet once they take custody, or the platform signer as a placeholder.
+	CloneOwner(ctx context.Context, cloneAddress string) (string, error)
+	// CloneNonce returns the clone's next EIP-712 withdrawal nonce.
+	CloneNonce(ctx context.Context, cloneAddress string) (uint64, error)
+	// SignWithdrawRelay signs a withdrawWithSig request with the platform
+	// signer key. This is the TRANSITIONAL placeholder-owner path: used only
+	// while a clone is still owned by the platform signer and
+	// GLOBMINT_REQUIRE_USER_SIGNATURE is not yet enforced. Once a user claims
+	// their clone, only their own wallet signature is accepted.
+	SignWithdrawRelay(ctx context.Context, chainID int64, clone, to string, amountBase *big.Int, nonce uint64, deadline int64) (WithdrawSignature, error)
+	// WithdrawFromCloneWithSig relays a pre-signed EIP-712 withdrawWithSig
+	// call on the clone (the signer pays gas; the signature authorizes the
+	// transfer). Returns the broadcast tx hash. The clone contract verifies
+	// the signature recovers to the clone owner.
+	WithdrawFromCloneWithSig(ctx context.Context, relay WithdrawRelay) (string, error)
 }
 
 // ---------- Mock ----------
@@ -93,10 +132,15 @@ type MockBlockchainService struct {
 	transfers []TokenTransfer
 	vaultDeposits []VaultDeposit
 	clones    map[string]string // owner(+predicted) -> deployed clone addr
+	cloneOwners map[string]string // clone addr -> owner seat ("" = unverified)
+	cloneNonces map[string]uint64
 	latest    uint64
 	headErr   error
 	filterErr error
+	relayErr  error
 	cloneFactory string
+	// relays records every withdrawWithSig relay the mock accepted, for tests.
+	relays []WithdrawRelay
 }
 
 // ---------- Mock ----------
@@ -104,8 +148,10 @@ type MockBlockchainService struct {
 // NewMockBlockchainService creates a new mock blockchain service.
 func NewMockBlockchainService() *MockBlockchainService {
 	return &MockBlockchainService{
-		balances: make(map[string]string),
-		clones:   make(map[string]string),
+		balances:    make(map[string]string),
+		clones:      make(map[string]string),
+		cloneOwners: make(map[string]string),
+		cloneNonces: make(map[string]uint64),
 	}
 }
 
@@ -219,7 +265,85 @@ func (m *MockBlockchainService) DeployClone(ctx context.Context, userKey, owner 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.clones[userKey] = addr
+	if owner != "" {
+		m.cloneOwners[strings.ToLower(addr)] = strings.ToLower(owner)
+	}
 	return "0x" + fmt.Sprintf("%064x", time.Now().UnixNano()), addr, nil
+}
+
+// SetCloneOwner seeds the owner seat for a clone address (mock-only, for
+// tests). The default (unset) owner is "" which the mock treats as
+// "skip ownership verification", mirroring pre-clone legacy tests.
+func (m *MockBlockchainService) SetCloneOwner(cloneAddr, owner string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cloneOwners[strings.ToLower(cloneAddr)] = strings.ToLower(owner)
+}
+
+// SetCloneNonce seeds the next withdrawal nonce for a clone (mock-only).
+func (m *MockBlockchainService) SetCloneNonce(cloneAddr string, nonce uint64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cloneNonces[strings.ToLower(cloneAddr)] = nonce
+}
+
+// SetRelayError injects a failure on the next WithdrawFromCloneWithSig call;
+// pass nil to clear (mock-only).
+func (m *MockBlockchainService) SetRelayError(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.relayErr = err
+}
+
+// Relays returns every withdrawWithSig relay the mock accepted (mock-only).
+func (m *MockBlockchainService) Relays() []WithdrawRelay {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]WithdrawRelay, len(m.relays))
+	copy(out, m.relays)
+	return out
+}
+
+// CloneOwner returns the seeded owner seat for a clone, or "" (unset).
+func (m *MockBlockchainService) CloneOwner(ctx context.Context, cloneAddress string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cloneOwners[strings.ToLower(cloneAddress)], nil
+}
+
+// CloneNonce returns the seeded nonce for a clone (0 by default).
+func (m *MockBlockchainService) CloneNonce(ctx context.Context, cloneAddress string) (uint64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cloneNonces[strings.ToLower(cloneAddress)], nil
+}
+
+// SignWithdrawRelay returns a deterministic (but not cryptographically valid)
+// dummy signature: the mock has no signing key and the service is expected to
+// skip verification for unset owners.
+func (m *MockBlockchainService) SignWithdrawRelay(ctx context.Context, chainID int64, clone, to string, amountBase *big.Int, nonce uint64, deadline int64) (WithdrawSignature, error) {
+	payload := fmt.Sprintf("mock-sig:%s:%s:%s:%d:%d", clone, to, amountBase, nonce, deadline)
+	hash := crypto.Keccak256Hash([]byte(payload))
+	var r, s [32]byte
+	copy(r[:], hash.Bytes()[:32])
+	copy(s[:], hash.Bytes()[:32])
+	return WithdrawSignature{V: 27, R: r, S: s}, nil
+}
+
+// WithdrawFromCloneWithSig records the relay and returns a synthetic hash.
+// Signature verification is the vault service's job (off-chain, before the
+// broadcast): the mock records the exact relay, bumps the nonce, and lets
+// tests assert what would have moved on chain. SetRelayError injects failures.
+func (m *MockBlockchainService) WithdrawFromCloneWithSig(ctx context.Context, relay WithdrawRelay) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.relayErr != nil {
+		return "", m.relayErr
+	}
+	key := strings.ToLower(strings.TrimSpace(relay.Clone))
+	m.cloneNonces[key] = relay.Nonce + 1
+	m.relays = append(m.relays, relay)
+	return "0x" + fmt.Sprintf("%064x", time.Now().UnixNano()), nil
 }
 
 // FilterTokenTransfers returns any transfers seeded via AddTransfer for tests.
@@ -644,6 +768,104 @@ func (s *EthereumService) DeployClone(ctx context.Context, userKey, owner string
 		return "", "", fmt.Errorf("deploy clone: %w", err)
 	}
 	return txHash, predicted, nil
+}
+
+// CloneOwner reads `clone.ownerOfThis()` via eth_call: the user's wallet once
+// they take custody, or the platform signer as a placeholder.
+func (s *EthereumService) CloneOwner(ctx context.Context, cloneAddress string) (string, error) {
+	if !common.IsHexAddress(cloneAddress) {
+		return "", fmt.Errorf("invalid clone address %q", cloneAddress)
+	}
+	out, err := s.callContract(ctx, common.HexToAddress(cloneAddress), common.FromHex("efd6bab0"))
+	if err != nil {
+		return "", fmt.Errorf("owner of clone: %w", err)
+	}
+	return common.BytesToAddress(out).Hex(), nil
+}
+
+// CloneNonce reads `clone.nonce()` via eth_call — the next EIP-712 withdrawal
+// nonce the contract will accept.
+func (s *EthereumService) CloneNonce(ctx context.Context, cloneAddress string) (uint64, error) {
+	if !common.IsHexAddress(cloneAddress) {
+		return 0, fmt.Errorf("invalid clone address %q", cloneAddress)
+	}
+	out, err := s.callContract(ctx, common.HexToAddress(cloneAddress), common.FromHex("affed0e0"))
+	if err != nil {
+		return 0, fmt.Errorf("clone nonce: %w", err)
+	}
+	n := new(big.Int).SetBytes(out)
+	if !n.IsUint64() {
+		return 0, fmt.Errorf("clone nonce overflows uint64")
+	}
+	return n.Uint64(), nil
+}
+
+// SignWithdrawRelay signs a withdrawWithSig request with the platform signer
+// key. TRANSITIONAL path only: valid while the clone is still owned by the
+// platform signer and GLOBMINT_REQUIRE_USER_SIGNATURE is not enforced. Once a
+// user claims their clone, only their own wallet signature is accepted.
+func (s *EthereumService) SignWithdrawRelay(ctx context.Context, chainID int64, clone, to string, amountBase *big.Int, nonce uint64, deadline int64) (WithdrawSignature, error) {
+	if s.signerKey == nil {
+		return WithdrawSignature{}, fmt.Errorf("signer key not configured")
+	}
+	if !common.IsHexAddress(clone) || !common.IsHexAddress(to) {
+		return WithdrawSignature{}, fmt.Errorf("invalid relay address")
+	}
+	if amountBase == nil || amountBase.Sign() <= 0 {
+		return WithdrawSignature{}, fmt.Errorf("invalid relay amount")
+	}
+	digest := eip712.WithdrawDigest(chainID, common.HexToAddress(clone), eip712.WithdrawRequest{
+		To:       common.HexToAddress(to),
+		Amount:   amountBase,
+		Nonce:    nonce,
+		Deadline: deadline,
+	})
+	sig, err := eip712.SignDigest(digest, s.signerKey)
+	if err != nil {
+		return WithdrawSignature{}, err
+	}
+	v, r, sPart, err := eip712.ParseSignature(common.Bytes2Hex(sig))
+	if err != nil {
+		return WithdrawSignature{}, err
+	}
+	return WithdrawSignature{V: v, R: r, S: sPart}, nil
+}
+
+// WithdrawFromCloneWithSig relays a pre-signed EIP-712 withdrawWithSig call on
+// the clone. The signer pays the gas; the signature inside relay authorizes
+// the exact transfer, and the clone contract re-verifies it against the
+// clone's owner before moving funds.
+func (s *EthereumService) WithdrawFromCloneWithSig(ctx context.Context, relay WithdrawRelay) (string, error) {
+	if !common.IsHexAddress(relay.Clone) || !common.IsHexAddress(relay.To) {
+		return "", fmt.Errorf("invalid relay address")
+	}
+	if relay.Amount == nil || relay.Amount.Sign() <= 0 {
+		return "", fmt.Errorf("invalid relay amount")
+	}
+	clone := common.HexToAddress(relay.Clone)
+	data := encodeWithdrawWithSig(relay)
+	txHash, err := s.sendTx(ctx, clone, data)
+	if err != nil {
+		return "", fmt.Errorf("relay withdrawWithSig: %w", err)
+	}
+	return txHash, nil
+}
+
+// encodeWithdrawWithSig builds the ABI payload for
+// withdrawWithSig(address,uint256,uint256,uint256,uint8,bytes32,bytes32):
+// 4-byte selector + to + amount + nonce + deadline + v (right-aligned byte) +
+// r + s, each a 32-byte word.
+func encodeWithdrawWithSig(relay WithdrawRelay) []byte {
+	data := make([]byte, 4+32+32+32+32+32+32+32)
+	copy(data[:4], common.FromHex("4a5b1f51"))
+	copy(data[4+12:4+32], common.HexToAddress(relay.To).Bytes()) // right-align address
+	relay.Amount.FillBytes(data[4+32 : 4+64])
+	new(big.Int).SetUint64(relay.Nonce).FillBytes(data[4+64 : 4+96])
+	new(big.Int).SetInt64(relay.Deadline).FillBytes(data[4+96 : 4+128])
+	data[4+128+31] = relay.Sig.V // uint8 right-aligned in its word
+	copy(data[4+160:4+192], relay.Sig.R[:])
+	copy(data[4+192:4+224], relay.Sig.S[:])
+	return data
 }
 
 // sendTx broadcasts a signed transaction to `to` with `data` (zero value) from

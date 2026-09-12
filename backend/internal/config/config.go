@@ -56,6 +56,16 @@ type Config struct {
 	// balances. Env: GLOBMINT_PRIVACY_MODE.
 	PrivacyMode bool
 
+	// RequireUserSignature turns on EIP-712 signature-gated withdrawals.
+	// When true the backend refuses every withdrawal that is not authorized by
+	// the clone owner's own wallet signature (the signer CANNOT sign for the
+	// user), and accounts still owned by the platform signer must take custody
+	// before withdrawing. When false (transitional) the platform signer may
+	// still relay placeholder-owner withdrawals. Env:
+	// GLOBMINT_REQUIRE_USER_SIGNATURE. Startup-checked: production must set
+	// this true.
+	RequireUserSignature bool
+
 	// RateLimitAuthBurst / RateLimitMoneyBurst override the per-IP token-bucket
 	// budgets (auth: 5/s, money: 20/s). Raise them for load testing only.
 	RateLimitAuthBurst  int
@@ -124,6 +134,7 @@ func Load() Config {
 		WithdrawFeeCapMinor:                  int64Env("GLOBMINT_WITHDRAW_FEE_CAP_MINOR", 10000),
 		VaultMinConfirmations:                uint64Env("GLOBMINT_VAULT_MIN_CONFIRMATIONS", 0),
 		PrivacyMode:                          boolEnv("GLOBMINT_PRIVACY_MODE", false),
+		RequireUserSignature:                 boolEnv("GLOBMINT_REQUIRE_USER_SIGNATURE", false),
 		RateLimitAuthBurst:                   intEnv("GLOBMINT_RATE_LIMIT_AUTH_BURST", 5),
 		RateLimitMoneyBurst:                  intEnv("GLOBMINT_RATE_LIMIT_MONEY_BURST", 20),
 		ChaosFailureRate:                     float64Env("GLOBMINT_CHAOS_FAILURE_RATE", 0),

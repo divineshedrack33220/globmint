@@ -23,13 +23,16 @@ func NewElevationRepo(q Querier) storage.ElevationRepository {
 
 const elevationColumns = `id, user_id, destination, amount_ngn_minor, fee_minor, status,
 	requested_at, release_after,
-	COALESCE(broadcast_tx_hash, ''), broadcast_at, COALESCE(idempotency_key, '')`
+	COALESCE(broadcast_tx_hash, ''), broadcast_at, COALESCE(idempotency_key, ''),
+	COALESCE(signature, ''), COALESCE(deadline, 0), COALESCE(signed_nonce, 0),
+	COALESCE(signed_amount_base, 0), COALESCE(expired_reason, '')`
 
 func scanElevation(row pgx.Row) (*domain.WithdrawalElevation, error) {
 	var e domain.WithdrawalElevation
 	var status string
 	err := row.Scan(&e.ID, &e.UserID, &e.Destination, &e.AmountNgnMinor, &e.FeeMinor, &status,
-		&e.RequestedAt, &e.ReleaseAfter, &e.BroadcastTxHash, &e.BroadcastAt, &e.IdempotencyKey)
+		&e.RequestedAt, &e.ReleaseAfter, &e.BroadcastTxHash, &e.BroadcastAt, &e.IdempotencyKey,
+		&e.Signature, &e.Deadline, &e.SignedNonce, &e.SignedAmountBase, &e.ExpiredReason)
 	if err != nil {
 		return nil, err
 	}
@@ -42,10 +45,13 @@ func (r *elevationRepo) Create(ctx context.Context, e *domain.WithdrawalElevatio
 	// gen_random_uuid() is built-in on PG 13+; if the UUID is pre-set use it.
 	err := r.q.QueryRow(ctx,
 		`INSERT INTO withdrawal_elevations
-			(id, user_id, destination, amount_ngn_minor, fee_minor, status, release_after, idempotency_key)
-		 VALUES ((COALESCE(NULLIF($1, ''), gen_random_uuid()::text))::uuid, $2, $3, $4, $5, $6, $7, $8)
+			(id, user_id, destination, amount_ngn_minor, fee_minor, status, release_after, idempotency_key,
+			 signature, deadline, signed_nonce, signed_amount_base)
+		 VALUES ((COALESCE(NULLIF($1, ''), gen_random_uuid()::text))::uuid, $2, $3, $4, $5, $6, $7, $8,
+			 NULLIF($9, ''), NULLIF($10, 0), NULLIF($11, 0), NULLIF($12, 0))
 		 RETURNING id`,
 		e.ID, e.UserID, e.Destination, e.AmountNgnMinor, e.FeeMinor, string(e.Status), e.ReleaseAfter, e.IdempotencyKey,
+		e.Signature, e.Deadline, e.SignedNonce, e.SignedAmountBase,
 	).Scan(&id)
 	if err != nil {
 		return nil, err
@@ -138,6 +144,14 @@ func (r *elevationRepo) ReleaseClaim(ctx context.Context, id string) error {
 		`UPDATE withdrawal_elevations
 		    SET status = 'pending', updated_at = now()
 		  WHERE id = $1 AND status = 'broadcasting'`, id)
+	return err
+}
+
+func (r *elevationRepo) MarkExpired(ctx context.Context, id, reason string) error {
+	_, err := r.q.Exec(ctx,
+		`UPDATE withdrawal_elevations
+		    SET status = 'expired', expired_reason = $2, updated_at = now()
+		  WHERE id = $1 AND status IN ('pending', 'broadcasting')`, id, reason)
 	return err
 }
 

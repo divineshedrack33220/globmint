@@ -85,6 +85,16 @@ contract GlobmintVaultFactory {
         return clone;
     }
 
+    /// @notice Toggle the direct-owner-withdraw kill-switch for one clone. The
+    ///         clone's setter only accepts the factory as caller; this is the
+    ///         operator lever that flips the fleet from "owner can withdraw
+    ///         directly" to "withdrawals require the owner's EIP-712 signature"
+    ///         (withdrawWithSig) without locking funds — the relay path stays
+    ///         open. Default (zeroed storage) is enabled.
+    function setDirectWithdrawDisabled(address clone_, bool disabled) external {
+        GlobmintVaultClone(payable(clone_)).setDirectWithdrawDisabled(disabled);
+    }
+
     function _salt(bytes32 userKey_) internal pure returns (bytes32) {
         return keccak256(abi.encodePacked(userKey_));
     }

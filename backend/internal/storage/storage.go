@@ -182,6 +182,10 @@ type ElevationRepository interface {
 	ClaimForBroadcast(ctx context.Context, id string) (bool, error)
 	// MarkBroadcast records the broadcast tx hash and finalizes the row.
 	MarkBroadcast(ctx context.Context, id, txHash string) error
+	// MarkExpired marks a pending/broadcasting row "expired" with a reason:
+	// the pre-signed intent can no longer be relayed (deadline passed or a
+	// newer withdrawal consumed the signed nonce).
+	MarkExpired(ctx context.Context, id, reason string) error
 	// ReleaseClaim returns a claimed-but-failed row to "pending" so a later
 	// sweep retries it.
 	ReleaseClaim(ctx context.Context, id string) error

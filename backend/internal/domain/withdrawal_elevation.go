@@ -17,6 +17,10 @@ const (
 	ElevationBroadcast WithdrawalElevationStatus = "broadcast"
 	// ElevationCancelled by the user while still pending.
 	ElevationCancelled WithdrawalElevationStatus = "cancelled"
+	// ElevationExpired means the pre-signed intent can no longer be relayed
+	// (its deadline passed, or a newer withdrawal consumed the signed nonce).
+	// The user is told the reason and must re-request.
+	ElevationExpired WithdrawalElevationStatus = "expired"
 )
 
 // WithdrawalElevation is a high-value withdrawal held by the time-lock so
@@ -35,6 +39,20 @@ type WithdrawalElevation struct {
 	BroadcastTxHash string
 	BroadcastAt     *time.Time
 	IdempotencyKey  string
+	// Signature + Deadline + SignedNonce + SignedAmountBase persist the
+	// user's EIP-712 intent so the sweeper can relay the EXACT signed
+	// withdrawWithSig call at release (never re-signing or mutating it).
+	Signature       string
+	Deadline        int64
+	SignedNonce     uint64
+	SignedAmountBase int64
+	// ExpiredReason explains why an expired elevation could not be relayed.
+	ExpiredReason string
+}
+
+// HasSignedIntent reports whether this elevation carries a user signature.
+func (e *WithdrawalElevation) HasSignedIntent() bool {
+	return e.Signature != ""
 }
 
 // IndexerEventType identifies what an indexer log row represents. Types:
