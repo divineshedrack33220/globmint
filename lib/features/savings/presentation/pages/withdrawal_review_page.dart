@@ -11,6 +11,7 @@ import '../../../../core/widgets/pin_verify_sheet.dart';
 import '../../../../core/widgets/success_dialog.dart';
 import '../../../../shared/services/api_client.dart';
 import '../../../../shared/services/conversion_service.dart';
+import '../../../../shared/services/ethereum_provider.dart';
 import '../../../../shared/services/savings_client.dart';
 
 class WithdrawalReviewPage extends ConsumerStatefulWidget {
@@ -35,6 +36,8 @@ class WithdrawalReviewPage extends ConsumerStatefulWidget {
 class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
   bool _isProcessing = false;
   double? _usdcEstimate;
+  bool _selfCustodySigned = false;
+  String? _signingWallet;
 
   static final _addressPattern = RegExp(r'^0x[0-9a-fA-F]{40}$');
 
@@ -124,21 +127,54 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
 
       setState(() => _isProcessing = true);
       try {
-        final txHash = await ref.read(savingsClientProvider).withdrawToAddress(
-              amount: a.toStringAsFixed(2),
-              destination: destination,
-              pin: pin,
-            );
+        final client = ref.read(savingsClientProvider);
+
+        // Quote the exact EIP-712 payload: if the owner's wallet is connected,
+        // sign it in the wallet so the backend only relays the owner-authorized
+        // withdrawWithSig. Otherwise the transitional server-relayed path runs
+        // (and is refused server-side when signature-gating is enforced).
+        WithdrawSignature? outSig;
+        try {
+          final quote = await client.prepareWithdrawal(
+            amount: a.toStringAsFixed(2),
+            destination: destination,
+          );
+          if (EthereumProvider.available &&
+              await EthereumProvider.instance.isConnectedOwner(quote.cloneOwner)) {
+            final signer = (await EthereumProvider.instance.accounts()).first;
+            outSig = await EthereumProvider.instance.signWithdrawal(quote, signer);
+            _signingWallet = signer;
+          }
+        } catch (_) {
+          // Quote/prepare is advisory; any failure falls back to the server path.
+        }
+
+        final result = await client.withdrawToAddress(
+          amount: a.toStringAsFixed(2),
+          destination: destination,
+          pin: pin,
+          signature: outSig,
+        );
+
         if (mounted) {
+          setState(() {
+            _isProcessing = false;
+            _selfCustodySigned = outSig != null;
+          });
           ref.invalidate(accountSummaryProvider);
           ref.invalidate(transactionsProvider);
           ref.invalidate(vaultStatusProvider);
-          setState(() => _isProcessing = false);
-          _showSuccess(a, txHash);
+          if (result.elevation != null) {
+            _showPendingLock(a, result.elevation!);
+          } else {
+            _showSuccess(a, result.txHash);
+          }
         }
       } catch (e) {
         if (mounted) {
-          setState(() => _isProcessing = false);
+          setState(() {
+            _isProcessing = false;
+          });
           final message = e is ApiException ? e.message : '$e';
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('Withdrawal failed: $message')),
@@ -157,6 +193,76 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
       subtitle: 'USDC sent on-chain. Transaction: $txHash',
       onPressed: () => context.go('/savings'),
     );
+  }
+
+  /// An elevated amount was stored as a time-locked withdrawal: nothing left
+  /// the vault yet, it broadcasts automatically after the delay.
+  void _showPendingLock(double amount, PendingElevation elevation) {
+    final subtitle = 'Locked for ${elevation.durationLabel}. '
+        'USDC is sent automatically once released.';
+    SuccessDialog.show(
+      context: context,
+      type: SuccessDialogType.warning,
+      title: 'Withdrawal Locked',
+      amount: CurrencyFormatter.ngn(amount),
+      subtitle: subtitle,
+      onPressed: () => context.go('/savings'),
+    );
+  }
+
+  Widget _custodyBadge() {
+    final connected = EthereumProvider.available;
+    final owner = _signingWallet;
+    if (_selfCustodySigned && owner != null) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: AppColors.successMuted,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.verified_user_outlined, size: 16, color: AppColors.success),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Authorized by your wallet ${_shorten(owner)} — only this exact signed withdrawal can be sent.',
+                style: context.typography.bodySmall,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    if (connected) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: AppColors.successMuted.withValues(alpha: 0.5),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.account_balance_wallet_outlined,
+                size: 16, color: AppColors.textSecondary),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'A wallet is connected. Connect the wallet that owns your '
+                'savings address to sign this withdrawal yourself.',
+                style: context.typography.bodySmall,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    return const SizedBox.shrink();
+  }
+
+  static String _shorten(String addr) {
+    if (addr.length <= 12) return addr;
+    return '${addr.substring(0, 6)}…${addr.substring(addr.length - 4)}';
   }
 
   @override
@@ -226,6 +332,13 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
                 label: 'Network',
                 value: _networkLabel(depositInfo),
               ),
+              if (_signingWallet != null)
+                _ReviewRow(
+                  label: 'Authorized by',
+                  value: _shorten(_signingWallet!),
+                ),
+              const SizedBox(height: 16),
+              _custodyBadge(),
               const SizedBox(height: 32),
               AppButton(
                 text: 'Confirm Withdrawal',

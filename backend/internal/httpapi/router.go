@@ -114,6 +114,12 @@ func NewHandler(deps *Deps, auth middleware.Authenticator, corsOrigins []string,
 		clientIPKey,
 	))
 	mux.Handle("GET "+api+"/savings/withdraw", middleware.Auth(auth, http.HandlerFunc(deps.handleListVaultElevations)))
+	mux.Handle("GET "+api+"/savings/withdraw/prepare", middleware.RateLimiter(
+		middleware.Auth(auth, http.HandlerFunc(deps.handlePrepareVaultWithdraw)),
+		time.Second,
+		limits.MoneyBurst,
+		clientIPKey,
+	))
 	mux.Handle("POST "+api+"/savings/withdraw/{id}/cancel", middleware.RateLimiter(
 		middleware.Auth(auth, http.HandlerFunc(deps.handleCancelVaultWithdraw)),
 		time.Second,

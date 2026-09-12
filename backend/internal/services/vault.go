@@ -909,52 +909,127 @@ func (v *VaultService) WithdrawToAddressSigned(ctx context.Context, userID, dest
 	return v.withdraw(ctx, userID, destination, amountNgnMinor, sig, key)
 }
 
-// withdraw validates the request then dispatches to the elevation or the
-// immediate-execution path.
-func (v *VaultService) withdraw(ctx context.Context, userID, destination string, amountNgnMinor int64, rel *domain.WithdrawSignature, key string) (*WithdrawalResult, error) {
+// defaultSignatureLifetime is how far into the future a newly quoted
+// withdrawal deadline sits (the client signs it, then must submit before it
+// passes). Long before the elevation time-lock of ≥24h, so an elevated intent
+// signed from a fresh quote outlives the delay.
+const defaultSignatureLifetime = 30 * time.Minute
+
+// WithdrawQuote is the payload a client must sign before a self-custody
+// withdrawal: the EIP-712 domain + message the user's wallet signs ("sign this
+// exactly"), plus the NGN/fee context the review screen shows and the clone
+// owner seat so the client can tell which wallet must sign.
+type WithdrawQuote struct {
+	Domain         eip712.Domain
+	Message        eip712.WithdrawRequest
+	Owner          string
+	AmountNgnMinor int64
+	FeeNgnMinor    int64
+}
+
+// PrepareSignedWithdrawal quotes the exact EIP-712 withdrawal request a user
+// would sign in their wallet: same validation as the real withdrawal (so a
+// quote can never turn into a rejection), the current on-chain clone nonce,
+// and the stablecoin base amount the signer authorizes. The client returns the
+// signature with the quote's deadline/nonce/amount in WithdrawToAddressSigned.
+func (v *VaultService) PrepareSignedWithdrawal(ctx context.Context, userID, destination string, amountNgnMinor int64) (*WithdrawQuote, error) {
+	fee, err := v.validateWithdrawalRequest(ctx, userID, destination, amountNgnMinor)
+	if err != nil {
+		return nil, err
+	}
+	cloneAddr, err := v.CloneAddress(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if cloneAddr == "" {
+		// No clone to relay against; this account must first get its deposit
+		// address (EnsureClone) — the "take custody" precondition.
+		return nil, domain.ErrWithdrawRequiresCustody
+	}
+	nonce, err := v.chain.CloneNonce(ctx, cloneAddr)
+	if err != nil {
+		return nil, err
+	}
+	owner, err := v.chain.CloneOwner(ctx, cloneAddr)
+	if err != nil {
+		return nil, err
+	}
+	return &WithdrawQuote{
+		Domain: eip712.Domain{
+			Name:              eip712.DomainName,
+			Version:           eip712.DomainVersion,
+			ChainID:           v.cfg.ChainID,
+			VerifyingContract: cloneAddr,
+		},
+		Message: eip712.WithdrawRequest{
+			To:       common.HexToAddress(destination),
+			Amount:   big.NewInt(withdrawUSDCBase(amountNgnMinor, v.rate.Load())),
+			Nonce:    nonce,
+			Deadline: time.Now().UTC().Add(defaultSignatureLifetime).Unix(),
+		},
+		Owner:          owner,
+		AmountNgnMinor: amountNgnMinor,
+		FeeNgnMinor:    fee,
+	}, nil
+}
+
+// validateWithdrawalRequest enforces the shared withdrawal guards (deployment
+// mode, feature flag, amount bounds, address safety, daily cap) and returns the
+// withdrawal fee the caller would be charged. Both the immediate/elevated
+// execution path and the signature-preparation quote run the same checks so a
+// quoted amount can never be rejected later on its own rules.
+func (v *VaultService) validateWithdrawalRequest(ctx context.Context, userID, destination string, amountNgnMinor int64) (int64, error) {
 	if v.cfg.Mode == "mock" || v.cfg.VaultAddress == "" {
 		// Surface as a proper 403, not a 500: this deployment cannot move
 		// funds on-chain by configuration, nothing is broken.
-		return nil, domain.ErrFeatureDisabled
+		return 0, domain.ErrFeatureDisabled
 	}
 	if !v.cfg.WithdrawEnabled {
-		return nil, domain.ErrFeatureDisabled
+		return 0, domain.ErrFeatureDisabled
 	}
 	if amountNgnMinor <= 0 {
-		return nil, domain.ErrInvalidAmount
+		return 0, domain.ErrInvalidAmount
 	}
 	// Never send to our own addresses: a withdrawal to the vault (or its
 	// contract) would loop funds in a circle while still charging the user
 	// the ledger debit + fee. The app also warns, this is the safety net.
 	if strings.EqualFold(destination, v.cfg.VaultAddress) ||
 		(v.cfg.VaultContract != "" && strings.EqualFold(destination, v.cfg.VaultContract)) {
-		return nil, domain.ErrInvalidAddress
+		return 0, domain.ErrInvalidAddress
 	}
 	// Also block the user's own deposit clone: funds returned there re-enter
 	// the vault as a fresh deposit while still debiting principal + fee.
 	if cloneAddr, err := v.CloneAddress(ctx, userID); err == nil && strings.EqualFold(strings.TrimSpace(cloneAddr), destination) {
-		return nil, domain.ErrInvalidAddress
+		return 0, domain.ErrInvalidAddress
 	}
 	if v.cfg.WithdrawMinMinor > 0 && amountNgnMinor < v.cfg.WithdrawMinMinor {
-		return nil, domain.ErrInvalidAmount
+		return 0, domain.ErrInvalidAmount
 	}
 	if v.cfg.WithdrawMaxMinor > 0 && amountNgnMinor > v.cfg.WithdrawMaxMinor {
-		return nil, domain.ErrLimitExceeded
+		return 0, domain.ErrLimitExceeded
 	}
 	if v.cfg.WithdrawDailyCapMinor > 0 {
 		dayStart := time.Now().UTC().Truncate(24 * time.Hour)
 		used, err := v.store.LedgerRepo().SumWithdrawalsSince(ctx, userID, dayStart)
 		if err != nil {
-			return nil, err
+			return 0, err
 		}
 		// The cap counts the principal only: SumWithdrawalsSince sums
 		// amount_minor, and the fee lives separately in fee_minor.
 		if used+amountNgnMinor > v.cfg.WithdrawDailyCapMinor {
-			return nil, domain.ErrLimitExceeded
+			return 0, domain.ErrLimitExceeded
 		}
 	}
+	return v.withdrawalFee(amountNgnMinor), nil
+}
 
-	fee := v.withdrawalFee(amountNgnMinor)
+// withdraw validates the request then dispatches to the elevation or the
+// immediate-execution path.
+func (v *VaultService) withdraw(ctx context.Context, userID, destination string, amountNgnMinor int64, rel *domain.WithdrawSignature, key string) (*WithdrawalResult, error) {
+	fee, err := v.validateWithdrawalRequest(ctx, userID, destination, amountNgnMinor)
+	if err != nil {
+		return nil, err
+	}
 
 	// High-value withdrawals wait out the time-lock before broadcasting.
 	if v.cfg.WithdrawElevationThresholdMinor > 0 && amountNgnMinor > v.cfg.WithdrawElevationThresholdMinor {

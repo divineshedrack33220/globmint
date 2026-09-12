@@ -59,6 +59,17 @@ type WithdrawRequest struct {
 	Deadline int64 // unix seconds; the signature expires after this
 }
 
+// Domain is the EIP-712 domain a wallet needs to build an
+// eth_signTypedData_v4 payload for these contracts. It maps one-to-one onto
+// the contract's domainSeparator() view (name, version, chainId,
+// verifyingContract = the per-user clone).
+type Domain struct {
+	Name              string
+	Version           string
+	ChainID           int64
+	VerifyingContract string
+}
+
 // DomainSeparator returns the EIP-712 domain separator bound to this chain id
 // and verifying contract (the per-user clone) — exactly the contract's
 // domainSeparator() view.

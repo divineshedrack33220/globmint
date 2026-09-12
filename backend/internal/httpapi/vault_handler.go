@@ -134,6 +134,75 @@ func (d *Deps) handleVerifyPin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"verified": true})
 }
 
+// handlePrepareVaultWithdraw quotes the exact EIP-712 withdrawal request a
+// self-custody client must sign before calling POST /savings/withdraw. The
+// response carries the domain a wallet needs for eth_signTypedData_v4, the
+// message (to/amount/nonce/deadline) to sign, and the NGN/fee the user is
+// authorizing. No funds move and nothing is persisted.
+func (d *Deps) handlePrepareVaultWithdraw(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	if user == nil {
+		writeError(w, r, domain.ErrUnauthenticated, "")
+		return
+	}
+	if d.Vault == nil || d.Savings == nil {
+		writeError(w, r, domain.ErrNotFound, "")
+		return
+	}
+	destination := r.URL.Query().Get("destination")
+	if destination == "" {
+		writeError(w, r, domain.ErrBadRequest, "")
+		return
+	}
+	if _, err := domain.ValidateDepositAddress(destination); err != nil {
+		writeError(w, r, domain.ErrInvalidAddress, "")
+		return
+	}
+	amountMinor, err := parseIntAmount(r.URL.Query().Get("amount"))
+	if err != nil {
+		writeError(w, r, err, "")
+		return
+	}
+	quote, err := d.Vault.PrepareSignedWithdrawal(r.Context(), user.ID, destination, amountMinor)
+	if err != nil {
+		writeError(w, r, err, "")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"domain": map[string]any{
+			"name":              quote.Domain.Name,
+			"version":           quote.Domain.Version,
+			"chain_id":          quote.Domain.ChainID,
+			"verifying_contract": quote.Domain.VerifyingContract,
+		},
+		"message": map[string]any{
+			"to":       quote.Message.To.Hex(),
+			"amount":   quote.Message.Amount.String(),
+			"nonce":    quote.Message.Nonce,
+			"deadline": quote.Message.Deadline,
+		},
+		"primary_type":      "WithdrawRequest",
+		"types": map[string]any{
+			"EIP712Domain": []map[string]string{
+				{"name": "name", "type": "string"},
+				{"name": "version", "type": "string"},
+				{"name": "chainId", "type": "uint256"},
+				{"name": "verifyingContract", "type": "address"},
+			},
+			"WithdrawRequest": []map[string]string{
+				{"name": "to", "type": "address"},
+				{"name": "amount", "type": "uint256"},
+				{"name": "nonce", "type": "uint256"},
+				{"name": "deadline", "type": "uint256"},
+			},
+		},
+		"amount_ngn_minor":   quote.AmountNgnMinor,
+		"fee_ngn_minor":      quote.FeeNgnMinor,
+		"amount_minor_base":  quote.Message.Amount.String(),
+		"clone_owner":        quote.Owner,
+	})
+}
+
 // handleVaultWithdraw debits NGN and sends USDC on-chain from the user's vault
 // to the destination address they supply.
 func (d *Deps) handleVaultWithdraw(w http.ResponseWriter, r *http.Request) {

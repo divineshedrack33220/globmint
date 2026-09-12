@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"errors"
 	"math/big"
+	"strings"
 	"testing"
 	"time"
 
@@ -306,6 +307,98 @@ func TestWithdrawTransitional_UserWalletOwnerNeedsSignature(t *testing.T) {
 	}
 	if n := len(chain.Relays()); n != 0 {
 		t.Errorf("relays = %d, want 0", n)
+	}
+}
+
+// TestPrepareSignedWithdrawal_QuoteMatchesBroadcast: the quote's message is
+// exactly what the signer authorizes and exactly what the backend relays, so a
+// signature recovered from the quote succeeds.
+func TestPrepareSignedWithdrawal_QuoteMatchesBroadcast(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	u := newTestUser(t, st, "vault-sig-quote@example.com")
+	fundNGN(t, st, u.ID, 50_000_000, "fund-sig-quote-"+uniqueKey("k"))
+
+	chain := blockchain.NewMockBlockchainService()
+	v := newSignatureVault(t, st, chain, u.ID, true)
+	ownerKey, _ := crypto.GenerateKey()
+	owner := crypto.PubkeyToAddress(ownerKey.PublicKey)
+	clone := seedClone(t, v, chain, u.ID, owner.Hex())
+	chain.SetCloneNonce(clone, 7)
+
+	destination := "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	quote, err := v.PrepareSignedWithdrawal(ctx, u.ID, destination, 5_000_000)
+	if err != nil {
+		t.Fatalf("prepare quote: %v", err)
+	}
+	if quote.Domain.VerifyingContract != clone {
+		t.Errorf("domain verifyingContract = %s, want clone %s", quote.Domain.VerifyingContract, clone)
+	}
+	if quote.Domain.ChainID != testChainID {
+		t.Errorf("domain chain id = %d, want %d", quote.Domain.ChainID, testChainID)
+	}
+	if quote.Domain.Name != "GlobmintVault" || quote.Domain.Version != "1" {
+		t.Errorf("domain identity = %s/%s", quote.Domain.Name, quote.Domain.Version)
+	}
+	if !strings.EqualFold(quote.Message.To.Hex(), destination) {
+		t.Errorf("message to = %s, want %s", quote.Message.To.Hex(), destination)
+	}
+	if quote.Message.Nonce != 7 {
+		t.Errorf("message nonce = %d, want 7 (current chain nonce)", quote.Message.Nonce)
+	}
+	if quote.Message.Amount.Int64() != withdrawUSDCBase(5_000_000, 160450) {
+		t.Errorf("message amount = %s, want %d", quote.Message.Amount, withdrawUSDCBase(5_000_000, 160450))
+	}
+	if quote.AmountNgnMinor != 5_000_000 || quote.FeeNgnMinor < 0 {
+		t.Errorf("quote context = ngn %d fee %d", quote.AmountNgnMinor, quote.FeeNgnMinor)
+	}
+	if !strings.EqualFold(quote.Owner, owner.Hex()) {
+		t.Errorf("quote owner = %s, want %s", quote.Owner, owner.Hex())
+	}
+
+	// The client signs the quoted message verbatim; the backend must relay the
+	// exact signed relay through the quote's fields.
+	sig := signWithdraw(t, quote.Domain.ChainID, clone, quote.Message.To.Hex(),
+		quote.Message.Amount.Int64(), quote.Message.Nonce, quote.Message.Deadline, ownerKey)
+	sig.Deadline = quote.Message.Deadline
+	sig.RelayNonce = quote.Message.Nonce
+	sig.RelayAmountBase = quote.Message.Amount.Int64()
+
+	res, err := v.WithdrawToAddressSigned(ctx, u.ID, destination, 5_000_000, sig, "wd-quote-"+uniqueKey("k"))
+	if err != nil {
+		t.Fatalf("signed withdraw from quote: %v", err)
+	}
+	if res.Transaction == nil {
+		t.Fatal("expected an instant transaction")
+	}
+	relays := chain.Relays()
+	if len(relays) != 1 {
+		t.Fatalf("relay count = %d, want 1", len(relays))
+	}
+	if relays[0].Amount.Int64() != quote.Message.Amount.Int64() || relays[0].Nonce != 7 {
+		t.Errorf("relay mismatch: amount=%d nonce=%d", relays[0].Amount.Int64(), relays[0].Nonce)
+	}
+	deadlineCheck := relays[0].Deadline
+	if deadlineCheck < time.Now().Unix() {
+		t.Errorf("relay deadline %d is already past", deadlineCheck)
+	}
+}
+
+// TestPrepareSignedWithdrawal_NoCustodyRefused: without a clone there is
+// nothing to relay against, so the quote refuses rather than producing a
+// signature the backend would never accept.
+func TestPrepareSignedWithdrawal_NoCustodyRefused(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	u := newTestUser(t, st, "vault-sig-quote-noc@example.com")
+	fundNGN(t, st, u.ID, 50_000_000, "fund-sig-qnoc-"+uniqueKey("k"))
+
+	chain := blockchain.NewMockBlockchainService()
+	v := newSignatureVault(t, st, chain, u.ID, true)
+
+	_, err := v.PrepareSignedWithdrawal(ctx, u.ID, "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 5_000_000)
+	if !errors.Is(err, domain.ErrWithdrawRequiresCustody) {
+		t.Fatalf("err = %v, want ErrWithdrawRequiresCustody", err)
 	}
 }
 

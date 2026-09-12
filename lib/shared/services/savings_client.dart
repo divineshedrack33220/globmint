@@ -221,19 +221,58 @@ class SavingsClient {
   }
 
   /// Converts NGN to USDC and sends it on-chain from the user's vault to the
-  /// destination crypto address. Returns the on-chain transaction hash.
-  Future<String> withdrawToAddress({
+  /// destination crypto address. When [signature] is present, the withdrawal is
+  /// relayed as the owner-signed `withdrawWithSig` (self-custody); without it
+  /// the server uses the transitional path (or refuses under
+  /// GLOBMINT_REQUIRE_USER_SIGNATURE). Returns the on-chain transaction hash,
+  /// or the pending time-lock when the amount is elevated.
+  Future<WithdrawResult> withdrawToAddress({
     required String amount,
     required String destination,
     required String pin,
+    WithdrawSignature? signature,
   }) async {
+    final body = <String, dynamic>{
+      'amount': amount,
+      'destination': destination,
+      'pin': pin,
+    };
+    if (signature != null && signature.signature.isNotEmpty) {
+      body['signature'] = signature.signature;
+      body['deadline'] = signature.deadline;
+      body['nonce'] = signature.nonce;
+      body['amount_minor_base'] = signature.amountMinorBase;
+    }
     final data = await _api.post(
       '${AppConstants.apiV1Prefix}/savings/withdraw',
       idempotent: true,
-      body: {'amount': amount, 'destination': destination, 'pin': pin},
+      body: body,
     );
     if (data == null) throw ApiException(0, 'Empty response from server');
-    return data['tx_hash'] as String? ?? '';
+    final elevationJson = data['elevation'] as Map<String, dynamic>?;
+    return WithdrawResult(
+      txHash: data['tx_hash'] as String? ?? '',
+      elevation: elevationJson == null ? null : PendingElevation.fromJson(elevationJson),
+    );
+  }
+
+  /// Quotes the exact EIP-712 payload a user would sign before a self-custody
+  /// withdrawal: the domain + `WithdrawRequest` message to authorize (covering
+  /// the current clone nonce and the USDC base amount), plus the owner seat so
+  /// the client can tell which wallet must sign. No funds move.
+  Future<WithdrawQuote> prepareWithdrawal({
+    required String amount,
+    required String destination,
+  }) async {
+    final q = Uri(queryParameters: {
+      'amount': amount,
+      'destination': destination,
+    });
+    final data = await _api.get(
+      '${AppConstants.apiV1Prefix}/savings/withdraw/prepare?${q.query}',
+    );
+    if (data == null) throw ApiException(0, 'Empty response from server');
+    return WithdrawQuote.fromJson(data);
   }
 
   /// Lists the user's pending time-locked (elevated) withdrawals.
@@ -254,6 +293,15 @@ class SavingsClient {
     );
     return data?['cancelled'] == true;
   }
+}
+
+/// The outcome of submitting a withdrawal: an instant transaction hash, or the
+/// pending time-lock when the amount sits above the elevation threshold.
+class WithdrawResult {
+  const WithdrawResult({required this.txHash, this.elevation});
+
+  final String txHash;
+  final PendingElevation? elevation;
 }
 
 /// A time-locked (elevated) withdrawal waiting for its release time. Amounts
@@ -278,6 +326,18 @@ class PendingElevation {
   /// Time left until broadcast. Negative when already due.
   Duration get remaining => releaseAfter.difference(DateTime.now());
 
+  /// Human-friendly description of the remaining time-lock.
+  String get durationLabel {
+    final d = remaining;
+    if (d.isNegative) return 'broadcast now';
+    final h = d.inHours;
+    if (h >= 48) return '${(h / 24).round()} days';
+    if (h >= 1) return '$h hours';
+    final m = d.inMinutes;
+    if (m >= 1) return '$m minutes';
+    return 'moments away';
+  }
+
   factory PendingElevation.fromJson(Map<String, dynamic> j) {
     DateTime release;
     try {
@@ -294,4 +354,109 @@ class PendingElevation {
       releaseAfter: release,
     );
   }
+}
+
+/// A client-shaped EIP-712 withdrawal signature returned from
+/// [EthereumProvider.signWithdrawal] and submitted to the withdraw endpoint.
+/// `amountMinorBase` mirrors the server's `amount_minor_base`: the exact
+/// stablecoin base units (micro-USDC) the signature authorizes.
+class WithdrawSignature {
+  const WithdrawSignature({
+    required this.signature,
+    required this.deadline,
+    required this.nonce,
+    required this.amountMinorBase,
+  });
+
+  final String signature;
+  final int deadline;
+  final int nonce;
+  final int amountMinorBase;
+}
+
+/// The EIP-712 domain a wallet needs for eth_signTypedData_v4, as quoted by
+/// `GET /savings/withdraw/prepare`.
+class Eip712Domain {
+  const Eip712Domain({
+    required this.name,
+    required this.version,
+    required this.chainId,
+    required this.verifyingContract,
+  });
+
+  final String name;
+  final String version;
+  final int chainId;
+  final String verifyingContract;
+
+  factory Eip712Domain.fromJson(Map<String, dynamic> j) => Eip712Domain(
+        name: j['name'] as String? ?? 'GlobmintVault',
+        version: j['version'] as String? ?? '1',
+        chainId: (j['chain_id'] as num?)?.toInt() ?? 0,
+        verifyingContract: j['verifying_contract'] as String? ?? '',
+      );
+}
+
+/// The `WithdrawRequest(to, amount, nonce, deadline)` message to sign.
+class QuoteMessage {
+  const QuoteMessage({
+    required this.to,
+    required this.amount,
+    required this.nonce,
+    required this.deadline,
+  });
+
+  final String to;
+
+  /// Stablecoin base units as a decimal string (can exceed JS-safe ints).
+  final String amount;
+
+  /// Current on-chain clone nonce the signature must cover.
+  final int nonce;
+
+  /// Unix-seconds expiry of the signature.
+  final int deadline;
+
+  factory QuoteMessage.fromJson(Map<String, dynamic> j) => QuoteMessage(
+        to: j['to'] as String? ?? '',
+        amount: j['amount'] as String? ?? '0',
+        nonce: (j['nonce'] as num?)?.toInt() ?? 0,
+        deadline: (j['deadline'] as num?)?.toInt() ?? 0,
+      );
+}
+
+/// The full quote returned by `GET /savings/withdraw/prepare`: the exact typed
+/// data to authorize plus the amount/fee/owner context the review screen shows.
+class WithdrawQuote {
+  const WithdrawQuote({
+    required this.domain,
+    required this.primaryType,
+    required this.message,
+    required this.amountNgnMinor,
+    required this.feeNgnMinor,
+    required this.amountMinorBase,
+    required this.cloneOwner,
+  });
+
+  final Eip712Domain domain;
+  final String primaryType;
+  final QuoteMessage message;
+  final int amountNgnMinor;
+  final int feeNgnMinor;
+  final String amountMinorBase;
+
+  /// The current clone owner seat — the wallet that must sign.
+  final String cloneOwner;
+
+  factory WithdrawQuote.fromJson(Map<String, dynamic> j) => WithdrawQuote(
+        domain: Eip712Domain.fromJson(
+            (j['domain'] as Map?)?.cast<String, dynamic>() ?? const {}),
+        primaryType: j['primary_type'] as String? ?? 'WithdrawRequest',
+        message: QuoteMessage.fromJson(
+            (j['message'] as Map?)?.cast<String, dynamic>() ?? const {}),
+        amountNgnMinor: (j['amount_ngn_minor'] as num?)?.toInt() ?? 0,
+        feeNgnMinor: (j['fee_ngn_minor'] as num?)?.toInt() ?? 0,
+        amountMinorBase: j['amount_minor_base'] as String? ?? '',
+        cloneOwner: j['clone_owner'] as String? ?? '',
+      );
 }
