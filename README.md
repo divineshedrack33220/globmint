@@ -1,4 +1,4 @@
-# Globe Mint
+# GlobMint
 
 **Self-custodial, stablecoin savings and payments on Ethereum — no banks, no fiat rails.**
 
