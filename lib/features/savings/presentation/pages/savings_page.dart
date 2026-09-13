@@ -9,6 +9,7 @@ import '../../../../core/utils/formatters.dart';
 import '../../../../core/widgets/empty_state.dart';
 import '../../../../core/widgets/status_badge.dart';
 import '../../../../core/widgets/animated_press.dart';
+import '../../../../core/widgets/shimmer.dart';
 import '../../../../shared/models/transaction.dart';
 import '../../../../shared/services/savings_client.dart';
 
@@ -57,11 +58,13 @@ class _SavingsPageState extends ConsumerState<SavingsPage> {
         }
       }
       parts.add(
-          'Daily limit ${CurrencyFormatter.ngn(usedMinor / 100)} of ${CurrencyFormatter.ngn(status.withdrawDailyCapMinor / 100)} used');
+        'Daily limit ${CurrencyFormatter.ngn(usedMinor / 100)} of ${CurrencyFormatter.ngn(status.withdrawDailyCapMinor / 100)} used',
+      );
     }
     if (status.elevationThresholdMinor > 0) {
       parts.add(
-          'Time-lock above ${CurrencyFormatter.ngn(status.elevationThresholdMinor / 100)}');
+        'Time-lock above ${CurrencyFormatter.ngn(status.elevationThresholdMinor / 100)}',
+      );
     }
     if (parts.isEmpty) return null;
     return parts.join(' • ');
@@ -71,12 +74,13 @@ class _SavingsPageState extends ConsumerState<SavingsPage> {
   Widget build(BuildContext context) {
     final txnsAsync = ref.watch(transactionsProvider);
     final allTxns = txnsAsync.valueOrNull ?? const <Transaction>[];
-    final txns = List<Transaction>.from(allTxns)
-        .where((t) => _visible(t.type))
-        .toList()
-      ..sort((a, b) => b.date.compareTo(a.date));
-    final limits =
-        _limitsLine(ref.watch(vaultStatusProvider).valueOrNull, allTxns);
+    final txns =
+        List<Transaction>.from(allTxns).where((t) => _visible(t.type)).toList()
+          ..sort((a, b) => b.date.compareTo(a.date));
+    final limits = _limitsLine(
+      ref.watch(vaultStatusProvider).valueOrNull,
+      allTxns,
+    );
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -116,6 +120,10 @@ class _SavingsPageState extends ConsumerState<SavingsPage> {
                   ),
                 ],
               ),
+              const SizedBox(height: 12),
+              _SecurityTile(
+                onTap: () => context.push('/savings/recovery'),
+              ),
               const SizedBox(height: 24),
               if (limits != null)
                 Padding(
@@ -139,38 +147,40 @@ class _SavingsPageState extends ConsumerState<SavingsPage> {
                     _FilterChip(
                       label: 'All',
                       selected: _filter == _ActivityFilter.all,
-                      onTap: () => setState(
-                          () => _filter = _ActivityFilter.all),
+                      onTap: () =>
+                          setState(() => _filter = _ActivityFilter.all),
                     ),
                     _FilterChip(
                       label: 'Deposits',
                       selected: _filter == _ActivityFilter.deposits,
-                      onTap: () => setState(
-                          () => _filter = _ActivityFilter.deposits),
+                      onTap: () =>
+                          setState(() => _filter = _ActivityFilter.deposits),
                     ),
                     _FilterChip(
                       label: 'Withdrawals',
                       selected: _filter == _ActivityFilter.withdrawals,
-                      onTap: () => setState(
-                          () => _filter = _ActivityFilter.withdrawals),
+                      onTap: () =>
+                          setState(() => _filter = _ActivityFilter.withdrawals),
                     ),
                     _FilterChip(
                       label: 'Conversions',
                       selected: _filter == _ActivityFilter.conversions,
-                      onTap: () => setState(
-                          () => _filter = _ActivityFilter.conversions),
+                      onTap: () =>
+                          setState(() => _filter = _ActivityFilter.conversions),
                     ),
                     _FilterChip(
                       label: 'Moves',
                       selected: _filter == _ActivityFilter.moves,
-                      onTap: () => setState(
-                          () => _filter = _ActivityFilter.moves),
+                      onTap: () =>
+                          setState(() => _filter = _ActivityFilter.moves),
                     ),
                   ],
                 ),
               ),
               const SizedBox(height: 12),
-              if (txns.isEmpty)
+              if (txnsAsync.valueOrNull == null)
+                const TransactionListSkeleton(tiles: 6)
+              else if (txns.isEmpty)
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 24),
                   child: EmptyState(
@@ -302,6 +312,67 @@ class _ActionCard extends StatelessWidget {
   }
 }
 
+class _SecurityTile extends StatelessWidget {
+  const _SecurityTile({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedPress(
+      onTap: onTap,
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: AppColors.border, width: 1),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 36,
+              height: 36,
+              decoration: BoxDecoration(
+                color: AppColors.primarySubtle,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Icon(
+                Icons.admin_panel_settings_outlined,
+                size: 20,
+                color: AppColors.primary,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Vault recovery', style: context.typography.labelMedium),
+                  const SizedBox(height: 2),
+                  Text(
+                    'Set the backup address that can recover your savings '
+                    'if the wallet key is lost',
+                    style: context.typography.bodySmall.copyWith(
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Icon(
+              Icons.chevron_right,
+              size: 20,
+              color: AppColors.textTertiary,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _SavingTile extends StatelessWidget {
   const _SavingTile({required this.transaction});
 
@@ -338,10 +409,15 @@ class _SavingTile extends StatelessWidget {
       case TransactionType.conversion:
         icon = Icons.currency_exchange;
         color = AppColors.primary;
-        final from = (tx.fromCurrency?.isNotEmpty ?? false) ? tx.fromCurrency! : '—';
+        final from = (tx.fromCurrency?.isNotEmpty ?? false)
+            ? tx.fromCurrency!
+            : '—';
         final to = (tx.toCurrency?.isNotEmpty ?? false) ? tx.toCurrency! : '—';
         title = 'Converted $from → $to';
-        amountText = _formatMoney(tx.convertedAmount ?? tx.amount, to == '—' ? tx.currency : to);
+        amountText = _formatMoney(
+          tx.convertedAmount ?? tx.amount,
+          to == '—' ? tx.currency : to,
+        );
       case TransactionType.savings:
       default:
         icon = Icons.savings;
@@ -349,7 +425,8 @@ class _SavingTile extends StatelessWidget {
         title = 'Savings move';
         amountText = _formatMoney(tx.amount, tx.currency);
     }
-    final subtitle = tx.type == TransactionType.withdrawal &&
+    final subtitle =
+        tx.type == TransactionType.withdrawal &&
             (tx.destination?.isNotEmpty ?? false)
         ? '${DateFormatter.date(tx.date)} • to ${_shortAddress(tx.destination!)}'
         : DateFormatter.date(tx.date);

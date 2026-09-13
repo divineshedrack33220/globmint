@@ -25,6 +25,12 @@ type UserSaltLink struct {
 	UserID  string
 	Address string // on-chain deposit address ("" when the user has no link)
 	Salt    []byte // from user_salts
+	// Derivation says where the salt came from: "random" (legacy backend RNG)
+	// or "wallet-derived" (recorded from the user's own wallet).
+	Derivation string
+	// SourceAddress is the wallet that produced the salt for wallet-derived
+	// salts; "" for random salts.
+	SourceAddress string
 }
 
 // addressRe matches a well-formed 0x-prefixed 40-hex-char Ethereum address.

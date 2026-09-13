@@ -131,3 +131,69 @@ func TestParseSignatureRejectsBadInput(t *testing.T) {
 		t.Fatal("expected error for 64-byte signature")
 	}
 }
+
+func TestSetRecoveryRoundTrip(t *testing.T) {
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	chainID := int64(31337)
+	clone := common.HexToAddress("0x2FA1d346639EFADa7AcDEad8bFE54f167708F93F")
+	recovery := common.HexToAddress("0x2222222222222222222222222222222222222222")
+	req := SetRecoveryRequest{
+		RecoveryAddress: recovery,
+		Nonce:           0,
+		Deadline:        1_700_000_000,
+	}
+	digest := SetRecoveryDigest(chainID, clone, req)
+
+	sig, err := SignDigest(digest, key)
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	got, err := RecoverSigner(digest, sig)
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	want := crypto.PubkeyToAddress(key.PublicKey)
+	if got != want {
+		t.Fatalf("recovered %s, want %s", got.Hex(), want.Hex())
+	}
+
+	// Every field must participate: mutating recovery/nonce/deadline, the
+	// chain id, or the verifying contract must invalidate the signature.
+	mutations := []SetRecoveryRequest{
+		{RecoveryAddress: common.HexToAddress("0x3333333333333333333333333333333333333333"), Nonce: req.Nonce, Deadline: req.Deadline},
+		{RecoveryAddress: req.RecoveryAddress, Nonce: req.Nonce + 1, Deadline: req.Deadline},
+		{RecoveryAddress: req.RecoveryAddress, Nonce: req.Nonce, Deadline: req.Deadline + 1},
+	}
+	for i, m := range mutations {
+		other := SetRecoveryDigest(chainID, clone, m)
+		if other == digest {
+			t.Fatalf("mutation %d produced the same digest", i)
+		}
+		if addr, err := RecoverSigner(other, sig); err == nil && addr == want {
+			t.Fatalf("mutation %d still recovered original signer", i)
+		}
+	}
+	if other := SetRecoveryDigest(chainID+1, clone, req); inRecoverSet(other, sig, want) {
+		t.Fatal("a different chain id still recovered the signer")
+	}
+	if other := SetRecoveryDigest(chainID, common.HexToAddress("0x3333333333333333333333333333333333333333"), req); inRecoverSet(other, sig, want) {
+		t.Fatal("a different verifying contract still recovered the signer")
+	}
+	// A withdrawal exported the same fields must NOT be the same digest as a
+	// recovery request (cross-type replay guard).
+	mixed := SetRecoveryDigest(chainID, clone, req)
+	withdraw := WithdrawDigest(chainID, clone, WithdrawRequest{To: recovery, Amount: big.NewInt(0), Nonce: req.Nonce, Deadline: req.Deadline})
+	if mixed == withdraw {
+		t.Fatal("recovery and withdrawal digests must differ")
+	}
+}
+
+// inRecoverSet returns whether the given signature over `other` recovers to
+// `want` (i.e. the signature is still valid for a mutated request).
+func inRecoverSet(other common.Hash, sig []byte, want common.Address) bool {
+	addr, err := RecoverSigner(other, sig)
+	return err == nil && addr == want
+}

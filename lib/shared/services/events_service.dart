@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/constants/app_constants.dart';
+import 'connectivity.dart';
 
 /// Kind of data mutation pushed by the backend over the SSE feed.
 enum EventKind { account, vault, transactions, all }
@@ -40,18 +41,26 @@ class UserEvent {
 /// reconnects with exponential backoff (1..15s). Emits [UserEvent]s on the
 /// broadcast [stream].
 class EventsServer {
-  EventsServer({String? baseUrl, http.Client? httpClient})
-      : _baseUrl = baseUrl ?? AppConstants.baseApiUrl(),
-        _http = httpClient ?? http.Client();
+  EventsServer({String? baseUrl, http.Client? httpClient, this.connectivity})
+    : _baseUrl = baseUrl ?? AppConstants.baseApiUrl(),
+      _http = httpClient ?? http.Client();
 
   final String _baseUrl;
   final http.Client _http;
+
+  /// Online/offline signal updated from the feed's connect/reconnect
+  /// outcomes (may be null in tests).
+  final ConnectivityService? connectivity;
 
   final StreamController<UserEvent> _events =
       StreamController<UserEvent>.broadcast();
 
   StreamSubscription<String>? _sub;
   Timer? _reconnectTimer;
+
+  /// Progressing reconnect delay, reset to 1s on a successful (re)connect and
+  /// doubled on each failed attempt up to the 15s cap: 1, 2, 4, 8, 15, ...
+  int _backoffSeconds = 1;
   bool _disposed = false;
 
   /// Broadcast stream of server-pushed change notifications.
@@ -80,12 +89,16 @@ class EventsServer {
       final res = await _http.send(req);
       if (_disposed) return;
       if (res.statusCode != 200) {
-        _scheduleReconnect(1);
+        connectivity?.reportFailure();
+        _scheduleReconnect();
         return;
       }
+      _backoffSeconds = 1;
+      connectivity?.reportSuccess();
       _listen(res.stream);
     } catch (_) {
-      _scheduleReconnect(1);
+      connectivity?.reportFailure();
+      _scheduleReconnect();
     }
   }
 
@@ -96,12 +109,21 @@ class EventsServer {
         .transform(const LineSplitter())
         .listen(
           _handleLine,
-          onError: (_) => _scheduleReconnect(1),
-          onDone: () => _scheduleReconnect(1),
+          onError: (_) {
+            connectivity?.reportFailure();
+            _scheduleReconnect();
+          },
+          onDone: () {
+            connectivity?.reportFailure();
+            _scheduleReconnect();
+          },
         );
   }
+
   void _handleLine(String line) {
-    final trimmed = line.endsWith('\r') ? line.substring(0, line.length - 1) : line;
+    final trimmed = line.endsWith('\r')
+        ? line.substring(0, line.length - 1)
+        : line;
     if (!trimmed.startsWith('data:')) return;
     final data = trimmed.substring(5).trim();
     if (data.isEmpty) return;
@@ -112,16 +134,17 @@ class EventsServer {
     }
   }
 
-  // Exponential backoff: 1, 2, 4, 8, 15, 15, ... seconds.
-  void _scheduleReconnect(int seconds) {
+  // Exponential backoff: 1, 2, 4, 8, 15, 15, ... seconds. The delay advances
+  // on every scheduled attempt and resets to 1s once a connection succeeds.
+  void _scheduleReconnect() {
     if (_disposed || _reconnectTimer != null) return;
-    _reconnectTimer = Timer(
-      Duration(seconds: seconds),
-      () {
-        _reconnectTimer = null;
-        if (!_disposed) _open();
-      },
-    );
+    final seconds = _backoffSeconds;
+    _reconnectTimer = Timer(Duration(seconds: seconds), () {
+      _reconnectTimer = null;
+      if (!_disposed) _open();
+    });
+    if (_backoffSeconds < 15) _backoffSeconds *= 2;
+    if (_backoffSeconds > 15) _backoffSeconds = 15;
   }
 
   Uri _uri() {

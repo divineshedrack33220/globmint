@@ -89,6 +89,10 @@ type ExchangeRateRepository interface {
 // is stored here so the backend can derive keccak256(user, salt) commitments.
 type UserSaltsRepository interface {
 	Upsert(ctx context.Context, userID string, salt []byte) error
+	// UpsertWithDerivation records a salt with provenance: "random" (server RNG,
+	// the legacy origin) or "wallet-derived" (from the user's own wallet, which
+	// must equal sourceAddress). Random salts keep sourceAddress/signedMessage "".
+	UpsertWithDerivation(ctx context.Context, userID string, salt []byte, derivation, sourceAddress string) error
 	FindByUser(ctx context.Context, userID string) ([]byte, error)
 	Delete(ctx context.Context, userID string) error
 	// ListLinks returns every user with a stored salt, joined with their linked
@@ -162,6 +166,14 @@ type VaultCloneRepository interface {
 	ByUser(ctx context.Context, userID string) (*domain.VaultClone, error)
 	// All returns every deployed clone (the indexer's watch list).
 	All(ctx context.Context) ([]domain.VaultClone, error)
+	// CacheRecovery stores the backend's cached snapshot of the user's clone
+	// on-chain ownership + recovery state (owner, recovery address, delay,
+	// requested-at). The chain remains authoritative; this read-through cache
+	// powers API reads and fallback when the node is unreachable.
+	CacheRecovery(ctx context.Context, userID string, rec *domain.CloneRecovery) error
+	// RecoveryCache returns the last cached ownership + recovery snapshot for
+	// a user's clone, or nil when none has been cached yet.
+	RecoveryCache(ctx context.Context, userID string) (*domain.CloneRecovery, error)
 }
 
 // ElevationRepository persists time-locked (elevated) high-value withdrawals.

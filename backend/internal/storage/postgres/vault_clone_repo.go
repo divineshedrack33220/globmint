@@ -3,6 +3,8 @@ package postgres
 import (
 	"context"
 	"errors"
+	"time"
+
 	"github.com/jackc/pgx/v5"
 	"globmint/backend/internal/domain"
 )
@@ -57,4 +59,48 @@ func (r *vaultCloneRepo) All(ctx context.Context) ([]domain.VaultClone, error) {
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+// CacheRecovery stores the backend's cached snapshot of a clone's on-chain
+// ownership + recovery state. The chain remains authoritative; this cache lets
+// API reads survive a node outage and powers the reconciler's refresh loop.
+func (r *vaultCloneRepo) CacheRecovery(ctx context.Context, userID string, rec *domain.CloneRecovery) error {
+	if rec == nil {
+		return errors.New("nil recovery cache")
+	}
+	var requestedAt any
+	if rec.RecoveryRequestedAt > 0 {
+		requestedAt = time.Unix(rec.RecoveryRequestedAt, 0).UTC()
+	}
+	_, err := r.q.Exec(ctx,
+		`UPDATE user_vault_clones
+		    SET owner_address = $2,
+		        recovery_address = $3,
+		        recovery_delay = $4,
+		        recovery_requested_at = $5
+		  WHERE user_id = $1`,
+		userID, rec.Owner, rec.RecoveryAddress, int64(rec.RecoveryDelay), requestedAt)
+	return mapPgErr(err)
+}
+
+// RecoveryCache returns the last cached ownership + recovery snapshot for a
+// user's clone, or nil when nothing has been cached yet.
+func (r *vaultCloneRepo) RecoveryCache(ctx context.Context, userID string) (*domain.CloneRecovery, error) {
+	row := r.q.QueryRow(ctx,
+		`SELECT COALESCE(owner_address, ''), COALESCE(recovery_address, ''),
+		        COALESCE(recovery_delay, 0), recovery_requested_at
+		   FROM user_vault_clones
+		  WHERE user_id = $1`, userID)
+	var rec domain.CloneRecovery
+	var requestedAt *time.Time
+	if err := row.Scan(&rec.Owner, &rec.RecoveryAddress, &rec.RecoveryDelay, &requestedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, mapPgErr(err)
+	}
+	if requestedAt != nil {
+		rec.RecoveryRequestedAt = requestedAt.Unix()
+	}
+	return &rec, nil
 }

@@ -95,6 +95,14 @@ contract GlobmintVaultFactory {
         GlobmintVaultClone(payable(clone_)).setDirectWithdrawDisabled(disabled);
     }
 
+    /// @notice Arm (or disarm) the time-locked recovery window for one clone —
+    ///         the factory holds this lever so the operator can set the fleet
+    ///         policy without needing each clone owner's key. Delay is in
+    ///         seconds; 0 disarms any pending recovery.
+    function setRecoveryDelay(address clone_, uint256 delay) external {
+        GlobmintVaultClone(payable(clone_)).setRecoveryDelay(delay);
+    }
+
     function _salt(bytes32 userKey_) internal pure returns (bytes32) {
         return keccak256(abi.encodePacked(userKey_));
     }

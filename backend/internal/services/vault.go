@@ -198,16 +198,26 @@ func mockSignerAddress() string {
 //   - The clone row (addr -> user) powers the indexer: any USDC sent there is
 //     credited to this account with no sender wallet needed.
 func (v *VaultService) EnsureClone(ctx context.Context, userID string) (*domain.VaultClone, error) {
-	if existing, err := v.store.VaultCloneRepo().ByUser(ctx, userID); err != nil {
-		return nil, err
-	} else if existing != nil {
-		return existing, nil
-	}
-
 	// The unique per-account CREATE2 key is derived from the user ID (never the
 	// owner): two accounts whose clone is owner-held by the same platform
 	// signer MUST still get distinct addresses.
 	userKey := crypto.Keccak256Hash([]byte(userID)).Hex()
+
+	if existing, err := v.store.VaultCloneRepo().ByUser(ctx, userID); err != nil {
+		return nil, err
+	} else if existing != nil {
+		// Trust the persisted row only while the clone is actually deployed on
+		// chain: a dev node reset erases CREATE2 deployments while the DB row
+		// survives. If the chain cannot confirm (node down, factory not yet
+		// configured) fall back to the row so the API stays available.
+		if deployed, err := v.chain.CloneByUserKey(ctx, userKey); err != nil {
+			log.Printf("vault clone: cannot verify %s on chain, trusting row: %v", existing.CloneAddress, err)
+			return existing, nil
+		} else if deployed != "" {
+			return existing, nil
+		}
+		log.Printf("vault clone: row %s has no on-chain clone (stale); redeploying", existing.CloneAddress)
+	}
 
 	// Resolve which on-chain address the clone's owner should be: the user's
 	// linked wallet if present, otherwise the platform signer (placeholder that
@@ -1343,6 +1353,319 @@ func (v *VaultService) buildPlatformSignedRelay(ctx context.Context, userID, des
 		Deadline: deadline,
 		Sig:      sig,
 	}, nil
+}
+
+// -------- Recovery address (lost-key path) --------
+
+// RecoveryQuote is the payload a self-custody client must sign before the
+// backend can designate a recovery address on the user's clone: the EIP-712
+// domain + message the user's wallet signs ("sign this exactly") plus the
+// clone owner seat so the client can tell which wallet must sign.
+type RecoveryQuote struct {
+	Domain  eip712.Domain
+	Message eip712.SetRecoveryRequest
+	Owner   string
+}
+
+// RecoveryStatus mirrors the user's clone recovery state read from the chain.
+// It is authoritative (the clone contract is the source of truth); the client
+// renders "recover my vault" affordances from it.
+type RecoveryStatus struct {
+	// Clone is the per-user clone address. Empty when the account has none.
+	Clone string
+	// Owner is the current owner seat (the user's wallet, or the platform
+	// signer as a placeholder).
+	Owner string
+	// RecoveryAddress is the designated backup address; "" when none is set.
+	RecoveryAddress string
+	// RecoveryDelaySec is the armed recovery delay in seconds; 0 when recovery
+	// is not armed.
+	RecoveryDelaySec uint64
+	// RecoveryRequestedAt is the unix-second timestamp when a recovery was
+	// initiated on chain; 0 when no recovery is pending.
+	RecoveryRequestedAt int64
+	// RecoveryAt is the unix-second timestamp when a pending recovery becomes
+	// executable (requested + delay); 0 when no recovery is pending.
+	RecoveryAt int64
+	// RecoveryPending reports whether a recovery is in flight. A pending
+	// recovery is backed by a live recovery address and an armed delay.
+	RecoveryPending bool
+}
+
+// PrepareRecovery quotes the exact EIP-712 SetRecovery request a user must
+// sign to designate `recoveryAddress` on their clone. Nothing moves and
+// nothing is persisted; the client returns the signature with the quote's
+// nonce/deadline in SetRecoveryAddressBySig. The designated address must be a
+// valid address different from the clone owner (zero and self are rejected the
+// same way the contract rejects them).
+func (v *VaultService) PrepareRecovery(ctx context.Context, userID, recoveryAddress string) (*RecoveryQuote, error) {
+	if !common.IsHexAddress(strings.TrimSpace(recoveryAddress)) || common.HexToAddress(recoveryAddress) == (common.Address{}) {
+		return nil, domain.ErrInvalidAddress
+	}
+	cloneAddr, err := v.CloneAddress(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if cloneAddr == "" {
+		// No clone to relay against; the account must first get its deposit
+		// address (EnsureClone) — the custody precondition.
+		return nil, domain.ErrWithdrawRequiresCustody
+	}
+	owner, err := v.chain.CloneOwner(ctx, cloneAddr)
+	if err != nil {
+		return nil, err
+	}
+	if owner == "" {
+		return nil, domain.ErrInvalidSignature
+	}
+	if strings.EqualFold(owner, recoveryAddress) {
+		return nil, domain.ErrInvalidAddress
+	}
+	nonce, err := v.chain.CloneNonce(ctx, cloneAddr)
+	if err != nil {
+		return nil, err
+	}
+	return &RecoveryQuote{
+		Domain: eip712.Domain{
+			Name:              eip712.DomainName,
+			Version:           eip712.DomainVersion,
+			ChainID:           v.cfg.ChainID,
+			VerifyingContract: cloneAddr,
+		},
+		Message: eip712.SetRecoveryRequest{
+			RecoveryAddress: common.HexToAddress(recoveryAddress),
+			Nonce:           nonce,
+			Deadline:        time.Now().UTC().Add(defaultSignatureLifetime).Unix(),
+		},
+		Owner: owner,
+	}, nil
+}
+
+// SetRecoveryAddressBySig designates `recoveryAddress` as the user's clone
+// recovery address, authorized by the user's own EIP-712 signature over
+// SetRecovery(recoveryAddress, nonce, deadline). The backend only relays
+// `setRecoveryAddressBySig` on the user's clone; an expired, stale, or
+// mismatched signature is rejected off-chain so no gas is spent on a relay the
+// contract would revert. Returns the broadcast tx hash.
+func (v *VaultService) SetRecoveryAddressBySig(ctx context.Context, userID, recoveryAddress string, sig *domain.WithdrawSignature) (string, error) {
+	if !common.IsHexAddress(strings.TrimSpace(recoveryAddress)) || common.HexToAddress(recoveryAddress) == (common.Address{}) {
+		return "", domain.ErrInvalidAddress
+	}
+	if err := validateSignatureFresh(sig); err != nil {
+		return "", err
+	}
+	cloneAddr, err := v.CloneAddress(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+	if cloneAddr == "" {
+		return "", domain.ErrWithdrawRequiresCustody
+	}
+	owner, err := v.chain.CloneOwner(ctx, cloneAddr)
+	if err != nil {
+		return "", err
+	}
+	if owner == "" {
+		return "", domain.ErrInvalidSignature
+	}
+	if strings.EqualFold(owner, recoveryAddress) {
+		return "", domain.ErrInvalidAddress
+	}
+	nonce := sig.RelayNonce
+	if nonce == 0 {
+		current, err := v.chain.CloneNonce(ctx, cloneAddr)
+		if err != nil {
+			return "", err
+		}
+		nonce = current
+	}
+	digest := eip712.SetRecoveryDigest(v.cfg.ChainID, common.HexToAddress(cloneAddr), eip712.SetRecoveryRequest{
+		RecoveryAddress: common.HexToAddress(recoveryAddress),
+		Nonce:           nonce,
+		Deadline:        sig.Deadline,
+	})
+	raw, derr := eip712.DecodeSignature(sig.Signature)
+	if derr != nil {
+		return "", domain.ErrInvalidSignature
+	}
+	signer, serr := eip712.RecoverSigner(digest, raw)
+	if serr != nil {
+		return "", domain.ErrInvalidSignature
+	}
+	if !strings.EqualFold(signer.Hex(), owner) {
+		// The signature is valid but does not belong to the clone owner. Fail
+		// closed: a stranger cannot designate their address as recovery.
+		log.Printf("vault: recovery signature does not match clone owner (recovered %s, owner %s)", signer.Hex(), owner)
+		return "", domain.ErrInvalidSignature
+	}
+	vr, rPart, sPart, err := eip712.ParseSignature(sig.Signature)
+	if err != nil {
+		return "", domain.ErrInvalidSignature
+	}
+	txHash, err := v.chain.SetRecoveryAddressBySig(ctx, blockchain.RelayRecoverySet{
+		Clone:           cloneAddr,
+		RecoveryAddress: recoveryAddress,
+		Nonce:           nonce,
+		Deadline:        sig.Deadline,
+		Sig:             blockchain.WithdrawSignature{V: vr, R: rPart, S: sPart},
+	})
+	if err != nil {
+		return "", err
+	}
+	// Write-through the cache so the status surface reflects the new
+	// designation immediately without waiting for the reconciler's next tick.
+	if cerr := v.store.VaultCloneRepo().CacheRecovery(ctx, userID, &domain.CloneRecovery{
+		Owner:           owner,
+		RecoveryAddress: recoveryAddress,
+		RecoveryDelay:   0,
+	}); cerr != nil {
+		log.Printf("vault: cache recovery after set for %s: %v", userID, cerr)
+	}
+	if v.Hub != nil {
+		v.Hub.Publish(events.Event{
+			Type: "data.changed", UserID: userID, Kind: "all",
+			At: time.Now().UTC().Format(time.RFC3339),
+		})
+	}
+	log.Printf("vault: recovery address %s designated for clone %s (user %s, tx %s)", recoveryAddress, cloneAddr, userID, txHash)
+	return txHash, nil
+}
+
+// RecoveryStatus returns the user's clone recovery state as read from the
+// chain, written through into the DB cache on success. When the account has no
+// clone it returns an empty status (no error) so the UI can show "no vault yet"
+// rather than a failure. When the chain is unreachable the last cached snapshot
+// is returned (stale-while-error) so the surface stays available; the cache is
+// never treated as authoritative for mutations, only for display.
+func (v *VaultService) RecoveryStatus(ctx context.Context, userID string) (*RecoveryStatus, error) {
+	cloneAddr, err := v.CloneAddress(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	st := &RecoveryStatus{}
+	if cloneAddr == "" {
+		return st, nil
+	}
+	st.Clone = cloneAddr
+
+	owner, err := v.chain.CloneOwner(ctx, cloneAddr)
+	if err != nil {
+		return v.recoveryStatusFromCache(ctx, userID, st)
+	}
+	var derr error
+	var rec = &domain.CloneRecovery{Owner: owner}
+	if rec.RecoveryAddress, derr = v.chain.CloneRecoveryAddress(ctx, cloneAddr); derr == nil {
+		if rec.RecoveryDelay, derr = v.chain.CloneRecoveryDelay(ctx, cloneAddr); derr == nil {
+			var requestedAt uint64
+			if requestedAt, derr = v.chain.CloneRecoveryRequestedAt(ctx, cloneAddr); derr == nil {
+				rec.RecoveryRequestedAt = int64(requestedAt)
+			}
+		}
+	}
+	if derr != nil {
+		// Partial chain failure: fall back to the cache so we never surface a
+		// half-truth (e.g. owner but a wiped recovery) as if it were fresh.
+		log.Printf("vault: chain recovery read incomplete for %s, using cache: %v", userID, derr)
+		return v.recoveryStatusFromCache(ctx, userID, st)
+	}
+	fillRecoveryStatus(st, rec)
+	if err := v.store.VaultCloneRepo().CacheRecovery(ctx, userID, rec); err != nil {
+		log.Printf("vault: cache recovery state for %s: %v", userID, err)
+	}
+	return st, nil
+}
+
+// recoveryStatusFromCache returns the display status from the last cached
+// snapshot (stale-while-error). It only fills fields we have; everything else
+// stays zero so clients never mistake empty for authoritative "nothing set".
+func (v *VaultService) recoveryStatusFromCache(ctx context.Context, userID string, st *RecoveryStatus) (*RecoveryStatus, error) {
+	rec, err := v.store.VaultCloneRepo().RecoveryCache(ctx, userID)
+	if err != nil || rec == nil {
+		log.Printf("vault: recovery cache miss for %s (err=%v); returning empty status", userID, err)
+		return st, nil
+	}
+	fillRecoveryStatus(st, rec)
+	return st, nil
+}
+
+func fillRecoveryStatus(st *RecoveryStatus, rec *domain.CloneRecovery) {
+	st.Owner = rec.Owner
+	st.RecoveryAddress = rec.RecoveryAddress
+	st.RecoveryDelaySec = rec.RecoveryDelay
+	st.RecoveryRequestedAt = rec.RecoveryRequestedAt
+	st.RecoveryPending = st.RecoveryRequestedAt > 0 && st.RecoveryDelaySec > 0
+	if st.RecoveryPending {
+		st.RecoveryAt = st.RecoveryRequestedAt + int64(st.RecoveryDelaySec)
+	}
+}
+
+// RunRecoveryReconciler keeps the DB recovery cache close to chain truth: on
+// every tick it walks all deployed clones and refreshes their cached recovery
+// state from the chain. The chain stays authoritative; the cache exists so API
+// reads (and users) keep working through a node outage. Runs until ctx is
+// cancelled. In mock mode it's a no-op (the mock has no chain to reconcile
+// against and reads already work without a node).
+func (v *VaultService) RunRecoveryReconciler(ctx context.Context) {
+	if v.cfg.Mode == "mock" || v.cfg.VaultAddress == "" {
+		return
+	}
+	ticker := time.NewTicker(v.cfg.PollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("recovery reconciler: stopped")
+			return
+		case <-ticker.C:
+			if err := v.reconcileRecoveryCache(ctx); err != nil {
+				log.Printf("recovery reconciler: %v", err)
+			}
+		}
+	}
+}
+
+// reconcileRecoveryCache refreshes the cached recovery state for every deployed
+// clone. Failures are isolated per clone: one broken row never blocks the rest.
+func (v *VaultService) reconcileRecoveryCache(ctx context.Context) error {
+	clones, err := v.store.VaultCloneRepo().All(ctx)
+	if err != nil {
+		return err
+	}
+	for i := range clones {
+		c := &clones[i]
+		if err := v.refreshCloneRecoveryCache(ctx, c); err != nil {
+			log.Printf("recovery reconciler: clone %s (%s): %v", c.CloneAddress, c.UserID, err)
+		}
+	}
+	return nil
+}
+
+// refreshCloneRecoveryCache reads one clone's ownership + recovery state from
+// the chain and writes it into the DB cache (read-through). Clones with no
+// row are skipped.
+func (v *VaultService) refreshCloneRecoveryCache(ctx context.Context, c *domain.VaultClone) error {
+	if c == nil || c.CloneAddress == "" {
+		return nil
+	}
+	var rec domain.CloneRecovery
+	var err error
+	if rec.Owner, err = v.chain.CloneOwner(ctx, c.CloneAddress); err != nil {
+		return err
+	}
+	if rec.RecoveryAddress, err = v.chain.CloneRecoveryAddress(ctx, c.CloneAddress); err != nil {
+		return err
+	}
+	delay, err := v.chain.CloneRecoveryDelay(ctx, c.CloneAddress)
+	if err != nil {
+		return err
+	}
+	rec.RecoveryDelay = delay
+	requestedAt, err := v.chain.CloneRecoveryRequestedAt(ctx, c.CloneAddress)
+	if err != nil {
+		return err
+	}
+	rec.RecoveryRequestedAt = int64(requestedAt)
+	return v.store.VaultCloneRepo().CacheRecovery(ctx, c.UserID, &rec)
 }
 
 // validateSignatureFresh rejects a signed intent whose deadline has already

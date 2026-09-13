@@ -63,6 +63,17 @@ type WithdrawRelay struct {
 	Sig      WithdrawSignature
 }
 
+// RelayRecoverySet is a fully-built setRecoveryAddressBySig call ready to
+// broadcast: the clone, the recovery address being designated, the exact nonce
+// + deadline the owner's signature covers, and the signature itself.
+type RelayRecoverySet struct {
+	Clone            string
+	RecoveryAddress  string
+	Nonce            uint64
+	Deadline         int64
+	Sig              WithdrawSignature
+}
+
 // BlockchainService defines the interface for blockchain operations.
 type BlockchainService interface {
 	GetBalance(ctx context.Context, address string) (string, error)
@@ -119,6 +130,20 @@ type BlockchainService interface {
 	// transfer). Returns the broadcast tx hash. The clone contract verifies
 	// the signature recovers to the clone owner.
 	WithdrawFromCloneWithSig(ctx context.Context, relay WithdrawRelay) (string, error)
+
+	// CloneRecoveryAddress returns the clone's designated backup address
+	// (`recoveryAddress()`), or "" when none has been set.
+	CloneRecoveryAddress(ctx context.Context, cloneAddress string) (string, error)
+	// CloneRecoveryDelay returns the clone's recovery delay in seconds
+	// (`recoveryDelay()`); 0 means recovery is not currently armed.
+	CloneRecoveryDelay(ctx context.Context, cloneAddress string) (uint64, error)
+	// CloneRecoveryRequestedAt returns when recovery was initiated on the
+	// clone (`recoveryRequestedAt()`); 0 means no recovery is pending.
+	CloneRecoveryRequestedAt(ctx context.Context, cloneAddress string) (uint64, error)
+	// SetRecoveryAddressBySig relays a pre-signed EIP-712
+	// setRecoveryAddressBySig call designating the clone's recovery address.
+	// Returns the broadcast tx hash.
+	SetRecoveryAddressBySig(ctx context.Context, relay RelayRecoverySet) (string, error)
 }
 
 // ---------- Mock ----------
@@ -141,6 +166,18 @@ type MockBlockchainService struct {
 	cloneFactory string
 	// relays records every withdrawWithSig relay the mock accepted, for tests.
 	relays []WithdrawRelay
+	// recoveryAddrs maps clone addr (lowercased) -> designated recovery address.
+	recoveryAddrs map[string]string
+	// recoveryDelays maps clone addr (lowercased) -> recovery delay (seconds).
+	recoveryDelays map[string]uint64
+	// recoveryRequestedAts maps clone addr (lowercased) -> when recovery began
+	// (block.timestamp; 0 = not pending).
+	recoveryRequestedAts map[string]uint64
+	// recoverySets records every setRecoveryAddressBySig relay, for tests.
+	recoverySets []RelayRecoverySet
+	// cloneReadErr injects a failure on the next clone state read
+	// (CloneOwner / CloneRecovery*); nil = no failure. Mock-only, for tests.
+	cloneReadErr error
 }
 
 // ---------- Mock ----------
@@ -148,10 +185,13 @@ type MockBlockchainService struct {
 // NewMockBlockchainService creates a new mock blockchain service.
 func NewMockBlockchainService() *MockBlockchainService {
 	return &MockBlockchainService{
-		balances:    make(map[string]string),
-		clones:      make(map[string]string),
-		cloneOwners: make(map[string]string),
-		cloneNonces: make(map[string]uint64),
+		balances:             make(map[string]string),
+		clones:               make(map[string]string),
+		cloneOwners:          make(map[string]string),
+		cloneNonces:          make(map[string]uint64),
+		recoveryAddrs:        make(map[string]string),
+		recoveryDelays:       make(map[string]uint64),
+		recoveryRequestedAts: make(map[string]uint64),
 	}
 }
 
@@ -171,6 +211,14 @@ func (m *MockBlockchainService) SetClone(userKey string) string {
 	predicted, _ := mockPredictClone(userKey)
 	m.clones[userKey] = predicted
 	return predicted
+}
+
+// ClearClones simulates a dev node reset: every deployed clone vanishes from
+// the mock chain while nothing else changes (mock-only, for tests).
+func (m *MockBlockchainService) ClearClones() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.clones = map[string]string{}
 }
 
 // SetLatest sets the head block the mock reports (mock-only, for tests).
@@ -287,6 +335,82 @@ func (m *MockBlockchainService) SetCloneNonce(cloneAddr string, nonce uint64) {
 	m.cloneNonces[strings.ToLower(cloneAddr)] = nonce
 }
 
+// SetCloneRecovery seeds recovery state for a clone (mock-only, for tests):
+// the designated recovery address, the recovery delay in seconds, and whether
+// a recovery is currently requested (requestedAtSeconds > 0).
+func (m *MockBlockchainService) SetCloneRecovery(cloneAddr, recovery string, delaySec, requestedAtSec uint64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := strings.ToLower(cloneAddr)
+	m.recoveryAddrs[key] = recovery
+	m.recoveryDelays[key] = delaySec
+	m.recoveryRequestedAts[key] = requestedAtSec
+}
+
+// SetCloneReadError injects a failure on the next clone state read
+// (CloneOwner / CloneRecovery*); pass nil to clear (mock-only, for tests).
+func (m *MockBlockchainService) SetCloneReadError(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cloneReadErr = err
+}
+
+// CloneRecoveryAddress returns the seeded recovery address for a clone.
+func (m *MockBlockchainService) CloneRecoveryAddress(ctx context.Context, cloneAddress string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.cloneReadErr != nil {
+		return "", m.cloneReadErr
+	}
+	return m.recoveryAddrs[strings.ToLower(cloneAddress)], nil
+}
+
+// CloneRecoveryDelay returns the seeded recovery delay for a clone.
+func (m *MockBlockchainService) CloneRecoveryDelay(ctx context.Context, cloneAddress string) (uint64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.cloneReadErr != nil {
+		return 0, m.cloneReadErr
+	}
+	return m.recoveryDelays[strings.ToLower(cloneAddress)], nil
+}
+
+// CloneRecoveryRequestedAt returns when the seeded recovery began for a clone.
+func (m *MockBlockchainService) CloneRecoveryRequestedAt(ctx context.Context, cloneAddress string) (uint64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.cloneReadErr != nil {
+		return 0, m.cloneReadErr
+	}
+	return m.recoveryRequestedAts[strings.ToLower(cloneAddress)], nil
+}
+
+// SetRecoveryAddressBySig records the recovery relay, updates the seeded state
+// and bumps the shared nonce, and returns a synthetic hash (mock-only).
+func (m *MockBlockchainService) SetRecoveryAddressBySig(ctx context.Context, relay RelayRecoverySet) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := strings.ToLower(relay.Clone)
+	if relay.RecoveryAddress == "" {
+		return "", fmt.Errorf("mock: empty recovery address")
+	}
+	m.recoveryAddrs[key] = relay.RecoveryAddress
+	m.cloneNonces[key] = relay.Nonce + 1
+	m.recoveryRequestedAts[key] = 0
+	m.recoverySets = append(m.recoverySets, relay)
+	return "0x" + fmt.Sprintf("%064x", time.Now().UnixNano()), nil
+}
+
+// RecoveryRelays returns every setRecoveryAddressBySig relay the mock accepted
+// (mock-only).
+func (m *MockBlockchainService) RecoveryRelays() []RelayRecoverySet {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]RelayRecoverySet, len(m.recoverySets))
+	copy(out, m.recoverySets)
+	return out
+}
+
 // SetRelayError injects a failure on the next WithdrawFromCloneWithSig call;
 // pass nil to clear (mock-only).
 func (m *MockBlockchainService) SetRelayError(err error) {
@@ -308,6 +432,9 @@ func (m *MockBlockchainService) Relays() []WithdrawRelay {
 func (m *MockBlockchainService) CloneOwner(ctx context.Context, cloneAddress string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.cloneReadErr != nil {
+		return "", m.cloneReadErr
+	}
 	return m.cloneOwners[strings.ToLower(cloneAddress)], nil
 }
 
@@ -798,6 +925,91 @@ func (s *EthereumService) CloneNonce(ctx context.Context, cloneAddress string) (
 		return 0, fmt.Errorf("clone nonce overflows uint64")
 	}
 	return n.Uint64(), nil
+}
+
+// CloneRecoveryAddress reads `clone.recoveryAddress()` via eth_call — the
+// designated backup address for the clone, or "" when none is set.
+func (s *EthereumService) CloneRecoveryAddress(ctx context.Context, cloneAddress string) (string, error) {
+	if !common.IsHexAddress(cloneAddress) {
+		return "", fmt.Errorf("invalid clone address %q", cloneAddress)
+	}
+	out, err := s.callContract(ctx, common.HexToAddress(cloneAddress), common.FromHex("710eb26c"))
+	if err != nil {
+		return "", fmt.Errorf("clone recovery address: %w", err)
+	}
+	addr := common.BytesToAddress(out)
+	if addr == (common.Address{}) {
+		return "", nil
+	}
+	return addr.Hex(), nil
+}
+
+// CloneRecoveryDelay reads `clone.recoveryDelay()` via eth_call — the recovery
+// window in seconds; 0 means recovery is not currently armed.
+func (s *EthereumService) CloneRecoveryDelay(ctx context.Context, cloneAddress string) (uint64, error) {
+	if !common.IsHexAddress(cloneAddress) {
+		return 0, fmt.Errorf("invalid clone address %q", cloneAddress)
+	}
+	out, err := s.callContract(ctx, common.HexToAddress(cloneAddress), common.FromHex("3758ca7a"))
+	if err != nil {
+		return 0, fmt.Errorf("clone recovery delay: %w", err)
+	}
+	n := new(big.Int).SetBytes(out)
+	if !n.IsUint64() {
+		return 0, fmt.Errorf("clone recovery delay overflows uint64")
+	}
+	return n.Uint64(), nil
+}
+
+// CloneRecoveryRequestedAt reads `clone.recoveryRequestedAt()` via eth_call —
+// the block.timestamp when a recovery was initiated; 0 means none is pending.
+func (s *EthereumService) CloneRecoveryRequestedAt(ctx context.Context, cloneAddress string) (uint64, error) {
+	if !common.IsHexAddress(cloneAddress) {
+		return 0, fmt.Errorf("invalid clone address %q", cloneAddress)
+	}
+	out, err := s.callContract(ctx, common.HexToAddress(cloneAddress), common.FromHex("872eaf49"))
+	if err != nil {
+		return 0, fmt.Errorf("clone recovery requested at: %w", err)
+	}
+	n := new(big.Int).SetBytes(out)
+	if !n.IsUint64() {
+		return 0, fmt.Errorf("clone recovery requested-at overflows uint64")
+	}
+	return n.Uint64(), nil
+}
+
+// SetRecoveryAddressBySig relays a pre-signed EIP-712 setRecoveryAddressBySig
+// call designating the clone's recovery address. The signer (the platform
+// signer, who pays gas) broadcasts it; the signature inside authorizes the
+// exact (recoveryAddress, nonce, deadline) and the clone contract re-verifies
+// it against the clone's owner before recording.
+func (s *EthereumService) SetRecoveryAddressBySig(ctx context.Context, relay RelayRecoverySet) (string, error) {
+	if !common.IsHexAddress(relay.Clone) || !common.IsHexAddress(relay.RecoveryAddress) {
+		return "", fmt.Errorf("invalid relay address")
+	}
+	clone := common.HexToAddress(relay.Clone)
+	data := encodeSetRecoveryBySig(relay)
+	txHash, err := s.sendTx(ctx, clone, data)
+	if err != nil {
+		return "", fmt.Errorf("relay setRecoveryAddressBySig: %w", err)
+	}
+	return txHash, nil
+}
+
+// encodeSetRecoveryBySig builds the ABI payload for
+// setRecoveryAddressBySig(address,uint256,uint256,uint8,bytes32,bytes32):
+// 4-byte selector + recoveryAddress + nonce + deadline + v (right-aligned
+// byte) + r + s, each a 32-byte word.
+func encodeSetRecoveryBySig(relay RelayRecoverySet) []byte {
+	data := make([]byte, 4+32+32+32+32+32+32)
+	copy(data[:4], common.FromHex("b2059d18"))
+	copy(data[4+12:4+32], common.HexToAddress(relay.RecoveryAddress).Bytes())
+	new(big.Int).SetUint64(relay.Nonce).FillBytes(data[4+32 : 4+64])
+	new(big.Int).SetInt64(relay.Deadline).FillBytes(data[4+64 : 4+96])
+	data[4+96+31] = relay.Sig.V // uint8 right-aligned in its word
+	copy(data[4+128:4+160], relay.Sig.R[:])
+	copy(data[4+160:4+192], relay.Sig.S[:])
+	return data
 }
 
 // SignWithdrawRelay signs a withdrawWithSig request with the platform signer

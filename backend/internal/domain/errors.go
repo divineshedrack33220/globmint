@@ -34,6 +34,11 @@ var (
 	ErrInvalidSignature          = errors.New("invalid withdrawal signature")
 	ErrSignatureExpired          = errors.New("withdrawal signature expired")
 	ErrWithdrawRequiresCustody   = errors.New("take custody of your vault before withdrawing")
+	// Privacy salt derivation errors.
+	ErrInvalidOperation = errors.New("operation not allowed in this mode")
+	ErrInvalidSalt      = errors.New("invalid privacy salt")
+	ErrNoLinkedWallet   = errors.New("link a wallet before recording a derived salt")
+	ErrSaltImmutable    = errors.New("privacy salt is immutable once a commitment is funded")
 )
 
 // ErrorCode maps a domain error to a stable API error code string.
@@ -53,7 +58,7 @@ func ErrorCode(err error) string {
 		return "ACCOUNT_LOCKED"
 	case errors.Is(err, ErrInsufficientBalance):
 		return "INSUFFICIENT_BALANCE"
-	case errors.Is(err, ErrInvalidAmount), errors.Is(err, ErrBadRequest), errors.Is(err, ErrUnsupportedCurrency), errors.Is(err, ErrRateExceeded), errors.Is(err, ErrInvalidAddress):
+	case errors.Is(err, ErrInvalidAmount), errors.Is(err, ErrBadRequest), errors.Is(err, ErrUnsupportedCurrency), errors.Is(err, ErrRateExceeded), errors.Is(err, ErrInvalidAddress), errors.Is(err, ErrInvalidSalt):
 		return "INVALID_REQUEST"
 	case errors.Is(err, ErrInvalidPin):
 		return "INVALID_PIN"
@@ -61,6 +66,12 @@ func ErrorCode(err error) string {
 		return "INVALID_CODE"
 	case errors.Is(err, ErrInvalidSignature):
 		return "INVALID_SIGNATURE"
+	case errors.Is(err, ErrNoLinkedWallet):
+		return "WALLET_LINK_REQUIRED"
+	case errors.Is(err, ErrSaltImmutable):
+		return "SALT_IMMUTABLE"
+	case errors.Is(err, ErrInvalidOperation):
+		return "INVALID_OPERATION"
 	case errors.Is(err, ErrSignatureExpired):
 		return "SIGNATURE_EXPIRED"
 	case errors.Is(err, ErrWithdrawSignatureRequired), errors.Is(err, ErrWithdrawRequiresCustody):

@@ -349,6 +349,123 @@ describe("GlobmintVaultFactory + GlobmintVaultClone (per-user deposit addresses)
     });
   });
 
+  describe("recovery address (lost key)", function () {
+    const DELAY = 3600; // 1 hour in seconds
+    const RECOVERY_TYPES = {
+      SetRecovery: [
+        { name: "recoveryAddress", type: "address" },
+        { name: "nonce", type: "uint256" },
+        { name: "deadline", type: "uint256" },
+      ],
+    };
+
+    async function seed(amount) {
+      await fundAndAllow(alice, amount, clone);
+      const c = await ethers.getContractAt("GlobmintVaultClone", clone);
+      await c.connect(alice).deposit(amount);
+      return c;
+    }
+
+    async function signRecovery(user, recovery, nonce, deadline) {
+      const chainId = (await ethers.provider.getNetwork()).chainId;
+      const domain = {
+        name: DOMAIN_NAME,
+        version: DOMAIN_VERSION,
+        chainId,
+        verifyingContract: clone,
+      };
+      const sig = await user.signTypedData(domain, RECOVERY_TYPES, {
+        recoveryAddress: recovery,
+        nonce,
+        deadline,
+      });
+      return ethers.Signature.from(sig);
+    }
+
+    it("owner sets a recovery address and it can take over after the delay", async function () {
+      const c = await seed(ONE);
+      const deadline = (await ethers.provider.getBlock("latest")).timestamp + 600;
+      const sig = await signRecovery(alice, carol.address, 0, deadline);
+      await expect(c.connect(relayer).setRecoveryAddressBySig(carol.address, 0, deadline, sig.v, sig.r, sig.s))
+        .to.emit(c, "RecoveryAddressChanged");
+      expect(await c.recoveryAddress()).to.equal(carol.address);
+    });
+
+    it("the recovery address can only begin a recovery when armed", async function () {
+      const c = await seed(ONE);
+      // Not armed yet (delay = 0): beginRecovery reverts.
+      await c.connect(alice).setRecoveryAddress(carol.address);
+      await expect(c.connect(carol).beginRecovery()).to.be.revertedWith("recovery not armed");
+    });
+
+    it("cannot execute before the delay window elapses", async function () {
+      const c = await seed(ONE);
+      await c.connect(alice).setRecoveryAddress(carol.address);
+      await factory.setRecoveryDelay(clone, DELAY);
+      await c.connect(carol).beginRecovery();
+      await expect(c.connect(relayer).executeRecovery()).to.be.revertedWith("recovery delay not elapsed");
+    });
+
+    it("executes the recovery after the delay: recovery address becomes owner", async function () {
+      const c = await seed(ONE);
+      await c.connect(alice).setRecoveryAddress(carol.address);
+      await factory.setRecoveryDelay(clone, DELAY);
+      await c.connect(carol).beginRecovery();
+      await ethers.provider.send("evm_increaseTime", [DELAY]);
+      await ethers.provider.send("evm_mine", []);
+      await expect(c.connect(relayer).executeRecovery())
+        .to.emit(c, "OwnershipTransferred")
+        .withArgs(alice.address, carol.address);
+      expect(await c.ownerOfThis()).to.equal(carol.address);
+    });
+
+    it("the owner can cancel an in-flight recovery before the delay elapses", async function () {
+      const c = await seed(ONE);
+      await c.connect(alice).setRecoveryAddress(carol.address);
+      await factory.setRecoveryDelay(clone, DELAY);
+      await c.connect(carol).beginRecovery();
+      await expect(c.connect(alice).cancelRecovery()).to.emit(c, "RecoveryCancelled");
+      await ethers.provider.send("evm_increaseTime", [DELAY]);
+      await ethers.provider.send("evm_mine", []);
+      await expect(c.connect(relayer).executeRecovery()).to.be.revertedWith("no pending recovery");
+      expect(await c.ownerOfThis()).to.equal(alice.address);
+    });
+
+    it("only the recovery address or owner may begin a recovery", async function () {
+      const c = await seed(ONE);
+      await c.connect(alice).setRecoveryAddress(carol.address);
+      await factory.setRecoveryDelay(clone, DELAY);
+      await expect(c.connect(bob).beginRecovery()).to.be.revertedWith("not recovery or owner");
+    });
+
+    it("rejects a non-owner signature setting recovery", async function () {
+      const c = await seed(ONE);
+      const deadline = (await ethers.provider.getBlock("latest")).timestamp + 600;
+      const sig = await signRecovery(bob, carol.address, 0, deadline);
+      await expect(c.connect(relayer).setRecoveryAddressBySig(carol.address, 0, deadline, sig.v, sig.r, sig.s))
+        .to.be.revertedWith("invalid signer");
+    });
+
+    it("rejects a recovery that equals the current owner", async function () {
+      const c = await seed(ONE);
+      const deadline = (await ethers.provider.getBlock("latest")).timestamp + 600;
+      const sig = await signRecovery(alice, alice.address, 0, deadline);
+      await expect(c.connect(relayer).setRecoveryAddressBySig(alice.address, 0, deadline, sig.v, sig.r, sig.s))
+        .to.be.revertedWith("recovery equals owner");
+    });
+
+    it("shares the nonce with withdrawals (no cross-type replay)", async function () {
+      const c = await seed(ONE);
+      const deadline = (await ethers.provider.getBlock("latest")).timestamp + 600;
+      const sig = await signRecovery(alice, carol.address, 0, deadline);
+      await c.connect(relayer).setRecoveryAddressBySig(carol.address, 0, deadline, sig.v, sig.r, sig.s);
+      // The same nonce (0) can no longer authorize a withdrawal either.
+      const w = await signWithdraw(alice, bob.address, ONE, 0, deadline);
+      await expect(c.connect(relayer).withdrawWithSig(bob.address, ONE, 0, deadline, w.v, w.r, w.s))
+        .to.be.revertedWith("invalid nonce");
+    });
+  });
+
   describe("privacy mode (commitment-based balances)", function () {
     let pclone;
     // A salt is a 32-byte secret known only to the user and the backend. The

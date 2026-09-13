@@ -15,6 +15,7 @@ import '../../features/savings/presentation/pages/conversion_page.dart';
 import '../../features/savings/presentation/pages/savings_details_page.dart';
 import '../../features/savings/presentation/pages/withdraw_page.dart';
 import '../../features/savings/presentation/pages/withdrawal_review_page.dart';
+import '../../features/savings/presentation/pages/vault_recovery_page.dart';
 import '../../features/pay/presentation/pages/pay_page.dart';
 import '../../features/pay/presentation/pages/bank_transfer_page.dart';
 import '../../features/pay/presentation/pages/send_to_beneficiary_page.dart';
@@ -152,6 +153,12 @@ final GoRouter appRouter = GoRouter(
           isFullScreenDialog: true,
         );
       },
+    ),
+    GoRoute(
+      path: '/savings/recovery',
+      parentNavigatorKey: _rootNavigatorKey,
+      pageBuilder: (context, state) => _buildPageWithTransition(
+        context, state, const VaultRecoveryPage(), isFullScreenDialog: true),
     ),
     // Pay flow
     GoRoute(

@@ -9,6 +9,7 @@ import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/utils/countdown.dart';
 import '../../../../core/utils/formatters.dart';
+import '../../../../core/widgets/shimmer.dart';
 import '../../../../shared/models/account.dart';
 import '../../../../shared/models/models.dart';
 import '../widgets/announcement_slot.dart';
@@ -93,8 +94,7 @@ class _HomePageState extends ConsumerState<HomePage> {
     final vaultAsync = ref.watch(vaultStatusProvider);
     final vaultUsdc = vaultAsync.valueOrNull == null
         ? 0.0
-        : CurrencyFormatter.vaultUsdc(
-            vaultAsync.valueOrNull!.vaultUsdcBalance);
+        : CurrencyFormatter.vaultUsdc(vaultAsync.valueOrNull!.vaultUsdcBalance);
     final network = vaultAsync.valueOrNull?.networkLabel ?? '';
     final networkMode = vaultAsync.valueOrNull?.mode ?? '';
 
@@ -105,142 +105,145 @@ class _HomePageState extends ConsumerState<HomePage> {
           onRefresh: _refresh,
           child: SingleChildScrollView(
             physics: const AlwaysScrollableScrollPhysics(),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Header
-              Padding(
-                padding: const EdgeInsets.fromLTRB(24, 24, 24, 0),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Welcome back,',
-                            style: context.typography.bodyMedium,
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            userAsync.maybeWhen(
-                              data: (u) => u.firstName,
-                              orElse: () => '...',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Header
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(24, 24, 24, 0),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Welcome back,',
+                              style: context.typography.bodyMedium,
                             ),
-                            style: context.typography.headline,
-                          ),
-                        ],
+                            const SizedBox(height: 2),
+                            Text(
+                              userAsync.maybeWhen(
+                                data: (u) => u.firstName,
+                                orElse: () => '...',
+                              ),
+                              style: context.typography.headline,
+                            ),
+                          ],
+                        ),
                       ),
-                    ),
-                    _NetworkChip(network: network, mode: networkMode),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 24),
-              // Balance hero / loading / error
-              summaryAsync.when(
-                loading: () => const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 24),
-                  child: _BalanceSkeleton(),
-                ),
-                error: (e, _) => Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 24),
-                  child: BalanceCard(
-                    label: 'BALANCE',
-                    amount: '₦0.00',
-                    subtitle: 'Unable to load balance',
-                    isHero: true,
+                      _NetworkChip(network: network, mode: networkMode),
+                    ],
                   ),
                 ),
-                data: (summary) => Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 24),
-                  child: _BalanceSection(
-                    summary: summary,
-                    obscured: _obscured,
-                    freshness: _freshness,
-                    currency: _displayCurrency,
-                    onToggleObscure: () =>
-                        setState(() => _obscured = !_obscured),
-                    onCurrencyChanged: (c) =>
-                        setState(() => _displayCurrency = c),
+                const SizedBox(height: 24),
+                // Balance hero / loading / error
+                summaryAsync.when(
+                  loading: () => const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 24),
+                    child: _BalanceSkeleton(),
                   ),
-                ),
-              ),
-              const SizedBox(height: 16),
-              // Live rate reference (not a balance).
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 24),
-                child: Center(
-                  child: Text(
-                    summaryAsync.maybeWhen(
-                      data: (s) => s.currentRate > 0
-                          ? '1 USDC = ${CurrencyFormatter.ngn(s.currentRate)}'
-                          : 'Rate unavailable',
-                      orElse: () => '',
+                  error: (e, _) => Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 24),
+                    child: BalanceCard(
+                      label: 'BALANCE',
+                      amount: '₦0.00',
+                      subtitle: 'Unable to load balance',
+                      isHero: true,
                     ),
-                    style: context.typography.bodySmall.copyWith(
-                      color: AppColors.textSecondary,
+                  ),
+                  data: (summary) => Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 24),
+                    child: _BalanceSection(
+                      summary: summary,
+                      obscured: _obscured,
+                      freshness: _freshness,
+                      currency: _displayCurrency,
+                      onToggleObscure: () =>
+                          setState(() => _obscured = !_obscured),
+                      onCurrencyChanged: (c) =>
+                          setState(() => _displayCurrency = c),
                     ),
                   ),
                 ),
-              ),
-              const SizedBox(height: 16),
-              // Rate trend.
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 24),
-                child: RateSparklineCard(
-                  rate: summaryAsync.valueOrNull?.currentRate ?? 0,
-                ),
-              ),
-              const SizedBox(height: 24),
-              // Quick Actions (right under the rate chart).
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 24),
-                child: QuickActionsRow(),
-              ),
-              const SizedBox(height: 16),
-              // First-run empty state: vault holds nothing yet.
-              if (vaultUsdc <= 0) ...[
                 const SizedBox(height: 16),
+                // Live rate reference (not a balance).
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 24),
-                  child: _EmptyVaultCta(
-                    onTopUp: () => context.push('/savings/add-money'),
+                  child: Center(
+                    child: Text(
+                      summaryAsync.maybeWhen(
+                        data: (s) => s.currentRate > 0
+                            ? '1 USDC = ${CurrencyFormatter.ngn(s.currentRate)}'
+                            : 'Rate unavailable',
+                        orElse: () => '',
+                      ),
+                      style: context.typography.bodySmall.copyWith(
+                        color: AppColors.textSecondary,
+                      ),
+                    ),
                   ),
                 ),
+                const SizedBox(height: 16),
+                // Rate trend.
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 24),
+                  child: RateSparklineCard(
+                    rate: summaryAsync.valueOrNull?.currentRate ?? 0,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                // Quick Actions (right under the rate chart).
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 24),
+                  child: QuickActionsRow(),
+                ),
+                const SizedBox(height: 16),
+                // First-run empty state: vault holds nothing yet.
+                if (vaultUsdc <= 0) ...[
+                  const SizedBox(height: 16),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 24),
+                    child: _EmptyVaultCta(
+                      onTopUp: () => context.push('/savings/add-money'),
+                    ),
+                  ),
+                ],
+                // Pending time-locks (hidden when none).
+                const SizedBox(height: 16),
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 24),
+                  child: PendingLockCard(),
+                ),
+                // Operator announcements (hidden when none).
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 24),
+                  child: AnnouncementSlot(),
+                ),
+                // 2FA nudge (hidden once enabled).
+                userAsync.maybeWhen(
+                  data: (u) => u.twoFactorEnabled
+                      ? const SizedBox.shrink()
+                      : const Padding(
+                          padding: EdgeInsets.only(
+                            left: 24,
+                            right: 24,
+                            top: 16,
+                          ),
+                          child: _TwoFactorNudge(),
+                        ),
+                  orElse: () => const SizedBox.shrink(),
+                ),
+                const SizedBox(height: 24),
+                // Recent Transactions
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 24),
+                  child: RecentTransactionsList(),
+                ),
+                const SizedBox(height: 32),
               ],
-              // Pending time-locks (hidden when none).
-              const SizedBox(height: 16),
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 24),
-                child: PendingLockCard(),
-              ),
-              // Operator announcements (hidden when none).
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 24),
-                child: AnnouncementSlot(),
-              ),
-              // 2FA nudge (hidden once enabled).
-              userAsync.maybeWhen(
-                data: (u) => u.twoFactorEnabled
-                    ? const SizedBox.shrink()
-                    : const Padding(
-                        padding:
-                            EdgeInsets.only(left: 24, right: 24, top: 16),
-                        child: _TwoFactorNudge(),
-                      ),
-                orElse: () => const SizedBox.shrink(),
-              ),
-              const SizedBox(height: 24),
-              // Recent Transactions
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 24),
-                child: RecentTransactionsList(),
-              ),
-              const SizedBox(height: 32),
-            ],
-          ),
+            ),
           ),
         ),
       ),
@@ -270,28 +273,27 @@ class _BalanceSection extends StatelessWidget {
     // credited only from confirmed on-chain deposits. Your actions move it.
     final totalNgn = summary.totalNgnEquivalent;
     final totalUsdc = summary.totalUsdtEquivalent;
-    final updated =
-        freshness.isEmpty ? '' : ' • updated $freshness';
+    final updated = freshness.isEmpty ? '' : ' • updated $freshness';
 
     final (amount, subtitle) = switch (currency) {
       DisplayCurrency.ngn => (
-          obscured ? '₦••••••' : CurrencyFormatter.ngn(totalNgn),
-          obscured
-              ? 'Balance hidden'
-              : '≈ ${CurrencyFormatter.usdc(totalUsdc)}$updated',
-        ),
+        obscured ? '₦••••••' : CurrencyFormatter.ngn(totalNgn),
+        obscured
+            ? 'Balance hidden'
+            : '≈ ${CurrencyFormatter.usdc(totalUsdc)}$updated',
+      ),
       DisplayCurrency.usd => (
-          obscured ? r'$••••••' : CurrencyFormatter.usdWithSymbol(totalUsdc),
-          obscured
-              ? 'Balance hidden'
-              : '≈ ${CurrencyFormatter.ngn(totalNgn)}$updated',
-        ),
+        obscured ? r'$••••••' : CurrencyFormatter.usdWithSymbol(totalUsdc),
+        obscured
+            ? 'Balance hidden'
+            : '≈ ${CurrencyFormatter.ngn(totalNgn)}$updated',
+      ),
       DisplayCurrency.usdc => (
-          obscured ? '•••••• USDC' : CurrencyFormatter.usdc(totalUsdc),
-          obscured
-              ? 'Balance hidden'
-              : '≈ ${CurrencyFormatter.ngn(totalNgn)}$updated',
-        ),
+        obscured ? '•••••• USDC' : CurrencyFormatter.usdc(totalUsdc),
+        obscured
+            ? 'Balance hidden'
+            : '≈ ${CurrencyFormatter.ngn(totalNgn)}$updated',
+      ),
     };
 
     return BalanceCard(
@@ -337,14 +339,16 @@ class _EmptyVaultCta extends StatelessWidget {
         children: [
           Text(
             'Your vault is empty',
-            style: context.typography.title
-                .copyWith(color: AppColors.primaryForeground),
+            style: context.typography.title.copyWith(
+              color: AppColors.primaryForeground,
+            ),
           ),
           const SizedBox(height: 6),
           Text(
             'Send USDC to your deposit address and watch it appear here.',
-            style: context.typography.bodySmall
-                .copyWith(color: AppColors.primaryForeground),
+            style: context.typography.bodySmall.copyWith(
+              color: AppColors.primaryForeground,
+            ),
           ),
           const SizedBox(height: 14),
           SizedBox(
@@ -383,8 +387,7 @@ class _TwoFactorNudge extends StatelessWidget {
       ),
       child: Row(
         children: [
-          const Icon(Icons.shield_outlined,
-              color: AppColors.primary, size: 20),
+          const Icon(Icons.shield_outlined, color: AppColors.primary, size: 20),
           const SizedBox(width: 10),
           Expanded(
             child: Text(
@@ -443,14 +446,30 @@ class _BalanceSkeleton extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       width: double.infinity,
-      height: 140,
+      padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: AppColors.surfaceElevated,
+        color: AppColors.surface,
         borderRadius: BorderRadius.circular(24),
         border: Border.all(color: AppColors.border, width: 1),
       ),
-      child: const Center(
-        child: CircularProgressIndicator(color: AppColors.primary),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: const [
+          ShimmerBox(width: 64, height: 11, radius: 5),
+          SizedBox(height: 14),
+          ShimmerBox(width: 180, height: 34, radius: 10),
+          SizedBox(height: 12),
+          ShimmerBox(width: 140, height: 12, radius: 6),
+          SizedBox(height: 20),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              ShimmerBox(width: 90, height: 20, radius: 10),
+              ShimmerBox(width: 90, height: 20, radius: 10),
+              ShimmerBox(width: 90, height: 20, radius: 10),
+            ],
+          ),
+        ],
       ),
     );
   }

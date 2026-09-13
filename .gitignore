@@ -44,6 +44,7 @@ app.*.map.json
 .env.local
 *.env
 !*.env.example
+.env.hardhat
 
 # Local testnet wallets (never commit)
 .wallets/

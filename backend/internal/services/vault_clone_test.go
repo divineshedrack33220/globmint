@@ -134,6 +134,49 @@ func TestEnsureClonePrefersLinkedWalletAsOwner(t *testing.T) {
 	}
 }
 
+// TestEnsureCloneRedeploysStaleRow: after a dev node reset erases chain state
+// while the DB row survives, EnsureClone must detect the missing on-chain clone
+// and redeploy it (CREATE2 keeps the same address) rather than serve a dead row.
+func TestEnsureCloneRedeploysStaleRow(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	u := newTestUser(t, st, "vault-clone-stale@example.com")
+
+	chain := blockchain.NewMockBlockchainService()
+	chain.SetLatest(100)
+	v := newCloneVault(t, st, chain, 160450)
+
+	first, err := v.EnsureClone(ctx, u.ID)
+	if err != nil {
+		t.Fatalf("ensure clone: %v", err)
+	}
+
+	// Simulate a node reset: clone no longer deployed on-chain.
+	chain.ClearClones()
+
+	second, err := v.EnsureClone(ctx, u.ID)
+	if err != nil {
+		t.Fatalf("ensure clone after reset: %v", err)
+	}
+	if !strings.EqualFold(first.CloneAddress, second.CloneAddress) {
+		t.Errorf("redeploy changed address: %s -> %s", first.CloneAddress, second.CloneAddress)
+	}
+	addr, err := v.CloneAddress(ctx, u.ID)
+	if err != nil {
+		t.Fatalf("clone address: %v", err)
+	}
+	if !strings.EqualFold(addr, first.CloneAddress) {
+		t.Errorf("CloneAddress = %q, want %q", addr, first.CloneAddress)
+	}
+	redeployed, err := v.chain.CloneByUserKey(ctx, crypto.Keccak256Hash([]byte(u.ID)).Hex())
+	if err != nil {
+		t.Fatalf("verify redeploy: %v", err)
+	}
+	if redeployed == "" {
+		t.Fatalf("clone not redeployed after stale-row recovery")
+	}
+}
+
 // TestIndexerCreditsCloneDepositWithoutSenderLink: a USDC transfer to a
 // per-user clone is credited to that account even when the SENDER has never
 // linked a wallet — the address alone identifies the depositor.

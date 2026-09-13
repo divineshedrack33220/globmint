@@ -37,15 +37,17 @@ const (
 	DomainName    = "GlobmintVault"
 	DomainVersion = "1"
 
-	withdrawTypeString = "WithdrawRequest(address to,uint256 amount,uint256 nonce,uint256 deadline)"
-	domainTypeString   = "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
+	withdrawTypeString    = "WithdrawRequest(address to,uint256 amount,uint256 nonce,uint256 deadline)"
+	setRecoveryTypeString = "SetRecovery(address recoveryAddress,uint256 nonce,uint256 deadline)"
+	domainTypeString      = "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
 )
 
 var (
-	withdrawTypeHash = crypto.Keccak256Hash([]byte(withdrawTypeString))
-	domainTypeHash   = crypto.Keccak256Hash([]byte(domainTypeString))
-	nameHash         = crypto.Keccak256Hash([]byte(DomainName))
-	versionHash      = crypto.Keccak256Hash([]byte(DomainVersion))
+	withdrawTypeHash    = crypto.Keccak256Hash([]byte(withdrawTypeString))
+	setRecoveryTypeHash = crypto.Keccak256Hash([]byte(setRecoveryTypeString))
+	domainTypeHash      = crypto.Keccak256Hash([]byte(domainTypeString))
+	nameHash            = crypto.Keccak256Hash([]byte(DomainName))
+	versionHash         = crypto.Keccak256Hash([]byte(DomainVersion))
 )
 
 // WithdrawRequest is the typed struct a withdrawal signature authorizes.
@@ -91,6 +93,34 @@ func WithdrawDigest(chainID int64, verifyingContract common.Address, req Withdra
 		withdrawTypeHash.Bytes(),
 		abiAddress(req.To),
 		abiUint256(req.Amount),
+		abiUint256(new(big.Int).SetUint64(req.Nonce)),
+		abiUint256(big.NewInt(req.Deadline)),
+	)
+	return crypto.Keccak256Hash(
+		[]byte{0x19, 0x01},
+		DomainSeparator(chainID, verifyingContract).Bytes(),
+		structHash.Bytes(),
+	)
+}
+
+// SetRecoveryRequest is the typed struct an owner signs to designate the
+// clone's backup recovery address. It mirrors
+// SetRecovery(address recoveryAddress,uint256 nonce,uint256 deadline) in the
+// contract. It shares the per-clone nonce with withdrawals/transfers so one
+// signed intent can never be replayed as another.
+type SetRecoveryRequest struct {
+	RecoveryAddress common.Address
+	Nonce           uint64
+	Deadline        int64 // unix seconds; the signature expires after this
+}
+
+// SetRecoveryDigest returns the fully prefixed EIP-712 digest of a recovery
+// request bound to verifyingContract. It must byte-for-byte match the
+// contract's setRecoveryAddressBySig computation.
+func SetRecoveryDigest(chainID int64, verifyingContract common.Address, req SetRecoveryRequest) common.Hash {
+	structHash := crypto.Keccak256Hash(
+		setRecoveryTypeHash.Bytes(),
+		abiAddress(req.RecoveryAddress),
 		abiUint256(new(big.Int).SetUint64(req.Nonce)),
 		abiUint256(big.NewInt(req.Deadline)),
 	)

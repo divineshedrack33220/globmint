@@ -47,11 +47,21 @@ contract GlobmintVaultClone {
         keccak256("WithdrawRequest(address to,uint256 amount,uint256 nonce,uint256 deadline)");
     bytes32 private constant TRANSFER_TYPEHASH =
         keccak256("TransferOwnership(address newOwner,uint256 nonce,uint256 deadline)");
+    bytes32 private constant SET_RECOVERY_TYPEHASH =
+        keccak256("SetRecovery(address recoveryAddress,uint256 nonce,uint256 deadline)");
 
     /// @notice owner of each clone (keyed by clone address).
     mapping(address => address) private _owners;
     /// @notice per-clone EIP-712 withdrawal nonce.
     mapping(address => uint256) private _nonces;
+    /// @notice per-clone backup owner: address that can recover the clone if
+    ///         the owner's key is lost. Shares the per-clone nonce.
+    mapping(address => address) private _recoveryAddress;
+    /// @notice per-clone recovery delay (seconds). 0 arms no recovery window
+    ///         until begun; the operator sets the fleet policy via the factory.
+    mapping(address => uint256) private _recoveryDelay;
+    /// @notice block.timestamp when recovery was initiated (0 = not pending).
+    mapping(address => uint256) private _recoveryRequestedAt;
 
     /// @notice per-clone privacy flag. When true the raw-address `deposit` and
     ///         `withdraw` revert; deposits go through `depositFor(user, salt,
@@ -74,6 +84,9 @@ contract GlobmintVaultClone {
     event Deposited(address indexed owner, uint256 amount);
     event Withdrawn(address indexed to, uint256 amount);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    event RecoveryAddressChanged(address indexed previousRecovery, address indexed newRecovery);
+    event RecoveryInitiated(address indexed recovery, uint256 requestedAt, uint256 delay);
+    event RecoveryCancelled(address indexed recovery);
     /// @notice Privacy-mode deposit. Carries ONLY the commitment.
     event DepositedPrivate(bytes32 indexed commitment, uint256 amount);
     /// @notice Privacy-mode withdrawal. Carries ONLY the commitment.
@@ -108,6 +121,24 @@ contract GlobmintVaultClone {
     /// @notice Next unused withdrawal nonce for this clone.
     function nonce() public view returns (uint256) {
         return _nonces[address(this)];
+    }
+
+    /// @notice The designated backup address that may recover this clone when
+    ///         the owner's key is lost. address(0) = no recovery address set.
+    function recoveryAddress() public view returns (address) {
+        return _recoveryAddress[address(this)];
+    }
+
+    /// @notice Recovery delay in seconds for this clone (set by the factory).
+    ///         0 means recovery is not currently armed.
+    function recoveryDelay() public view returns (uint256) {
+        return _recoveryDelay[address(this)];
+    }
+
+    /// @notice When a recovery was requested (block.timestamp when initiated).
+    ///         Executing the recovery before `requestedAt + delay` is rejected.
+    function recoveryRequestedAt() public view returns (uint256) {
+        return _recoveryRequestedAt[address(this)];
     }
 
     /// @notice Whether this clone is in commitment-based privacy mode. When
@@ -305,6 +336,106 @@ contract GlobmintVaultClone {
         _nonces[address(this)] = requestNonce + 1;
         _owners[address(this)] = newOwner;
         emit OwnershipTransferred(owner, newOwner);
+    }
+
+    /// @notice Set the clone's recovery delay. Only the factory may call, so
+    ///         the platform can arm recovery fleet-wide without touching the
+    ///         owner. 0 arms no window (a pending recovery is also cancelled).
+    function setRecoveryDelay(uint256 delay) external {
+        require(msg.sender == factory, "not factory");
+        _recoveryDelay[address(this)] = delay;
+        if (delay == 0) {
+            _recoveryRequestedAt[address(this)] = 0;
+        }
+    }
+
+    /// @notice The owner designates a backup address (`recoveryAddress`) that
+    ///         may take over ownership if their key is lost. Owner-only, direct
+    ///         call; use `setRecoveryAddressBySig` for the relayed path.
+    function setRecoveryAddress(address recovery) external {
+        require(msg.sender == _owners[address(this)], "not owner");
+        _setRecovery(recovery);
+    }
+
+    /// @notice Same as `setRecoveryAddress`, but authorized by the owner's
+    ///         EIP-712 signature so the app can relay it without holding keys.
+    ///         The recovery address shares the per-clone nonce with withdrawals
+    ///         and ownership handover, so one signed intent can't be replayed
+    ///         as another.
+    function setRecoveryAddressBySig(
+        address recovery,
+        uint256 requestNonce,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external {
+        require(deadline >= block.timestamp, "signature expired");
+        require(requestNonce == _nonces[address(this)], "invalid nonce");
+        address owner = _owners[address(this)];
+        require(owner != address(0), "not initialized");
+
+        bytes32 digest = keccak256(
+            abi.encodePacked(
+                "\x19\x01",
+                domainSeparator(),
+                keccak256(abi.encode(SET_RECOVERY_TYPEHASH, recovery, requestNonce, deadline))
+            )
+        );
+        require(_recover(digest, v, r, s) == owner, "invalid signer");
+
+        _nonces[address(this)] = requestNonce + 1;
+        _setRecovery(recovery);
+    }
+
+    /// @notice A recovery address starts the recovery clock. Only the
+    ///         designated recovery address (or the current owner) may begin it;
+    ///         the owner cancelling is equivalent to doing nothing.
+    function beginRecovery() external {
+        require(_recoveryAddress[address(this)] != address(0), "no recovery address set");
+        require(
+            msg.sender == _recoveryAddress[address(this)] || msg.sender == _owners[address(this)],
+            "not recovery or owner"
+        );
+        require(_recoveryDelay[address(this)] > 0, "recovery not armed");
+        if (_recoveryRequestedAt[address(this)] == 0) {
+            _recoveryRequestedAt[address(this)] = block.timestamp;
+            emit RecoveryInitiated(_recoveryAddress[address(this)], block.timestamp, _recoveryDelay[address(this)]);
+        }
+    }
+
+    /// @notice The owner cancels an in-flight recovery before the delay elapses.
+    function cancelRecovery() external {
+        require(msg.sender == _owners[address(this)], "not owner");
+        require(_recoveryRequestedAt[address(this)] != 0, "no pending recovery");
+        _recoveryRequestedAt[address(this)] = 0;
+        emit RecoveryCancelled(_recoveryAddress[address(this)]);
+    }
+
+    /// @notice Anyone may execute once the delay has elapsed: the recovery
+    ///         address becomes the owner. This is the "lost key" path — the
+    ///         window gives a still-holding owner time to cancel.
+    function executeRecovery() external {
+        address recovery = _recoveryAddress[address(this)];
+        require(recovery != address(0), "no recovery address set");
+        uint256 requestedAt = _recoveryRequestedAt[address(this)];
+        require(requestedAt != 0, "no pending recovery");
+        require(block.timestamp >= requestedAt + _recoveryDelay[address(this)], "recovery delay not elapsed");
+
+        address previousOwner = _owners[address(this)];
+        _recoveryRequestedAt[address(this)] = 0;
+        _recoveryDelay[address(this)] = 0;
+        _owners[address(this)] = recovery;
+        emit OwnershipTransferred(previousOwner, recovery);
+    }
+
+    function _setRecovery(address recovery) internal {
+        require(recovery != address(0), "invalid recovery");
+        require(recovery != _owners[address(this)], "recovery equals owner");
+        address previous = _recoveryAddress[address(this)];
+        _recoveryAddress[address(this)] = recovery;
+        _recoveryRequestedAt[address(this)] = 0;
+        emit RecoveryAddressChanged(previous, recovery);
     }
 
     function _transferOut(address to, uint256 amount) internal {

@@ -134,4 +134,54 @@ class EthereumProvider {
     final lowered = owner.toLowerCase();
     return connected.any((a) => a.toLowerCase() == lowered);
   }
+
+  /// Builds the exact eth_signTypedData_v4 payload for a `SetRecovery` quote.
+  /// The types array mirrors the contract's EIP-712 domain + the
+  /// `SetRecovery(address recoveryAddress,uint256 nonce,uint256 deadline)`
+  /// struct, with every uint256 as a canonical hex value.
+  Map<String, dynamic> typedDataV4ForRecovery(RecoveryQuote quote) {
+    const toType = [
+      {'name': 'name', 'type': 'string'},
+      {'name': 'version', 'type': 'string'},
+      {'name': 'chainId', 'type': 'uint256'},
+      {'name': 'verifyingContract', 'type': 'address'},
+    ];
+    const reqType = [
+      {'name': 'recoveryAddress', 'type': 'address'},
+      {'name': 'nonce', 'type': 'uint256'},
+      {'name': 'deadline', 'type': 'uint256'},
+    ];
+    final message = quote.message;
+    return <String, dynamic>{
+      'types': <String, dynamic>{
+        'EIP712Domain': toType,
+        quote.primaryType: reqType,
+      },
+      'primaryType': quote.primaryType,
+      'domain': <String, dynamic>{
+        'name': quote.domain.name,
+        'version': quote.domain.version,
+        'chainId': '0x${quote.domain.chainId.toRadixString(16)}',
+        'verifyingContract': quote.domain.verifyingContract,
+      },
+      'message': <String, dynamic>{
+        'recoveryAddress': message.recoveryAddress,
+        'nonce': '0x${message.nonce.toRadixString(16)}',
+        'deadline': '0x${message.deadline.toRadixString(16)}',
+      },
+    };
+  }
+
+  /// Signs a recovery quote with `from` and returns a client-shaped
+  /// [RecoverySignature] carrying the exact deadline/nonce the wallet
+  /// authorized for designating the recovery address.
+  Future<RecoverySignature> signRecovery(RecoveryQuote quote, String from) async {
+    final sig = await signTypedDataV4(from, typedDataV4ForRecovery(quote));
+    final m = quote.message;
+    return RecoverySignature(
+      signature: sig,
+      deadline: m.deadline,
+      nonce: m.nonce,
+    );
+  }
 }

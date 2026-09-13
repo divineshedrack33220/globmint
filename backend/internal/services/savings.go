@@ -4,6 +4,11 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"strconv"
+	"strings"
+
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 
 	"globmint/backend/internal/config"
 	"globmint/backend/internal/domain"
@@ -127,6 +132,84 @@ func (s *SavingsService) ensureUserSalt(ctx context.Context, userID string) erro
 		return err
 	}
 	return s.store.UserSaltsRepo().Upsert(ctx, userID, salt)
+}
+
+// SetWalletDerivedSalt records a salt that the user's OWN wallet produced, so
+// the privacy secret's source is the user, not the backend RNG. PKCS7/personal
+// signatures are EIP-191 scrambles; we bind the salt to the user's linked
+// wallet by requiring a recoverable signature over an application message that
+// pins the salt, then verifying it recovers to the linked deposit address.
+// Legacy random salts are never silently replaced on a re-link (a commitment
+// already funded on-chain must keep resolving); a wallet-derived salt may only
+// be (re)recorded for the same user.
+func (s *SavingsService) SetWalletDerivedSalt(ctx context.Context, userID, saltHex, message, signature string) error {
+	if !s.cfg.PrivacyMode {
+		return domain.ErrInvalidOperation
+	}
+	if _, err := domain.ValidateDepositAddress(saltHex); err != nil {
+		return domain.ErrInvalidSalt
+	}
+	if message == "" || signature == "" {
+		return domain.ErrInvalidSignature
+	}
+
+	link, err := s.store.DepositAddressRepo().FindByUser(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if link == nil || link.Address == "" {
+		return domain.ErrNoLinkedWallet
+	}
+
+	if !isValidPersonalSignature(signature, message, link.Address) {
+		return domain.ErrInvalidSignature
+	}
+
+	salt := common.FromHex(saltHex)
+	if len(salt) != 16 {
+		return domain.ErrInvalidSalt
+	}
+	existing, err := s.store.UserSaltsRepo().FindByUser(ctx, userID)
+	if err != nil && !errors.Is(err, domain.ErrNotFound) {
+		return err
+	}
+	if len(existing) > 0 && !bytesEqual(existing, salt) {
+		return domain.ErrSaltImmutable
+	}
+	return s.store.UserSaltsRepo().UpsertWithDerivation(ctx, userID, salt, "wallet-derived", link.Address)
+}
+
+// isValidPersonalSignature verifies `signature` recovers the EIP-191 personal
+// message hash of `message` to `expected`. Used to bind a wallet-derived
+// privacy salt to the user's linked wallet without ever storing a key.
+func isValidPersonalSignature(signature, message, expected string) bool {
+	sig := common.FromHex(signature)
+	if len(sig) != 65 {
+		return false
+	}
+	// ecrecover in go-ethereum expects v in {0,1}, not the 27/28 encoding.
+	if sig[64] == 27 || sig[64] == 28 {
+		sig[64] -= 27
+	}
+	hash := crypto.Keccak256Hash([]byte("\x19Ethereum Signed Message:\n" + strconv.Itoa(len(message)) + message))
+	recovered, err := crypto.Ecrecover(hash.Bytes(), sig)
+	if err != nil {
+		return false
+	}
+	got := common.BytesToAddress(recovered)
+	return strings.EqualFold(got.Hex(), expected)
+}
+
+func bytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // FromConfig derives a SavingsConfig from the app configuration.

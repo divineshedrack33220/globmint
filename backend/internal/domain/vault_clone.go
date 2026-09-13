@@ -43,3 +43,18 @@ type WithdrawSignature struct {
 func (s *WithdrawSignature) HasSignature() bool {
 	return s != nil && s.Signature != ""
 }
+
+// CloneRecovery is the backend's cache of a clone's on-chain ownership +
+// recovery state. The chain is authoritative; this is a read-through/refresh
+// cache the API can surface (and fall back to) when the node is unreachable.
+type CloneRecovery struct {
+	// Owner is the clone's owner seat as last observed on chain.
+	Owner string
+	// RecoveryAddress is the designated backup address; "" = none set.
+	RecoveryAddress string
+	// RecoveryDelay is the armed recovery delay in seconds; 0 = not armed.
+	RecoveryDelay uint64
+	// RecoveryRequestedAt is the unix-second timestamp when a recovery was
+	// initiated on chain; 0 = no recovery pending.
+	RecoveryRequestedAt int64
+}

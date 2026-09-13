@@ -107,6 +107,22 @@ func NewHandler(deps *Deps, auth middleware.Authenticator, corsOrigins []string,
 	mux.Handle("GET "+api+"/savings/deposit-info", middleware.Auth(auth, http.HandlerFunc(deps.handleGetDepositInfo)))
 	mux.Handle("PUT "+api+"/savings/deposit-address", middleware.Auth(auth, http.HandlerFunc(deps.handleSetDepositAddress)))
 	mux.Handle("GET "+api+"/savings/vault-status", middleware.Auth(auth, http.HandlerFunc(deps.handleVaultStatus)))
+	// Recovery address (lost-key path): read the on-chain recovery state,
+	// quote the EIP-712 SetRecovery request the user must sign, and relay the
+	// signed designation.
+	mux.Handle("GET "+api+"/savings/recovery", middleware.Auth(auth, http.HandlerFunc(deps.handleRecoveryStatus)))
+	mux.Handle("GET "+api+"/savings/recovery/prepare", middleware.RateLimiter(
+		middleware.Auth(auth, http.HandlerFunc(deps.handlePrepareRecovery)),
+		time.Second,
+		limits.MoneyBurst,
+		clientIPKey,
+	))
+	mux.Handle("PUT "+api+"/savings/recovery", middleware.RateLimiter(
+		middleware.Auth(auth, http.HandlerFunc(deps.handleSetRecoveryAddress)),
+		time.Second,
+		limits.MoneyBurst,
+		clientIPKey,
+	))
 	mux.Handle("POST "+api+"/savings/withdraw", middleware.RateLimiter(
 		middleware.Auth(auth, middleware.Idempotency(http.HandlerFunc(deps.handleVaultWithdraw))),
 		time.Second,

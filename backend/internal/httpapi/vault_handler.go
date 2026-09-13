@@ -300,3 +300,137 @@ func (d *Deps) handleCancelVaultWithdraw(w http.ResponseWriter, r *http.Request)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"cancelled": true})
 }
+
+// handleRecoveryStatus reports the user's clone recovery state (recovery
+// address, armed delay, in-flight recovery window) as read from the chain. The
+// clone contract is the source of truth; this is a live read, not a cache.
+func (d *Deps) handleRecoveryStatus(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	if user == nil {
+		writeError(w, r, domain.ErrUnauthenticated, "")
+		return
+	}
+	if d.Vault == nil {
+		writeError(w, r, domain.ErrNotFound, "")
+		return
+	}
+	st, err := d.Vault.RecoveryStatus(r.Context(), user.ID)
+	if err != nil {
+		writeError(w, r, err, "")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"clone":                 st.Clone,
+		"owner":                 st.Owner,
+		"recovery_address":      st.RecoveryAddress,
+		"recovery_delay_sec":    st.RecoveryDelaySec,
+		"recovery_requested_at": st.RecoveryRequestedAt,
+		"recovery_at":           st.RecoveryAt,
+		"recovery_pending":      st.RecoveryPending,
+	})
+}
+
+// handlePrepareRecovery quotes the exact EIP-712 SetRecovery request a client
+// must sign before designating a recovery address. Nothing moves and nothing
+// is persisted. The response is shaped for eth_signTypedData_v4 (domain +
+// message + primaryType + types), reusing the WithdrawRequest-style envelope.
+func (d *Deps) handlePrepareRecovery(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	if user == nil {
+		writeError(w, r, domain.ErrUnauthenticated, "")
+		return
+	}
+	if d.Vault == nil {
+		writeError(w, r, domain.ErrNotFound, "")
+		return
+	}
+	recovery := r.URL.Query().Get("recovery_address")
+	if recovery == "" {
+		writeError(w, r, domain.ErrBadRequest, "")
+		return
+	}
+	quote, err := d.Vault.PrepareRecovery(r.Context(), user.ID, recovery)
+	if err != nil {
+		writeError(w, r, err, "")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"domain": map[string]any{
+			"name":               quote.Domain.Name,
+			"version":            quote.Domain.Version,
+			"chain_id":           quote.Domain.ChainID,
+			"verifying_contract": quote.Domain.VerifyingContract,
+		},
+		"message": map[string]any{
+			"recovery_address": quote.Message.RecoveryAddress.Hex(),
+			"nonce":            quote.Message.Nonce,
+			"deadline":         quote.Message.Deadline,
+		},
+		"primary_type": "SetRecovery",
+		"types": map[string]any{
+			"EIP712Domain": []map[string]string{
+				{"name": "name", "type": "string"},
+				{"name": "version", "type": "string"},
+				{"name": "chainId", "type": "uint256"},
+				{"name": "verifyingContract", "type": "address"},
+			},
+			"SetRecovery": []map[string]string{
+				{"name": "recoveryAddress", "type": "address"},
+				{"name": "nonce", "type": "uint256"},
+				{"name": "deadline", "type": "uint256"},
+			},
+		},
+		"clone_owner": quote.Owner,
+	})
+}
+
+// setRecoveryRequest is the signed designation of a recovery address: the
+// recovery address, the EIP-712 signature over
+// SetRecovery(recovery_address, nonce, deadline), and the signed nonce +
+// deadline. The backend only relays setRecoveryAddressBySig; it cannot set a
+// recovery address without the owner's signature.
+type setRecoveryRequest struct {
+	RecoveryAddress string `json:"recovery_address"`
+	Signature       string `json:"signature"`
+	Deadline        int64  `json:"deadline"`
+	Nonce           uint64 `json:"nonce"`
+}
+
+// handleSetRecoveryAddress designates the user's recovery address on their
+// clone. The owner's EIP-712 signature is verified off-chain before the
+// backend relays setRecoveryAddressBySig; a stranger can never designate
+// themselves as recovery.
+func (d *Deps) handleSetRecoveryAddress(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	if user == nil {
+		writeError(w, r, domain.ErrUnauthenticated, "")
+		return
+	}
+	if d.Vault == nil {
+		writeError(w, r, domain.ErrNotFound, "")
+		return
+	}
+	var req setRecoveryRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, r, domain.ErrBadRequest, "")
+		return
+	}
+	if req.RecoveryAddress == "" || req.Signature == "" {
+		writeError(w, r, domain.ErrBadRequest, "")
+		return
+	}
+	txHash, err := d.Vault.SetRecoveryAddressBySig(r.Context(), user.ID, req.RecoveryAddress, &domain.WithdrawSignature{
+		Signature:  req.Signature,
+		Deadline:   req.Deadline,
+		RelayNonce: req.Nonce,
+	})
+	if err != nil {
+		writeError(w, r, err, "")
+		return
+	}
+	d.publish(user.ID, "all")
+	writeJSON(w, http.StatusOK, map[string]any{
+		"recovery_address": req.RecoveryAddress,
+		"tx_hash":          txHash,
+	})
+}

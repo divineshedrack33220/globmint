@@ -10,6 +10,7 @@ import '../../../../core/utils/formatters.dart';
 import '../../../../core/widgets/animated_press.dart';
 import '../../../../core/widgets/empty_state.dart';
 import '../../../../core/widgets/section_header.dart';
+import '../../../../core/widgets/shimmer.dart';
 import '../../../../shared/models/transaction.dart';
 
 class RecentTransactionsList extends ConsumerWidget {
@@ -29,12 +30,7 @@ class RecentTransactionsList extends ConsumerWidget {
         ),
         const SizedBox(height: 12),
         transactionsAsync.when(
-          loading: () => const Center(
-            child: Padding(
-              padding: EdgeInsets.all(24),
-              child: CircularProgressIndicator(color: AppColors.primary),
-            ),
-          ),
+          loading: () => const TransactionListSkeleton(tiles: 5),
           error: (_, _) => const SizedBox(
             height: 80,
             child: Center(child: Text('Unable to load transactions')),
@@ -88,8 +84,10 @@ class _TransactionTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final iconData = _getIcon();
     final iconColor = _getIconColor();
-    final isPositive = transaction.type.name == 'deposit' ||
-        (transaction.type.name == 'conversion' && transaction.toCurrency == 'USDT');
+    final isPositive =
+        transaction.type.name == 'deposit' ||
+        (transaction.type.name == 'conversion' &&
+            transaction.toCurrency == 'USDT');
 
     return AnimatedPress(
       onTap: () => context.push('/activity/${transaction.id}'),
@@ -121,7 +119,10 @@ class _TransactionTile extends StatelessWidget {
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    transaction.description ?? transaction.destination ?? transaction.reference ?? '',
+                    transaction.description ??
+                        transaction.destination ??
+                        transaction.reference ??
+                        '',
                     style: context.typography.bodySmall,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
@@ -138,7 +139,9 @@ class _TransactionTile extends StatelessWidget {
                       ? '+${CurrencyFormatter.ngn(transaction.amount)}'
                       : '-${CurrencyFormatter.ngn(transaction.amount)}',
                   style: context.typography.labelLarge.copyWith(
-                    color: isPositive ? AppColors.success : AppColors.textPrimary,
+                    color: isPositive
+                        ? AppColors.success
+                        : AppColors.textPrimary,
                   ),
                 ),
                 const SizedBox(height: 2),

@@ -19,12 +19,25 @@ VALUES ($1::uuid, $2, now())
 ON CONFLICT (user_id) DO UPDATE SET salt = EXCLUDED.salt, updated_at = now()
 `
 
+const userSaltInsertWithDerivation = `
+INSERT INTO user_salts (user_id, salt, derivation, source_address, updated_at)
+VALUES ($1::uuid, $2, $3, $4, now())
+ON CONFLICT (user_id) DO UPDATE
+SET salt = EXCLUDED.salt, derivation = EXCLUDED.derivation,
+    source_address = EXCLUDED.source_address, updated_at = now()
+`
+
 const userSaltFind = `
 SELECT salt FROM user_salts WHERE user_id = $1::uuid
 `
 
 func (r *userSaltRepo) Upsert(ctx context.Context, userID string, salt []byte) error {
 	_, err := r.q.Exec(ctx, userSaltInsert, userID, salt)
+	return err
+}
+
+func (r *userSaltRepo) UpsertWithDerivation(ctx context.Context, userID string, salt []byte, derivation, sourceAddress string) error {
+	_, err := r.q.Exec(ctx, userSaltInsertWithDerivation, userID, salt, derivation, sourceAddress)
 	return err
 }
 
@@ -43,7 +56,8 @@ func (r *userSaltRepo) Delete(ctx context.Context, userID string) error {
 }
 
 const userSaltListLinks = `
-SELECT u.user_id::text, COALESCE(da.address, '') AS address, u.salt
+SELECT u.user_id::text, COALESCE(da.address, '') AS address, u.salt,
+       u.derivation, COALESCE(u.source_address, '') AS source_address
 FROM user_salts u
 LEFT JOIN deposit_addresses da ON da.user_id = u.user_id
 `
@@ -57,7 +71,7 @@ func (r *userSaltRepo) ListLinks(ctx context.Context) ([]domain.UserSaltLink, er
 	var out []domain.UserSaltLink
 	for rows.Next() {
 		var link domain.UserSaltLink
-		if err := rows.Scan(&link.UserID, &link.Address, &link.Salt); err != nil {
+		if err := rows.Scan(&link.UserID, &link.Address, &link.Salt, &link.Derivation, &link.SourceAddress); err != nil {
 			return nil, err
 		}
 		out = append(out, link)

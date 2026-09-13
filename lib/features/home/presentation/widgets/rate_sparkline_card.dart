@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/utils/formatters.dart';
+import '../../../../core/widgets/shimmer.dart';
 import '../../../../shared/services/rate_sampler.dart';
 
 /// USDC/NGN rate card with a trend sparkline. History accumulates on-device
@@ -40,6 +41,26 @@ class _RateSparklineCardState extends State<RateSparklineCard> {
 
   @override
   Widget build(BuildContext context) {
+    // Rate has not loaded yet: show a shimmer skeleton in place of data.
+    if (widget.rate <= 0) {
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: AppColors.border, width: 1),
+        ),
+        child: const Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            ShimmerBox(width: 120, height: 12, radius: 6),
+            SizedBox(height: 18),
+            ShimmerBox(width: double.infinity, height: 48, radius: 8),
+          ],
+        ),
+      );
+    }
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(16),
@@ -57,8 +78,9 @@ class _RateSparklineCardState extends State<RateSparklineCard> {
               Text('USDC / NGN rate', style: context.typography.labelMedium),
               Text(
                 CurrencyFormatter.ngn(widget.rate),
-                style: context.typography.labelLarge
-                    .copyWith(color: AppColors.primary),
+                style: context.typography.labelLarge.copyWith(
+                  color: AppColors.primary,
+                ),
               ),
             ],
           ),
@@ -76,9 +98,7 @@ class _RateSparklineCardState extends State<RateSparklineCard> {
                       ),
                     ),
                   )
-                : CustomPaint(
-                    painter: _SparklinePainter(_points),
-                  ),
+                : CustomPaint(painter: _SparklinePainter(_points)),
           ),
         ],
       ),
@@ -102,7 +122,8 @@ class _SparklinePainter extends CustomPainter {
     final path = Path();
     for (var i = 0; i < points.length; i++) {
       final x = i * dx;
-      final y = size.height - 4 - ((points[i] - min) / span) * (size.height - 8);
+      final y =
+          size.height - 4 - ((points[i] - min) / span) * (size.height - 8);
       if (i == 0) {
         path.moveTo(x, y);
       } else {
@@ -128,11 +149,13 @@ class _SparklinePainter extends CustomPainter {
 
     // Last-sample dot.
     final lastX = size.width;
-    final lastY = size.height -
-        4 -
-        ((points.last - min) / span) * (size.height - 8);
+    final lastY =
+        size.height - 4 - ((points.last - min) / span) * (size.height - 8);
     canvas.drawCircle(
-        Offset(lastX - 2, lastY), 3, Paint()..color = const Color(0xFF2E7D32));
+      Offset(lastX - 2, lastY),
+      3,
+      Paint()..color = const Color(0xFF2E7D32),
+    );
   }
 
   @override

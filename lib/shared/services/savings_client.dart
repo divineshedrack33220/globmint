@@ -293,6 +293,52 @@ class SavingsClient {
     );
     return data?['cancelled'] == true;
   }
+
+  /// Returns the user's clone recovery state as read from the chain:
+  /// the designated recovery address, the armed delay, and any in-flight
+  /// recovery window. Chain-authoritative with a cache fallback server-side.
+  Future<RecoveryStatus> getRecoveryStatus() async {
+    final data = await _api.get('${AppConstants.apiV1Prefix}/savings/recovery');
+    if (data == null) throw ApiException(0, 'Empty response from server');
+    return RecoveryStatus.fromJson(data);
+  }
+
+  /// Quotes the exact EIP-712 `SetRecovery` payload a user would sign before
+  /// designating [recoveryAddress] on their clone: the domain + message
+  /// (covering the current clone nonce) plus the owner seat so the client can
+  /// tell which wallet must sign. No funds move.
+  Future<RecoveryQuote> prepareRecovery(String recoveryAddress) async {
+    final q = Uri(queryParameters: {'recovery_address': recoveryAddress});
+    final data = await _api.get(
+      '${AppConstants.apiV1Prefix}/savings/recovery/prepare?${q.query}',
+    );
+    if (data == null) throw ApiException(0, 'Empty response from server');
+    return RecoveryQuote.fromJson(data);
+  }
+
+  /// Relays the owner-signed `setRecoveryAddressBySig` on the user's clone to
+  /// designate [recoveryAddress]. The signature must have been produced by the
+  /// clone owner over the exact message [prepareRecovery] quoted. Returns the
+  /// on-chain transaction hash.
+  Future<RecoverySignatureResult> setRecoveryAddress({
+    required String recoveryAddress,
+    required RecoverySignature signature,
+  }) async {
+    final data = await _api.put(
+      '${AppConstants.apiV1Prefix}/savings/recovery',
+      body: {
+        'recovery_address': recoveryAddress,
+        'signature': signature.signature,
+        'deadline': signature.deadline,
+        'nonce': signature.nonce,
+      },
+    );
+    if (data == null) throw ApiException(0, 'Empty response from server');
+    return RecoverySignatureResult(
+      recoveryAddress: data['recovery_address'] as String? ?? recoveryAddress,
+      txHash: data['tx_hash'] as String? ?? '',
+    );
+  }
 }
 
 /// The outcome of submitting a withdrawal: an instant transaction hash, or the
@@ -459,4 +505,145 @@ class WithdrawQuote {
         amountMinorBase: j['amount_minor_base'] as String? ?? '',
         cloneOwner: j['clone_owner'] as String? ?? '',
       );
+}
+
+/// The clone's recovery state returned by `GET /savings/recovery`. The clone
+/// contract is the source of truth; the cache only backs the UI when the node
+/// is unreachable.
+class RecoveryStatus {
+  const RecoveryStatus({
+    required this.clone,
+    required this.owner,
+    required this.recoveryAddress,
+    required this.recoveryDelaySec,
+    required this.recoveryRequestedAt,
+    required this.recoveryAt,
+    required this.recoveryPending,
+  });
+
+  /// The per-user clone address. Empty when the account has none.
+  final String clone;
+
+  /// The current owner seat (the user's wallet, or the platform signer as a
+  /// placeholder until the user claims custody).
+  final String owner;
+
+  /// The designated backup address; empty when none is set.
+  final String recoveryAddress;
+
+  /// Armed recovery delay in seconds; 0 when recovery is not armed.
+  final int recoveryDelaySec;
+
+  /// Unix seconds when a recovery was initiated; 0 when none is pending.
+  final int recoveryRequestedAt;
+
+  /// Unix seconds when a pending recovery becomes executable; 0 when none.
+  final int recoveryAt;
+
+  /// Whether a recovery is currently in flight for this clone.
+  final bool recoveryPending;
+
+  /// Human-friendly armed delay ("3 days", "24 hours", "not armed").
+  String get delayLabel {
+    if (recoveryDelaySec <= 0) return 'not armed';
+    final h = recoveryDelaySec ~/ 3600;
+    if (h >= 48) return '${(h / 24).round()} days';
+    if (h >= 1) return '$h hours';
+    return '${recoveryDelaySec ~/ 60} minutes';
+  }
+
+  String get ownerShort => _shorten(owner);
+  String get cloneShort => _shorten(clone);
+  String get recoveryShort => _shorten(recoveryAddress);
+
+  static String _shorten(String addr) {
+    if (addr.length <= 12) return addr;
+    return '${addr.substring(0, 6)}…${addr.substring(addr.length - 4)}';
+  }
+
+  factory RecoveryStatus.fromJson(Map<String, dynamic> j) => RecoveryStatus(
+        clone: j['clone'] as String? ?? '',
+        owner: j['owner'] as String? ?? '',
+        recoveryAddress: j['recovery_address'] as String? ?? '',
+        recoveryDelaySec: (j['recovery_delay_sec'] as num?)?.toInt() ?? 0,
+        recoveryRequestedAt: (j['recovery_requested_at'] as num?)?.toInt() ?? 0,
+        recoveryAt: (j['recovery_at'] as num?)?.toInt() ?? 0,
+        recoveryPending: j['recovery_pending'] == true,
+      );
+}
+
+/// The `SetRecovery(recoveryAddress, nonce, deadline)` message to sign.
+class RecoveryMessage {
+  const RecoveryMessage({
+    required this.recoveryAddress,
+    required this.nonce,
+    required this.deadline,
+  });
+
+  final String recoveryAddress;
+
+  /// Current on-chain clone nonce the signature must cover.
+  final int nonce;
+
+  /// Unix-seconds expiry of the signature.
+  final int deadline;
+
+  factory RecoveryMessage.fromJson(Map<String, dynamic> j) => RecoveryMessage(
+        recoveryAddress: j['recovery_address'] as String? ?? '',
+        nonce: (j['nonce'] as num?)?.toInt() ?? 0,
+        deadline: (j['deadline'] as num?)?.toInt() ?? 0,
+      );
+}
+
+/// The full quote returned by `GET /savings/recovery/prepare`: the exact
+/// typed data to authorize plus the owner seat that must sign.
+class RecoveryQuote {
+  const RecoveryQuote({
+    required this.domain,
+    required this.primaryType,
+    required this.message,
+    required this.cloneOwner,
+  });
+
+  final Eip712Domain domain;
+  final String primaryType;
+  final RecoveryMessage message;
+
+  /// The current clone owner seat — the wallet that must sign.
+  final String cloneOwner;
+
+  factory RecoveryQuote.fromJson(Map<String, dynamic> j) => RecoveryQuote(
+        domain: Eip712Domain.fromJson(
+            (j['domain'] as Map?)?.cast<String, dynamic>() ?? const {}),
+        primaryType: j['primary_type'] as String? ?? 'SetRecovery',
+        message: RecoveryMessage.fromJson(
+            (j['message'] as Map?)?.cast<String, dynamic>() ?? const {}),
+        cloneOwner: j['clone_owner'] as String? ?? '',
+      );
+}
+
+/// A client-shaped EIP-712 signature over `SetRecovery(recoveryAddress, nonce,
+/// deadline)`, returned from [EthereumProvider.signRecovery] and submitted to
+/// `PUT /savings/recovery`.
+class RecoverySignature {
+  const RecoverySignature({
+    required this.signature,
+    required this.deadline,
+    required this.nonce,
+  });
+
+  final String signature;
+  final int deadline;
+  final int nonce;
+}
+
+/// The server confirmation for a designated recovery address.
+class RecoverySignatureResult {
+  const RecoverySignatureResult({
+    required this.recoveryAddress,
+    required this.txHash,
+  });
+
+  final String recoveryAddress;
+  final String txHash;
 }

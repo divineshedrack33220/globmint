@@ -161,6 +161,7 @@ func main() {
 		log.Println("indexer-only mode: running indexer + elevation sweeper")
 		go vaultSvc.RunIndexer(ctx)
 		go vaultSvc.RunElevationSweeper(ctx)
+		go vaultSvc.RunRecoveryReconciler(ctx)
 		go runMarketRateRefresher(ctx, store, vaultSvc)
 		<-ctx.Done()
 		log.Println("indexer-only mode: stopped")
@@ -169,6 +170,7 @@ func main() {
 
 	go vaultSvc.RunIndexer(ctx)
 	go vaultSvc.RunElevationSweeper(ctx)
+	go vaultSvc.RunRecoveryReconciler(ctx)
 	go runMarketRateRefresher(ctx, store, vaultSvc)
 
 	srv := &http.Server{

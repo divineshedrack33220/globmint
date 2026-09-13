@@ -65,7 +65,11 @@ Globe Mint is a product decision made deliberately: **self-custodial crypto only
 - The backend is an **indexer + ledger + intent service**. It watches for stablecoin
   transfers into per-user clones and the vault's `Deposited`/`DepositedPrivate` events,
   credits the user's internal ledger so the UI can show balances, and relays withdrawal
-  *intents* (signed by the user's PIN) to the chain via a designated signer wallet.
+  *intents* to the chain. A withdrawal intent is authorized by the **user's own wallet**
+  with an EIP-712 signature over `WithdrawRequest(to, amount, nonce, deadline)` — the
+  platform signer relays the exact signed call and cannot move funds the user did not sign
+  for (§2.3.1). Each clone also supports a **recovery address**: a time-locked fallback
+  that can take over ownership if the user loses their wallet key (§9.3.2).
 - The app has **no fiat off-ramp built in**. Users withdraw USDC to any address they name —
   their own wallet, or an OTC desk / off-ramp provider that accepts USDC. Fiat conversion
   happens outside Globe Mint entirely.
@@ -209,7 +213,36 @@ principal only — fees never consume the cap), idempotency key replay protectio
 chain-sufficiency pre-check against the vault's on-chain USDC balance. Every rejection
 happens without spending gas or touching the chain. Amounts above the elevation
 threshold never broadcast immediately — they wait out the time-lock in §9.3.1 instead,
-with the fee stored on the row and debited only at sweep time.
+with the fee stored on the row and debited only at sweep time. In the self-custody
+(`GLOBMINT_REQUIRE_USER_SIGNATURE=true`) path every amount is additionally gated by the
+user's own EIP-712 signature, see §2.3.1.
+
+### 2.3.1 Signature-gated withdrawals — the user signs, the signer relays
+
+In the self-custody path (required by the mainnet gate, §7.5) **no amount leaves the
+user's clone unless that user's wallet signed it**:
+
+1. `GET /savings/withdraw/prepare?destination=…&amount=…` runs the same validation as the
+   real withdrawal and returns the exact EIP-712 payload to sign: the domain
+   (`GlobmintVault` v1, chain id, verifying contract = the user's clone), the message
+   (`to`, `amount` in stablecoin base units, the clone's current **nonce**, a ~30-minute
+   `deadline`), plus the NGN/fee figures for the review screen. Nothing moves, nothing is
+   persisted.
+2. The client signs `WithdrawRequest(to, amount, nonce, deadline)` in the user's wallet
+   (`eth_signTypedData_v4`) and submits it with `POST /savings/withdraw`.
+3. The backend verifies the 65-byte signature off-chain — it must recover to the clone's
+   current owner and be unexpired — then relays the **exact** `withdrawWithSig` call to the
+   user's clone. The platform signer broadcasts the transaction but cannot re-sign or
+   mutate the intent; the clone contract re-checks the signature, nonce, and deadline
+   on-chain.
+
+Accounts whose clone owner is still the platform-signer **placeholder** (never claimed)
+must first "sign to take custody": the owner's `transferOwnershipBySig` signature moves the
+owner seat to the user's wallet. Until then, signed withdrawals and recovery designation
+are refused with `SIGNATURE_REQUIRED` (`ErrWithdrawRequiresCustody`). In the transitional
+`GLOBMINT_REQUIRE_USER_SIGNATURE=false` mode the platform placeholder owner may still sign
+on behalf of unclaimed accounts; the production gate requires the strict mode so that
+transitional path is unreachable on mainnet.
 
 ---
 
@@ -261,12 +294,13 @@ globe-mint/
 │       ├── services/             # business logic (auth, ledger, money, vault, totp)
 │       └── storage/
 │           ├── storage.go        # repository interfaces
-│           └── postgres/         # pgx implementations + migrations 0001..0015
+│           └── postgres/         # pgx implementations + migrations 0001..0018
 ├── backend/contracts/
 │   ├── contracts/                # GlobmintVault.sol, GlobmintVaultV2.sol,
 │   │                             # GlobmintVaultClone.sol, GlobmintVaultFactory.sol
 │   ├── scripts/                  # deploy.js, devsetup.js, devdepositor.js, devcreditclones.js
-│   ├── test/                     # hardhat tests (48 passing: V1 / V2 privacy / clone suite)
+│   ├── test/                     # hardhat tests (61 passing: V1 / V2 privacy / clone suite
+│   │                             # incl. signature-gated withdrawals + recovery address)
 │   └── DEPLOYMENT.md             # full deploy + mainnet runbook
 ├── scripts/backup.sh             # pg_dump + retention (Docker-aware)
 ├── .github/workflows/ci.yml
@@ -387,7 +421,7 @@ flowchart TB
 | Balances | `GET /balances` |
 | Transactions | `GET /transactions` |
 | Money | `POST /money/deposit`, `withdraw`, `transfer`, `convert`, `quote` |
-| Savings/Vault | `GET /savings/deposit-info`, `PUT /savings/deposit-address`, `GET /savings/vault-status`, `POST /savings/withdraw`, `GET /savings/withdraw` (pending time-locks), `POST /savings/withdraw/{id}/cancel` |
+| Savings/Vault | `GET /savings/deposit-info`, `PUT /savings/deposit-address`, `GET /savings/vault-status`, `GET /savings/withdraw/prepare` (quotes the EIP-712 payload to sign), `POST /savings/withdraw` (relays the signed `withdrawWithSig`), `GET /savings/withdraw` (pending time-locks), `POST /savings/withdraw/{id}/cancel`, `GET /savings/recovery` (clone recovery state; chain-authoritative, cache fallback), `GET /savings/recovery/prepare?recovery_address=…` (quotes the `SetRecovery` payload to sign), `PUT /savings/recovery` (relays the signed `setRecoveryAddressBySig`) |
 | Beneficiaries | `GET/POST /beneficiaries`, `PATCH /beneficiaries/{id}`, `POST …/favorite`, `DELETE …/{id}`, `GET /beneficiaries/address/{address}` |
 | Bank accounts | `GET/POST /bank-accounts`, `POST /bank-accounts/{id}/default`, `DELETE …/{id}` |
 | Devices / security | `GET /devices`, `POST /devices/revoke-others`, `POST /devices/{id}/revoke`, `GET /security-events` |
@@ -550,6 +584,17 @@ The gate returns a list of every missing item so operators fix the whole config 
 
 - The vault contract has **no owner, no admin, no seizable balances** (see §9).
 - The backend never holds user private keys; users always initiate deposits.
+- Non-custodial owners: an account's clone is owned by the **user's own wallet** whenever
+  one is linked; unlinked accounts get the platform signer only as a *placeholder* seat
+  the user can claim at any time with a `transferOwnershipBySig` signature. Until claimed,
+  the account cannot withdraw in strict mode (`SIGNATURE_REQUIRED`).
+- Withdrawals are **signature-gated**: in strict mode a withdrawal must carry the clone
+  owner's own EIP-712 signature over the exact `(to, amount, nonce, deadline)` that will
+  be relayed. A compromised signer key alone can broadcast but cannot mint or mutate a
+  user's authorization (§2.3.1).
+- **Recovery:** a user who loses the wallet key to their clone is not locked out forever —
+  a previously designated **recovery address** can take over ownership after a time-lock
+  the owner can cancel (§9.3.2).
 - No banking rails exist anywhere in the codebase by design.
 - **Privacy:** When `GLOBMINT_PRIVACY_MODE=true`, balances are hidden from block
   explorers via commitment-based storage, and every account funds its own pseudonymous
@@ -570,8 +615,9 @@ The gate returns a list of every missing item so operators fix the whole config 
 | Random internet user | Register, see only their own data | Read other users' balances/sessions (bearer tokens + scoped `Auth` middleware) |
 | Credential attacker | Try passwords/PINs | Brute force: 5-attempt/15-min per-account throttle + per-IP buckets |
 | Phisher with 1 password | — | Mint a session when 2FA is on (challenge token is signed, 5-min TTL) |
-| Compromised signer key | Broadcast the *user-requested* withdrawal txs | Move money without a matching PIN + limits + idempotency check on record |
-| Insider / operator | Read the DB | Seize user USDC: vault has no owner/admin functions |
+| Compromised signer key | Broadcast *user-signed* withdrawal txs | Mint or re-sign a withdrawal the user did not sign: `withdrawWithSig` requires the owner's EIP-712 signature, and elevations relay the pre-signed intent unchanged |
+| Insider / operator | Read the DB; arm/change the fleet recovery delay via the factory | Seize user USDC: vault/clone contracts have no owner/admin; move money without the user's signature |
+| Recovery-address attacker | Designate/execute recovery *only if* the true owner signed it, or after an armed delay without owner cancellation | Short-circuit the time-lock, or use an address the owner never designated (signature verified off- and on-chain) |
 | Reorg attacker (mainnet) | — | Get a deposit credited early: confirmations window ≥ 12 |
 | CSRF / cross-site | — | Call the API: no cookies, bearer-in-header, CORS-allowlisted origins |
 | Blockchain observer | View transfers at a pseudonymous clone address (privacy mode off) | Link a clone or commitment to a user identity, or query balances, when privacy mode is on (per-user clone addresses + commitment-based balances) |
@@ -713,9 +759,25 @@ contract GlobmintVaultClone {
     function depositFor(address user, bytes32 salt, uint256 amount) external;  // privacy entry
     function withdraw(uint256 amount, address to) external;           // owner-only; REVERTS in privacy mode
     function withdrawWithSalt(bytes32 salt, uint256 amount, address to) external;  // salt-proving
+    function withdrawWithSig(address to, uint256 amount, uint256 nonce,
+                             uint256 deadline, uint8 v, bytes32 r, bytes32 s) external; // EIP-712, owner-signed
+    function transferOwnershipBySig(address newOwner, uint256 nonce,
+                                    uint256 deadline, uint8 v, bytes32 r, bytes32 s) external; // "sign to take custody"
     function privacyEnabled() external view returns (bool);
     function balanceOfCommitment(bytes32 commitment) external view returns (uint256);
     function setPrivacyEnabled(bool) external;                        // factory-only, applied at deploy
+    function nonce() external view returns (uint256);                 // shared EIP-712 replay nonce
+    // recovery address (lost-key path) — see §9.3.2
+    function recoveryAddress() external view returns (address);
+    function recoveryDelay() external view returns (uint256);
+    function recoveryRequestedAt() external view returns (uint256);
+    function setRecoveryAddress(address recovery) external;           // owner-only
+    function setRecoveryAddressBySig(address recovery, uint256 nonce, uint256 deadline,
+                                     uint8 v, bytes32 r, bytes32 s) external; // EIP-712 relayed
+    function beginRecovery() external;                                // recovery address or owner
+    function cancelRecovery() external;                               // owner-only
+    function executeRecovery() external;                              // anyone, once the delay elapses
+    function setRecoveryDelay(uint256 delay) external;                // factory-only (fleet policy)
 }
 ```
 
@@ -730,9 +792,20 @@ contract GlobmintVaultClone {
   resolves to an empty commitment and reverts.
 - **Any USDC in the clone is withdrawable by its owner** — including funds that arrived by
   plain transfer (the token balance is the availability baseline).
-- `withdrawWithSig` / `transferOwnershipBySig` are EIP-712 relayed flows; the latter lets
-  an unlinked account's signer-placeholder owner be claimed by the user ("sign to take
-  custody"), sharing the per-clone nonce so one signature type never replays the other.
+- **One shared EIP-712 nonce per clone.** `withdrawWithSig`, `transferOwnershipBySig`, and
+  `setRecoveryAddressBySig` all consume the same `nonce()`, so a signature for one intent
+  type (and one `(to, amount, nonce, deadline)`) can never be replayed as another. The
+  `v`/`r`/`s` recovery is EIP-2 anti-malleability guarded.
+- `withdrawWithSig` is the self-custody withdrawal relay: the user's signature over
+  `WithdrawRequest(to, amount, nonce, deadline)` moves USDC from *their* clone to the
+  destination. `transferOwnershipBySig` lets an unlinked account's signer-placeholder
+  owner be claimed by the user ("sign to take custody").
+- **Recovery address.** The clone's owner can designate a backup `recoveryAddress`
+  (directly, or relayed via `setRecoveryAddressBySig`). Once the factory has armed a
+  `recoveryDelay`, the recovery address (or the owner) can `beginRecovery();` the owner
+  can `cancelRecovery()` at any point before the delay elapses; after the delay, anyone
+  can `executeRecovery()` and the recovery address becomes owner. `setRecoveryDelay(0)`
+  unarms and cancels any pending recovery (§9.3.2).
 
 ### 9.2 The indexer
 
@@ -783,8 +856,13 @@ flowchart TB
   the vault's on-chain USDC balance before anything is broadcast** (an underfunded
   vault errors with `ErrInsufficientBalance` and never spends gas —
   `TestWithdrawRejectsInsufficientBeforeBroadcast`).
-- It converts the principal to USDC, broadcasts the signer's `transfer(destination, usdc)`
-  to the stablecoin, and records the transaction with `provider_ref = tx_hash`.
+- It converts the principal to USDC and relays **`withdrawWithSig` on the user's own
+  clone** to the destination, authorized by the user's EIP-712 signature (quoted by
+  `GET /savings/withdraw/prepare`, §2.3.1) and recorded with `provider_ref = tx_hash`.
+  In the transitional `GLOBMINT_REQUIRE_USER_SIGNATURE=false` mode an unclaimed account may
+  fall back to the platform placeholder owner's signature via the shared signer
+  (`transfer(destination, usdc)`); strict mode (the mainnet requirement) refuses that
+  path entirely.
 - **Fee.** The user pays principal + the §8.1.1 withdrawal fee (0.2%, min ₦10, cap ₦100
   by default), debited atomically with the fee settled to the platform account; the
   transaction carries `fee_minor` (`TestWithdraw_Instant_FeeDeducted`). The daily cap
@@ -799,7 +877,13 @@ USDC leaves the vault, and a `pending` row is created instead. The fee is comput
 request time and stored on the row, but nothing is debited until release.
 
 - **Lifecycle.** `pending` (created by `POST /savings/withdraw`) → `broadcasting` (claimed
-  atomically by the sweeper exactly once) → `broadcast` (with its tx hash) | `cancelled`.
+  atomically by the sweeper exactly once) → `broadcast` (with its tx hash) | `cancelled`
+  | `expired` (terminal: a pre-signed intent went stale before its deadline, never retried).
+- **Pre-signed intents (strict mode).** When the user submitted a signature, it is stored
+  on the elevation row (`signature`, `signed_nonce`, `signed_amount_base`, `deadline`). The
+  sweeper relays that **exact** signed `withdrawWithSig` at release time — the platform
+  never re-signs or rewrites a user's authorization. A signature that would be stale by
+  release is rejected upfront.
 - **The sweeper** (`RunElevationSweeper`, also running under `-indexer-only`) periodically
   claims due rows with a `ClaimForBroadcast` guard (only one instance wins), broadcasts
   via the signer, then debits principal + the stored fee and `MarkBroadcast`s. A
@@ -814,6 +898,44 @@ request time and stored on the row, but nothing is debited until release.
   `TestWithdraw_Elevated_Cancel_NoFee`).
 - Env knobs: `GLOBMINT_VAULT_WITHDRAW_ELEVATION_THRESHOLD_MINOR` (kobo; `0` disables) and
   `GLOBMINT_VAULT_WITHDRAW_ELEVATION_DELAY` (default `24h`).
+
+#### 9.3.2 Recovery address — the lost-key path
+
+Every per-user clone supports a **recovery address**: a backup that can take over ownership
+if the user loses the key to their owner wallet. The design goal is that loss is expensive
+but never permanent, without ever letting a stranger seize the clone.
+
+- **Designation.** The owner sets a recovery address directly (`setRecoveryAddress`) or the
+  app relays the owner's EIP-712 signature over
+  `SetRecovery(recoveryAddress, nonce, deadline)` via `setRecoveryAddressBySig` — the
+  backend only relays; it cannot set one. The zero address, the current owner, and
+  non-owner signatures are rejected both off-chain (no gas spent) and by the contract.
+- **Arming.** The recovery delay is a **fleet policy** set by the factory
+  (`GlobmintVaultFactory.setRecoveryDelay(clone, delay)`), not by the clone owner — so the
+  platform can choose whether recovery is enabled at all. `delay = 0` means recovery is
+  unarmed (and cancels any pending request). The backend surfaces the on-chain recovery
+  state via eth_call but does not arm delays itself; arming is an operator action on the
+  factory.
+- **Lifecycle.** The designated recovery address (or the still-holding owner) calls
+  `beginRecovery()` to start the clock (`RecoveryInitiated`). The **owner** may
+  `cancelRecovery()` at any time before the delay elapses — that window is the anti-theft
+  throttle: if the "recovery" is actually an attacker, the true owner who still controls
+  their wallet cancels it. Once `requestedAt + delay` has passed, *anyone* can
+  `executeRecovery()`; ownership transfers to the recovery address and the delay resets to
+  0 (the recovery address itself is retained, so the cycle can repeat). Executed recovery
+  under an armed-but-unauthorized flow is impossible by construction: only a
+  signature-verified designation can begin it.
+- **API surface.** `GET /savings/recovery` reads the clone's live recovery state
+  (`recovery_address`, `recovery_delay_sec`, `recovery_requested_at`, `recovery_at`,
+  `recovery_pending`, `owner`) from the chain; `GET /savings/recovery/prepare` quotes the
+  `SetRecovery` payload the owner signs; `PUT /savings/recovery` verifies and relays it.
+- **Chain-authoritative, cache-backed.** The chain is the source of truth. The backend
+  keeps a best-effort cache (`user_vault_clones.recovery_address/recovery_delay/
+  recovery_requested_at/owner_address`) written through after a successful set and
+  refreshed by the `RunRecoveryReconciler` background loop; if the node is unreachable the
+  status endpoint falls back to the last cached snapshot (stale-while-error) so the UI
+  never invents data. Reads are never made to a cache alone, and mutations are always
+  chain-first with the signature verified off-chain before broadcasting.
 
 ### 9.4 Environment variables (blockchain)
 
@@ -839,6 +961,11 @@ request time and stored on the row, but nothing is debited until release.
   (`depositFor`/`withdrawWithSalt` only, commitment-only events), and the backend derives
   commitments from `user_salts`. New users linking a deposit address receive a fresh random
   salt; the one-off migration `0013_privacy_salts.sql` populates existing rows. |
+| `GLOBMINT_REQUIRE_USER_SIGNATURE` | `false` (default) or `true`. When `true`, every
+  withdrawal relayed by the backend must carry the user's own EIP-712 signature
+  (`withdrawWithSig`, §2.3.1); the platform signer can no longer sign on the user's
+  behalf, and unclaimed placeholder-owner accounts are refused. **The mainnet gate
+  (§7.5) requires `true`.** |
 
 > ⚠️ The canonical mainnet USDC is `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48` (note the
 > trailing `8`). A one-character error here would route production deposits to a non-token.
@@ -961,6 +1088,9 @@ figures cannot, so they are never merged into what the user sees as theirs.
 | `0013_privacy_salts` | `user_salts` table (`user_id`, `salt BYTEA`) + `deposit_addresses.salt` column; enables `GLOBMINT_PRIVACY_MODE=true` |
 | `0014_unattributed_indexer_events` | flags unlinked direct vault sends as `unattributed` in `indexer_events` so operators can attribute them |
 | `0015_user_vault_clones` | per-user clone deposit addresses (`user_vault_clones`: user id → deterministic clone, factory, chain) |
+| `0016_withdraw_signature` | signature-gated withdrawals: `withdrawal_elevations` persist the user's pre-signed `withdrawWithSig` intent (`signature`, `signed_nonce`, `signed_amount_base`, `deadline`, `expired_reason`) and add a terminal `expired` status |
+| `0017_salt_derivation` | privacy salt provenance: `user_salts.derivation` (`random` \| `wallet-derived`), `source_address`, `signed_message`, and a matching CHECK constraint |
+| `0018_recovery_addresses` | recovery cache columns on `user_vault_clones`: `recovery_address`, `owner_address`, `recovery_delay`, `recovery_requested_at` (chain stays authoritative; see §9.3.2) |
 
 Key tables: `users`, `sessions`, `accounts`, `transactions`, `balance_ledger`,
 `exchange_rates`, `deposit_addresses`, `user_salts`, `user_vault_clones`,
@@ -1031,7 +1161,7 @@ while no vault address is configured.
 
 ```bash
 cd backend/contracts
-npx hardhat test                                        # 48 contract tests
+npx hardhat test                                        # 61 contract tests
 STABLECOIN_ADDRESS=0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238 \
   npx hardhat run scripts/deploy.js --network sepolia   # mainnet: use 0xA0b8…B48
 ```
@@ -1097,9 +1227,9 @@ when host `pg_dump` is missing.
 | Suite | Command | Coverage |
 |---|---|---|
 | Go unit | `go test ./internal/domain/...` | money arithmetic, rounding, negatives; withdrawal-fee schedule (min/cap/percentage/disabled, overflow-safe) |
-| Go integration | `go test ./internal/services/...` | real Postgres (docker on :5434): credits/debits, idempotency (incl. concurrent), transfers, conversion, beneficiary CRUD, indexer resumability (restart, crash-safe cursor, RPC faults, confirmation window), parallel crediting, leader election, the elevation lifecycle (time-lock, cancel, exactly-once sweep, insufficient pre-check), and withdrawal fees (instant debit + platform settlement, stored-then-swept elevated fee, cancel charges nothing, daily cap ignores fees) |
+| Go integration | `go test ./internal/services/...` | real Postgres (docker on :5434): credits/debits, idempotency (incl. concurrent), transfers, conversion, beneficiary CRUD, indexer resumability (restart, crash-safe cursor, RPC faults, confirmation window), parallel crediting, leader election, the elevation lifecycle (time-lock, cancel, exactly-once sweep, insufficient pre-check), withdrawal fees (instant debit + platform settlement, stored-then-swept elevated fee, cancel charges nothing, daily cap ignores fees), signature-gated withdrawals (prepare→sign→relay, wrong/expired/stale signatures rejected, custody precondition), and recovery (prepare/matches-signature, status cache fallback, reconciler refresh) |
 | Load/chaos | `go run ./cmd/loadtest` + `scripts/chaos-test.sh` | end-to-end hot path against an in-process server (register → login→2FA → convert → transfer), plus injected-fault runs asserting graceful 503s/latency (see §15) |
-| Solidity | `npx hardhat test` | 48 tests across three suites: V1 `GlobmintVault` (13); V2 privacy `GlobmintVaultV2` (9: commitment credits, wrong-salt reverts, toggle preserves balances, cross-user drain block, boot-mode reverts); clones `GlobmintVaultClone` (26: privacy-enabled fleet boot, gated `deposit`/`withdraw`/`withdrawWithSig`, `depositFor` commitment credits, `withdrawWithSalt` + wrong-salt revert, factory-only `setPrivacyEnabled`, plain-transfer custody) |
+| Solidity | `npx hardhat test` | 61 tests across three suites: V1 `GlobmintVault` (13); V2 privacy `GlobmintVaultV2` (9: commitment credits, wrong-salt reverts, toggle preserves balances, cross-user drain block, boot-mode reverts); clones `GlobmintVaultClone` + factory (39: deterministic CREATE2 addresses, plain-transfer custody with no wallet link, signature-gated `withdrawWithSig` incl. wrong/expired-signature and nonce-cross-replay rejection, ownership handover via `transferOwnershipBySig`, the factory `setDirectWithdrawDisabled` kill-switch, the full recovery lifecycle — designation, arming, begin/cancel/execute timing — privacy-mode commitment entry points, and hardening/isolation) |
 | Flutter unit/widget | `flutter test` | formatters (incl. `vaultUsdc`), auth service (login + 2FA verify, token persistence), balance service mapping, login-page 2FA widget flow |
 | Flutter lint | `flutter analyze` + `flutter build web` | static analysis + web compile |
 
@@ -1161,15 +1291,28 @@ same behaviour through the real HTTP endpoints.
 
 - **Mainnet is configured, not yet funded.** All deploy tooling, the production gate, and
   the runbook are in place; real USDC is not yet flowing (requires the §12.3 steps).
-- **Withdraw-to-any-address is operator-authorized by PIN + limits + time-lock.** The chain-level
-  `withdraw` remains self-only; the app's signer flow adds off-chain spend controls on top,
-  and high-value requests wait out the elevation delay (§9.3.1) instead of broadcasting.
+- **Withdraw-to-any-address is signature-gated + PIN + limits + time-lock.** The app-level
+  signer flow relays `withdrawWithSig` authorized by the user's own EIP-712 signature
+  (§2.3.1) on top of PIN, limits, and idempotency; high-value requests also wait out the
+  elevation delay (§9.3.1). The exact mainnet gating (`GLOBMINT_REQUIRE_USER_SIGNATURE`)
+  is enforced by the production gate (§7.5); the default remains the transitional mode
+  where the platform placeholder owner may sign for unclaimed accounts.
+- **Recovery is contract + API complete, client UI pending.** The clone contract, the
+  `GET/PUT /savings/recovery*` endpoints, and the cache/reconciler are shipped and tested;
+  the Flutter client does not yet surface recovery status or a "designate recovery address"
+  flow, and arming the delay is an operator factory action, not a user setting. Until the
+  client wires it, recovery is usable via direct contract/API calls.
+- **Wallet signing is API-ready, client wiring partial.** The prepare endpoints return the
+  exact `eth_signTypedData_v4` payloads for withdrawal and recovery, but end-to-end
+  in-wallet signing (MetaMask/WalletConnect bridge) in the Flutter app is still the
+  remaining client work; today the app drives the transitional PIN flow.
 - **FX rates are seeded static values**, not streamed market data; the quote endpoint is
   the extension point for a price feed.
 - **Future work:** real price feeds, email/SMS notification delivery, a QR-code flow for
-  the TOTP secret, wallet-deep-link deposit flow (WalletConnect/MetaMask), and multi-chain
-  UX once the L2 groundwork (§9.4) is exercised on a testnet. The app surfaces the Circle
-  USDC risk disclosure and watch-only clarity before any real money moves.
+  the TOTP secret, wallet-deep-link deposit flow (WalletConnect/MetaMask), in-app recovery
+  UX, and multi-chain UX once the L2 groundwork (§9.4) is exercised on a testnet. The app
+  surfaces the Circle USDC risk disclosure and watch-only clarity before any real money
+  moves.
 - **Privacy withdrawal linkage is accepted for v1.** The salt proof proves
   commitment ownership without a ZK circuit, but the withdrawal transaction
   ultimately pays the user's own address, so an on-chain observer can correlate
@@ -1185,12 +1328,14 @@ Every privacy-mode launch gate runs:
 [`docs/privacy_test_plan.md`](docs/privacy_test_plan.md). The automated
 portion is already covered by existing suites:
 
-- **Contract:** `backend/contracts$ npx hardhat test` — 48 tests across three suites: V1
+- **Contract:** `backend/contracts$ npx hardhat test` — 61 tests across three suites: V1
   `GlobmintVault` (13), V2 privacy `GlobmintVaultV2` (9: commitment credits, wrong-salt
   reverts, toggle-preserves-balances, cross-user drain block, boot-mode reverts), and the
-  clone suite `GlobmintVaultClone` (26: privacy-enabled fleet boot, `depositFor` /
-  `withdrawWithSalt`, gated `deposit`/`withdraw`/`withdrawWithSig`, factory-only
-  `setPrivacyEnabled`, plain-transfer custody).
+  clone suite `GlobmintVaultClone` + factory (39: privacy-enabled fleet boot,
+  `depositFor`/`withdrawWithSalt`, gated `deposit`/`withdraw`/`withdrawWithSig`,
+  signature-gated `withdrawWithSig` + shared-nonce replay rejection,
+  `transferOwnershipBySig`, the recovery lifecycle, the factory `setDirectWithdrawDisabled`
+  kill-switch, plain-transfer custody, isolation/hardening).
 - **Backend:** `backend$ go test ./...` — incl. savings privacy integration
   (salt created on link, no leak in JSON, relink preserves salt, legacy mode
   adds no salt) and vault privacy integration (matched commitment credited,

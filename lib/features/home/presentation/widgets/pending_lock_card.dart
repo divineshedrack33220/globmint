@@ -24,12 +24,36 @@ class _PendingLockCardState extends ConsumerState<PendingLockCard> {
   Timer? _timer;
   String? _cancellingId;
 
+  /// Lock ids already detected as released this session; guards against
+  /// hammering the API every tick while a stale "releasing" row lingers.
+  final Set<String> _releasingNotified = {};
+
   @override
   void initState() {
     super.initState();
-    _timer = Timer.periodic(const Duration(seconds: 30), (_) {
-      if (mounted) setState(() {});
+    // Tick every second so the countdown is live to the second, and trigger
+    // a data refresh the moment a lock's window elapses.
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) return;
+      setState(() {});
+      _refreshReleasedLocks();
     });
+  }
+
+  void _refreshReleasedLocks() {
+    final elevations = ref.read(pendingElevationsProvider).valueOrNull;
+    if (elevations == null || elevations.isEmpty) return;
+    var due = false;
+    for (final e in elevations) {
+      if (e.remaining.inSeconds <= 0 && _releasingNotified.add(e.id)) {
+        due = true;
+      }
+    }
+    if (!due) return;
+    ref.invalidate(pendingElevationsProvider);
+    ref.invalidate(accountSummaryProvider);
+    ref.invalidate(vaultStatusProvider);
+    ref.invalidate(transactionsProvider);
   }
 
   @override
@@ -44,12 +68,15 @@ class _PendingLockCardState extends ConsumerState<PendingLockCard> {
       title: 'Cancel this withdrawal?',
       details: [
         ConfirmationDetail(
-            label: 'Amount',
-            value: CurrencyFormatter.ngn(e.amountNgn),
-            isHighlighted: true),
+          label: 'Amount',
+          value: CurrencyFormatter.ngn(e.amountNgn),
+          isHighlighted: true,
+        ),
         ConfirmationDetail(label: 'To', value: _shortAddress(e.destination)),
         const ConfirmationDetail(
-            label: 'Fee', value: 'No fee — nothing has moved yet'),
+          label: 'Fee',
+          value: 'No fee — nothing has moved yet',
+        ),
       ],
       confirmText: 'Cancel withdrawal',
       isDestructive: true,
@@ -57,8 +84,7 @@ class _PendingLockCardState extends ConsumerState<PendingLockCard> {
     if (confirmed != true || !mounted) return;
     setState(() => _cancellingId = e.id);
     try {
-      final ok =
-          await ref.read(savingsClientProvider).cancelElevation(e.id);
+      final ok = await ref.read(savingsClientProvider).cancelElevation(e.id);
       if (!mounted) return;
       setState(() => _cancellingId = null);
       if (ok) {
@@ -67,20 +93,23 @@ class _PendingLockCardState extends ConsumerState<PendingLockCard> {
         ref.invalidate(vaultStatusProvider);
         ref.invalidate(transactionsProvider);
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Withdrawal cancelled — no fee charged')),
+          const SnackBar(
+            content: Text('Withdrawal cancelled — no fee charged'),
+          ),
         );
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-              content: Text('Could not cancel — it may have already released')),
+            content: Text('Could not cancel — it may have already released'),
+          ),
         );
       }
     } catch (err) {
       if (!mounted) return;
       setState(() => _cancellingId = null);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Cancel failed: $err')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Cancel failed: $err')));
     }
   }
 
@@ -111,12 +140,17 @@ class _PendingLockCardState extends ConsumerState<PendingLockCard> {
                   children: [
                     Row(
                       children: [
-                        const Icon(Icons.timer_outlined,
-                            color: AppColors.primary, size: 20),
+                        const Icon(
+                          Icons.timer_outlined,
+                          color: AppColors.primary,
+                          size: 20,
+                        ),
                         const SizedBox(width: 8),
                         Expanded(
-                          child: Text('Releasing in ${formatCountdown(e.remaining)}',
-                              style: context.typography.labelLarge),
+                          child: Text(
+                            'Releasing in ${formatCountdown(e.remaining)}',
+                            style: context.typography.labelLarge,
+                          ),
                         ),
                       ],
                     ),
@@ -136,12 +170,16 @@ class _PendingLockCardState extends ConsumerState<PendingLockCard> {
                     SizedBox(
                       width: double.infinity,
                       child: OutlinedButton(
-                        onPressed: _cancellingId == e.id ? null : () => _cancel(e),
+                        onPressed: _cancellingId == e.id
+                            ? null
+                            : () => _cancel(e),
                         child: _cancellingId == e.id
                             ? const SizedBox(
                                 width: 16,
                                 height: 16,
-                                child: CircularProgressIndicator(strokeWidth: 2),
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
                               )
                             : const Text('Cancel withdrawal'),
                       ),

@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/constants/app_constants.dart';
+import 'connectivity.dart';
 
 /// A thin, shared HTTP client for the Globe Mint Go backend.
 ///
@@ -15,12 +17,31 @@ import '../../core/constants/app_constants.dart';
 ///
 /// Business service classes take an [ApiClient] and call [get]/[post]/[put].
 class ApiClient {
-  ApiClient({http.Client? httpClient, String? baseUrl})
-      : _http = httpClient ?? http.Client(),
-        _baseUrl = baseUrl ?? _defaultBaseUrl();
+  ApiClient({http.Client? httpClient, String? baseUrl, this.connectivity})
+    : _http = httpClient ?? http.Client(),
+      _baseUrl = baseUrl ?? _defaultBaseUrl();
 
   final http.Client _http;
   final String _baseUrl;
+
+  /// Online/offline signal updated from transport outcomes (may be null in
+  /// tests where connectivity reporting is irrelevant).
+  final ConnectivityService? connectivity;
+
+  /// Runs a transport call, flipping the connectivity signal on outcomes.
+  Future<http.Response> _run(Future<http.Response> Function() call) async {
+    try {
+      final res = await call();
+      connectivity?.reportSuccess();
+      return res;
+    } on http.ClientException {
+      connectivity?.reportFailure();
+      rethrow;
+    } on TimeoutException {
+      connectivity?.reportFailure();
+      rethrow;
+    }
+  }
 
   /// Idempotency keys held per endpoint until that call succeeds, so a retry
   /// after a failure reuses the same key and the backend can dedupe the money
@@ -40,7 +61,9 @@ class ApiClient {
       resolved = 'http://10.0.2.2:8081';
     }
     if (resolved.isEmpty) resolved = 'http://localhost:8081';
-    if (resolved.endsWith('/')) resolved = resolved.substring(0, resolved.length - 1);
+    if (resolved.endsWith('/')) {
+      resolved = resolved.substring(0, resolved.length - 1);
+    }
     return resolved;
   }
 
@@ -64,8 +87,7 @@ class ApiClient {
 
   /// Returns the idempotency key for [path], reusing any key from a previous
   /// failed attempt so money moves aren't duplicated on retry.
-  String _idempotencyKeyFor(String path) =>
-      _pendingKeys[path] ??= _newKey();
+  String _idempotencyKeyFor(String path) => _pendingKeys[path] ??= _newKey();
 
   void _releaseKey(String path) => _pendingKeys.remove(path);
 
@@ -74,9 +96,13 @@ class ApiClient {
     return 'app-$rnd-${rnd.toRadixString(16)}';
   }
 
-  Future<Map<String, dynamic>?> get(String path, {bool idempotent = false}) async {
+  Future<Map<String, dynamic>?> get(
+    String path, {
+    bool idempotent = false,
+  }) async {
     final key = idempotent ? _idempotencyKeyFor(path) : null;
-    final res = await _http.get(_uri(path), headers: await _headers(idempotencyKey: key));
+    final headers = await _headers(idempotencyKey: key);
+    final res = await _run(() => _http.get(_uri(path), headers: headers));
     final data = _decode(res);
     if (key != null) _releaseKey(path);
     return data;
@@ -88,10 +114,13 @@ class ApiClient {
     bool idempotent = false,
   }) async {
     final key = idempotent ? _idempotencyKeyFor(path) : null;
-    final res = await _http.post(
-      _uri(path),
-      headers: await _headers(idempotencyKey: key),
-      body: body == null ? null : jsonEncode(body),
+    final headers = await _headers(idempotencyKey: key);
+    final res = await _run(
+      () => _http.post(
+        _uri(path),
+        headers: headers,
+        body: body == null ? null : jsonEncode(body),
+      ),
     );
     final data = _decode(res);
     if (key != null) _releaseKey(path);
@@ -104,10 +133,13 @@ class ApiClient {
     bool idempotent = false,
   }) async {
     final key = idempotent ? _idempotencyKeyFor(path) : null;
-    final res = await _http.put(
-      _uri(path),
-      headers: await _headers(idempotencyKey: key),
-      body: body == null ? null : jsonEncode(body),
+    final headers = await _headers(idempotencyKey: key);
+    final res = await _run(
+      () => _http.put(
+        _uri(path),
+        headers: headers,
+        body: body == null ? null : jsonEncode(body),
+      ),
     );
     final data = _decode(res);
     if (key != null) _releaseKey(path);
@@ -120,22 +152,26 @@ class ApiClient {
     bool idempotent = false,
   }) async {
     final key = idempotent ? _idempotencyKeyFor(path) : null;
-    final res = await _http.patch(
-      _uri(path),
-      headers: await _headers(idempotencyKey: key),
-      body: body == null ? null : jsonEncode(body),
+    final headers = await _headers(idempotencyKey: key);
+    final res = await _run(
+      () => _http.patch(
+        _uri(path),
+        headers: headers,
+        body: body == null ? null : jsonEncode(body),
+      ),
     );
     final data = _decode(res);
     if (key != null) _releaseKey(path);
     return data;
   }
 
-  Future<Map<String, dynamic>?> delete(String path, {bool idempotent = false}) async {
+  Future<Map<String, dynamic>?> delete(
+    String path, {
+    bool idempotent = false,
+  }) async {
     final key = idempotent ? _idempotencyKeyFor(path) : null;
-    final res = await _http.delete(
-      _uri(path),
-      headers: await _headers(idempotencyKey: key),
-    );
+    final headers = await _headers(idempotencyKey: key);
+    final res = await _run(() => _http.delete(_uri(path), headers: headers));
     final data = _decode(res);
     if (key != null) _releaseKey(path);
     return data;
@@ -156,9 +192,14 @@ class ApiClient {
       return data;
     }
     final message =
-        data?['message'] as String? ?? data?['error'] as String? ?? 'Request failed';
-    throw ApiException(res.statusCode, message,
-        code: data?['code'] as String? ?? '');
+        data?['message'] as String? ??
+        data?['error'] as String? ??
+        'Request failed';
+    throw ApiException(
+      res.statusCode,
+      message,
+      code: data?['code'] as String? ?? '',
+    );
   }
 }
 

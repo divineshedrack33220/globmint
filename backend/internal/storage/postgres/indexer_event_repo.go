@@ -60,7 +60,7 @@ func (r *indexerEventRepo) ListUnattributed(ctx context.Context, limit int) ([]d
 		`SELECT tx_hash, log_index, block_number, event_type, from_addr, to_addr, value_base
 		   FROM indexer_events
 		  WHERE event_type = 'unattributed'
-		  ORDER BY block_number DESC, log_index DESC
+		  ORDER BY block_number DESC, log_index DESC, ingested_at DESC
 		  LIMIT $1`,
 		limit,
 	)

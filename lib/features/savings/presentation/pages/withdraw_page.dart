@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 import '../../../../app/providers.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/theme_extensions.dart';
+import '../../../../core/utils/formatters.dart';
 import '../../../../core/widgets/app_button.dart';
 import '../../../../core/widgets/app_text_field.dart';
 import '../../../../shared/models/models.dart';
@@ -108,10 +109,12 @@ class _WithdrawPageState extends ConsumerState<WithdrawPage> {
     final typed = _addressController.text.trim().toLowerCase();
     return beneficiaries
         .where((b) => b.name.trim().isNotEmpty)
-        .where((b) =>
-            typed.isEmpty ||
-            b.name.toLowerCase().contains(typed) ||
-            b.address.toLowerCase().contains(typed))
+        .where(
+          (b) =>
+              typed.isEmpty ||
+              b.name.toLowerCase().contains(typed) ||
+              b.address.toLowerCase().contains(typed),
+        )
         .toList();
   }
 
@@ -138,11 +141,15 @@ class _WithdrawPageState extends ConsumerState<WithdrawPage> {
     final text = _amountController.text.replaceAll(',', '');
     final parsed = double.tryParse(text);
     if (parsed == null || parsed <= 0) {
-      if (_usdcEstimate != null && mounted) setState(() => _usdcEstimate = null);
+      if (_usdcEstimate != null && mounted) {
+        setState(() => _usdcEstimate = null);
+      }
       return;
     }
     if (parsed < ConversionService.minQuoteAmount) {
-      if (_usdcEstimate != null && mounted) setState(() => _usdcEstimate = null);
+      if (_usdcEstimate != null && mounted) {
+        setState(() => _usdcEstimate = null);
+      }
       return;
     }
     try {
@@ -161,7 +168,10 @@ class _WithdrawPageState extends ConsumerState<WithdrawPage> {
     if (!_network.available) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-            content: Text('This network is coming soon. Use Ethereum (Sepolia) for now.')),
+          content: Text(
+            'This network is coming soon. Use Ethereum (Sepolia) for now.',
+          ),
+        ),
       );
       return;
     }
@@ -178,8 +188,10 @@ class _WithdrawPageState extends ConsumerState<WithdrawPage> {
     if (_isSelfSend(address)) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-            content: Text(
-                'That is your vault\u2019s own address — funds would go in a circle. Use an external wallet address.')),
+          content: Text(
+            'That is your vault\u2019s own address — funds would go in a circle. Use an external wallet address.',
+          ),
+        ),
       );
       return;
     }
@@ -187,17 +199,26 @@ class _WithdrawPageState extends ConsumerState<WithdrawPage> {
     await Future.delayed(const Duration(milliseconds: 300));
     if (mounted) {
       setState(() => _loading = false);
-      context.push('/savings/withdraw-review', extra: {
-        'amount': amount,
-        'destination': address,
-        'network': _network.name,
-      });
+      context.push(
+        '/savings/withdraw-review',
+        extra: {
+          'amount': amount,
+          'destination': address,
+          'network': _network.name,
+        },
+      );
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final depositInfo = ref.watch(depositInfoProvider).valueOrNull;
+    final available =
+        ref.watch(accountSummaryProvider).valueOrNull?.available.balance ?? 0.0;
+    // Mirror of the server withdrawal fee (0.2%, min ₦10, cap ₦100) used to
+    // pre-check that principal + fee stay within the available balance.
+    double feeFor(double amountNgn) =>
+        (amountNgn <= 0 ? 0.0 : amountNgn * 20 / 10000).clamp(10.0, 100.0);
     final beneficiariesAsync = ref.watch(beneficiariesProvider);
     final beneficiaries =
         beneficiariesAsync.valueOrNull ?? const <Beneficiary>[];
@@ -206,8 +227,10 @@ class _WithdrawPageState extends ConsumerState<WithdrawPage> {
     final vaultAddress = (depositInfo?.address ?? '').toLowerCase();
     final vaultContract = (depositInfo?.vaultContract ?? '').toLowerCase();
     final entered = _addressController.text.trim().toLowerCase();
-    final isSelfSend = entered.isNotEmpty &&
-        (entered == vaultAddress || (vaultContract.isNotEmpty && entered == vaultContract));
+    final isSelfSend =
+        entered.isNotEmpty &&
+        (entered == vaultAddress ||
+            (vaultContract.isNotEmpty && entered == vaultContract));
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -228,16 +251,32 @@ class _WithdrawPageState extends ConsumerState<WithdrawPage> {
                   validator: (v) {
                     if (v == null || v.isEmpty) return 'Enter an amount';
                     final parsed = double.tryParse(v.replaceAll(',', ''));
-                    if (parsed == null || parsed <= 0) return 'Enter a valid amount';
+                    if (parsed == null || parsed <= 0) {
+                      return 'Enter a valid amount';
+                    }
+                    if (available > 0 &&
+                        parsed + feeFor(parsed) > available + 0.001) {
+                      return 'Insufficient balance — ${CurrencyFormatter.ngn(available)} available';
+                    }
                     return null;
                   },
                 ),
+                if (available > 0) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    'Available: ${CurrencyFormatter.ngn(available)}',
+                    style: context.typography.bodySmall.copyWith(
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                ],
                 if (_usdcEstimate != null) ...[
                   const SizedBox(height: 8),
                   Text(
                     '≈ ${_usdcEstimate!.toStringAsFixed(2)} USDC sent on-chain',
                     style: context.typography.bodySmall.copyWith(
-                        color: AppColors.textSecondary),
+                      color: AppColors.textSecondary,
+                    ),
                   ),
                 ],
                 const SizedBox(height: 20),
@@ -258,7 +297,10 @@ class _WithdrawPageState extends ConsumerState<WithdrawPage> {
                   ],
                 ),
                 const SizedBox(height: 20),
-                Text('Destination crypto address', style: context.typography.title),
+                Text(
+                  'Destination crypto address',
+                  style: context.typography.title,
+                ),
                 const SizedBox(height: 6),
                 Text(
                   _network.available
@@ -267,29 +309,31 @@ class _WithdrawPageState extends ConsumerState<WithdrawPage> {
                   style: context.typography.bodySmall,
                 ),
                 const SizedBox(height: 12),
-if (suggestionsActive) ...[
-                    Text('Saved addresses', style: context.typography.labelLarge),
-                    const SizedBox(height: 8),
-                    ...suggestions.map(
-                      (b) => Padding(
-                        padding: const EdgeInsets.only(bottom: 8),
-                        child: _SavedAddressChip(
-                          name: b.name,
-                          address: b.address,
-                          isSelected: _savedAddress == b.address,
-                          onTap: () => _pickAddress(b),
-                          onRemoved: _clearSaved,
-                        ),
+                if (suggestionsActive) ...[
+                  Text('Saved addresses', style: context.typography.labelLarge),
+                  const SizedBox(height: 8),
+                  ...suggestions.map(
+                    (b) => Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: _SavedAddressChip(
+                        name: b.name,
+                        address: b.address,
+                        isSelected: _savedAddress == b.address,
+                        onTap: () => _pickAddress(b),
+                        onRemoved: _clearSaved,
                       ),
                     ),
-                  ],
+                  ),
+                ],
                 TextFormField(
                   controller: _addressController,
                   style: context.typography.bodyMedium,
                   validator: (v) {
                     final value = v?.trim() ?? '';
                     if (value.isEmpty) return 'Enter a destination address';
-                    if (value.contains(RegExp(r'\s'))) return 'Address must not contain spaces';
+                    if (value.contains(RegExp(r'\s'))) {
+                      return 'Address must not contain spaces';
+                    }
                     if (!_addressPattern.hasMatch(value)) {
                       return 'Enter a valid crypto address (0x + 40 hex characters)';
                     }
@@ -299,8 +343,9 @@ if (suggestionsActive) ...[
                     hintText: _savedAddress != null
                         ? 'Paste or edit another address…'
                         : 'Paste any crypto address…',
-                    border:
-                        OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
                     filled: true,
                     fillColor: AppColors.surface,
                     suffixIcon: _savedAddress != null
@@ -317,14 +362,18 @@ if (suggestionsActive) ...[
                   Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Icon(Icons.warning_amber_outlined,
-                          color: Colors.orange, size: 16),
+                      const Icon(
+                        Icons.warning_amber_outlined,
+                        color: Colors.orange,
+                        size: 16,
+                      ),
                       const SizedBox(width: 6),
                       Expanded(
                         child: Text(
                           'That is your vault\u2019s own address — funds would go in a circle and you would still be charged. Use an external wallet address.',
                           style: context.typography.bodySmall.copyWith(
-                              color: Colors.orange),
+                            color: Colors.orange,
+                          ),
                         ),
                       ),
                     ],
@@ -428,7 +477,11 @@ class _SavedAddressChip extends StatelessWidget {
               ),
             ),
             IconButton(
-              icon: const Icon(Icons.close, size: 16, color: AppColors.textSecondary),
+              icon: const Icon(
+                Icons.close,
+                size: 16,
+                color: AppColors.textSecondary,
+              ),
               tooltip: 'Clear',
               onPressed: onRemoved,
             ),
