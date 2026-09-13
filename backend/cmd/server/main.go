@@ -16,6 +16,7 @@ import (
 	"globmint/backend/internal/httpapi"
 	"globmint/backend/internal/httpapi/middleware"
 	"globmint/backend/internal/infrastructure/blockchain"
+	"globmint/backend/internal/infrastructure/mailer"
 	"globmint/backend/internal/infrastructure/rates"
 	"globmint/backend/internal/services"
 	"globmint/backend/internal/storage/postgres"
@@ -48,10 +49,15 @@ func main() {
 		log.Fatalf("run migrations: %v", err)
 	}
 
-	authSvc := services.NewAuthService(store, cfg.SessionTTL, cfg.SessionSecret)
+	authSvc := services.NewAuthService(store, cfg.SessionTTL, cfg.SessionSecret,
+		// Resend-backed email sender (console fallback when no API key).
+		mailer.New(cfg.ResendAPIKey, cfg.EmailFrom))
 	balanceSvc := services.NewBalanceService(store)
 	ledgerSvc := services.NewLedgerService(store)
-	moneySvc := services.NewMoneyService(store)
+	moneySvc := services.NewMoneyService(store,
+		// Same sender notifies users when money arrives or leaves: "you
+		// received X" on deposits, "you sent X" on withdrawals.
+		services.WithTransactionMailer(mailer.New(cfg.ResendAPIKey, cfg.EmailFrom)))
 
 	// Blockchain settlement layer. Uses the mock service unless the configured
 	// mode is "real" and a valid RPC URL is present.

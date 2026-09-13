@@ -101,7 +101,20 @@ final GoRouter appRouter = GoRouter(
     ),
     GoRoute(
       path: '/verify',
-      pageBuilder: (context, state) => _buildPageWithTransition(context, state, VerificationPage(email: state.extra as String?), isAuthRoute: true),
+      pageBuilder: (context, state) {
+        final extra = state.extra is Map ? (state.extra as Map) : const <String, dynamic>{};
+        return _buildPageWithTransition(
+          context,
+          state,
+          VerificationPage(
+            email: extra['email'] as String?,
+            // When registration already sent a code, carry the cooldown
+            // deadline so the page never double-sends on open.
+            initialResendAfterMs: extra['resend_after'] as int?,
+          ),
+          isAuthRoute: true,
+        );
+      },
     ),
     GoRoute(
       path: '/create-pin',

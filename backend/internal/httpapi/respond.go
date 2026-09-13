@@ -66,8 +66,10 @@ func safeMessage(err error) string {
 		return "A valid Ethereum deposit address is required."
 	case errors.Is(err, domain.ErrInvalidPin):
 		return "Invalid PIN. Please try again."
-	case errors.Is(err, domain.ErrInvalidCode):
+	case errors.Is(err, domain.ErrInvalidCode), errors.Is(err, domain.ErrOTPExpired), errors.Is(err, domain.ErrOTPNotFound):
 		return "The verification code is invalid or has expired."
+	case errors.Is(err, domain.ErrOTPCooldown):
+		return "Please wait a moment before requesting another code."
 	case errors.Is(err, domain.ErrLimitExceeded):
 		return "This transaction exceeds an account limit. Please try again later."
 	case errors.Is(err, domain.ErrFeatureDisabled):
@@ -117,11 +119,13 @@ func errorStatus(err error) int {	switch {
 		errors.Is(err, domain.ErrRateExceeded),
 		errors.Is(err, domain.ErrInvalidAddress),
 		errors.Is(err, domain.ErrInvalidPin),
-		errors.Is(err, domain.ErrInvalidCode):
+		errors.Is(err, domain.ErrInvalidCode),
+		errors.Is(err, domain.ErrOTPExpired),
+		errors.Is(err, domain.ErrOTPNotFound):
 		return http.StatusBadRequest
 	case errors.Is(err, domain.ErrLimitExceeded), errors.Is(err, domain.ErrFeatureDisabled):
 		return http.StatusForbidden
-	case errors.Is(err, domain.ErrTooManyAttempts):
+	case errors.Is(err, domain.ErrTooManyAttempts), errors.Is(err, domain.ErrOTPCooldown):
 		return http.StatusTooManyRequests
 	case errors.Is(err, domain.ErrTwoFactorRequired):
 		return http.StatusOK

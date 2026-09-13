@@ -64,7 +64,6 @@
     #flt-splash-logo {
       width: 84px;
       height: 84px;
-      animation: splash-pulse 1.6s ease-in-out infinite;
     }
 
     #flt-splash-wordmark {
@@ -93,16 +92,12 @@
       color: rgba(255, 255, 255, 0.55);
     }
 
-    @keyframes splash-pulse {
-      0%, 100% { transform: scale(1); }
-      50% { transform: scale(1.08); }
-    }
-  </style>
+    </style>
 </head>
 <body>
   <!-- Branded loading splash shown while Flutter initializes -->
   <div id="flt-splash">
-    <img id="flt-splash-logo" src="/assets/assets/images/logo.png" alt="Globe Mint">
+    <img id="flt-splash-logo" src="/assets/assets/images/logo.png" alt="GlobMint">
     <span id="flt-splash-wordmark">Globmint</span>
     <span id="flt-splash-attribution">Made by divine.build</span>
   </div>

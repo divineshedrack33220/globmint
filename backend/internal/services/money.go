@@ -5,20 +5,42 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 
 	"globmint/backend/internal/domain"
 	"globmint/backend/internal/domain/money"
 	"globmint/backend/internal/storage"
 )
 
+// TransactionNotifier emails users when money arrives or leaves their account.
+// Implementations are best-effort and never block or fail ledger writes.
+type TransactionNotifier interface {
+	SendMoneyReceived(ctx context.Context, to, name, amount string) error
+	SendMoneySent(ctx context.Context, to, name, amount string) error
+}
+
 // MoneyService orchestrates money movement on top of the ledger: deposits,
 // withdrawals, transfers, conversions, and saved-payee/payout management.
 type MoneyService struct {
-	store store
+	store    store
+	txMailer TransactionNotifier
 }
 
-func NewMoneyService(store store) *MoneyService {
-	return &MoneyService{store: store}
+// MoneyOption configures a MoneyService without breaking existing call sites.
+type MoneyOption func(*MoneyService)
+
+// WithTransactionMailer wires in email notifications for deposits and
+// withdrawals. The notifier must be non-blocking on failure (best-effort).
+func WithTransactionMailer(m TransactionNotifier) MoneyOption {
+	return func(s *MoneyService) { s.txMailer = m }
+}
+
+func NewMoneyService(store store, opts ...MoneyOption) *MoneyService {
+	s := &MoneyService{store: store}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
 }
 
 // notify files an inbox notification. Best-effort by design: inbox failures
@@ -46,6 +68,27 @@ func formatMinor(minor int64, currency string) string {
 		abs = -abs
 	}
 	return fmt.Sprintf("%s%d.%02d", symbol, abs/100, abs%100)
+}
+
+// emailUser sends the user an email about money movement. Strictly best-effort:
+// a missing or unreachable notifier, an account without an email, or a failed
+// send only logs — money movement is never held up by email.
+func (s *MoneyService) emailUser(ctx context.Context, userID string, send func(TransactionNotifier, string, string, string) error, currency string, amountMinor int64) {
+	if s.txMailer == nil || userID == "" || userID == domain.PlatformUserID {
+		return
+	}
+	u, err := s.store.UserRepo().FindByID(ctx, userID)
+	if err != nil || u == nil {
+		log.Printf("money: email lookup %s: %v", userID, err)
+		return
+	}
+	if u.Email == "" || u.Status != domain.UserStatusActive {
+		return
+	}
+	name := strings.TrimSpace(u.FirstName + " " + u.LastName)
+	if err := send(s.txMailer, u.Email, name, formatMinor(amountMinor, currency)); err != nil {
+		log.Printf("money: email notify %s (%s): %v", userID, u.Email, err)
+	}
 }
 
 // Deposit credits the user's available account in the given currency.
@@ -76,6 +119,9 @@ func (s *MoneyService) Deposit(ctx context.Context, userID, currency string, amo
 	s.notify(ctx, userID, domain.NotificationCategoryDeposit,
 		"Money received",
 		formatMinor(amountMinor, currency)+" arrived in your available balance.")
+	s.emailUser(ctx, userID, func(tm TransactionNotifier, to, name, amount string) error {
+		return tm.SendMoneyReceived(ctx, to, name, amount)
+	}, currency, amountMinor)
 	return txn, nil
 }
 
@@ -100,6 +146,9 @@ func (s *MoneyService) Withdraw(ctx context.Context, req LedgerMoveRequest, key 
 	s.notify(ctx, req.UserID, domain.NotificationCategoryWithdrawal,
 		"Withdrawal sent",
 		formatMinor(req.AmountMinor, req.Currency)+" sent from your available balance.")
+	s.emailUser(ctx, req.UserID, func(tm TransactionNotifier, to, name, amount string) error {
+		return tm.SendMoneySent(ctx, to, name, amount)
+	}, req.Currency, req.AmountMinor)
 	return txn, nil
 }
 
@@ -213,6 +262,9 @@ func (s *MoneyService) WithdrawExternal(ctx context.Context, req LedgerMoveReque
 	if err != nil {
 		return nil, err
 	}
+	s.emailUser(ctx, req.UserID, func(tm TransactionNotifier, to, name, amount string) error {
+		return tm.SendMoneySent(ctx, to, name, amount)
+	}, req.Currency, req.AmountMinor)
 	return result, nil
 }
 
@@ -225,19 +277,19 @@ func (s *MoneyService) Ledger() *LedgerService {
 // accounts (e.g. available -> savings), or from a user account to an external
 // recipient reference (which only debits the source).
 type TransferRequest struct {
-	UserID        string
-	FromKind      domain.AccountKind
-	ToKind        domain.AccountKind
-	Currency      string
-	AmountMinor   int64
-	FeeMinor      int64
-	ExchangeRate  string
-	Reference     string
-	ProviderRef   string
+	UserID         string
+	FromKind       domain.AccountKind
+	ToKind         domain.AccountKind
+	Currency       string
+	AmountMinor    int64
+	FeeMinor       int64
+	ExchangeRate   string
+	Reference      string
+	ProviderRef    string
 	IdempotencyKey string
-	Metadata      map[string]any
-	Destination   string // display string for external recipient, when ToKind is empty
-	Description   string
+	Metadata       map[string]any
+	Destination    string // display string for external recipient, when ToKind is empty
+	Description    string
 }
 
 // Transfer moves funds from one account to another within the user, recording
@@ -378,20 +430,27 @@ func (s *MoneyService) Transfer(ctx context.Context, req TransferRequest) (*doma
 	s.notify(ctx, req.UserID, domain.NotificationCategoryTransfer,
 		"Transfer completed",
 		formatMinor(req.AmountMinor, req.Currency)+" moved to "+dest+".")
+	// External (debit-only) transfers are money leaving the account — email the
+	// user a confirmation. Moves between the user's own accounts are silent.
+	if req.ToKind == "" {
+		s.emailUser(ctx, req.UserID, func(tm TransactionNotifier, to, name, amount string) error {
+			return tm.SendMoneySent(ctx, to, name, amount)
+		}, req.Currency, req.AmountMinor)
+	}
 	return result, err
 }
 
 // Quote represents a computed conversion quote.
 type Quote struct {
-	InputAmount  int64
-	InputCurrency string
-	OutputAmount int64
+	InputAmount    int64
+	InputCurrency  string
+	OutputAmount   int64
 	OutputCurrency string
-	Rate         int64
-	FeeBPS       int
-	FeeAmount    int64
-	MinMinor     int64
-	MaxMinor     int64
+	Rate           int64
+	FeeBPS         int
+	FeeAmount      int64
+	MinMinor       int64
+	MaxMinor       int64
 }
 
 // GetRate returns the current book rate for a pair (live when the market

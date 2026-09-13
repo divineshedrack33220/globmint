@@ -2,7 +2,7 @@
 
 **Self-custodial, stablecoin savings and payments on Ethereum — no banks, no fiat rails.**
 
-Globe Mint is a full-stack fintech product that lets users hold and move money entirely in
+GlobMint is a full-stack fintech product that lets users hold and move money entirely in
 USD-backed stablecoins (USDC) through a non-custodial smart-contract vault. There is no
 Paystack, no Flutterwave, no local-bank integration: money-in is USDC arriving at a
 **per-user vault clone address** (deployed deterministically by a factory, so every account
@@ -56,7 +56,7 @@ flowchart TB
 
 ## 1. What it is
 
-Globe Mint is a product decision made deliberately: **self-custodial crypto only**.
+GlobMint is a product decision made deliberately: **self-custodial crypto only**.
 
 - Deposits and balances live **on-chain**, each account in its own `GlobmintVaultClone`
   (deterministic EIP-1167 proxy, deployed by `GlobmintVaultFactory`) plus the legacy shared
@@ -72,7 +72,7 @@ Globe Mint is a product decision made deliberately: **self-custodial crypto only
   that can take over ownership if the user loses their wallet key (§9.3.2).
 - The app has **no fiat off-ramp built in**. Users withdraw USDC to any address they name —
   their own wallet, or an OTC desk / off-ramp provider that accepts USDC. Fiat conversion
-  happens outside Globe Mint entirely.
+  happens outside GlobMint entirely.
 
 This README is the architectural reference: how the pieces fit, how money flows, and how to
 operate it safely — especially the mainnet path where real funds move.
@@ -88,7 +88,7 @@ flowchart LR
     subgraph Client["Flutter app — web / Android / iOS"]
         APP
     end
-    subgraph GM["Globe Mint"]
+    subgraph GM["GlobMint"]
         direction TB
         API["HTTP API :8081"] --> SVC[Services / domain]
         SVC --> PG[(Postgres :5434)]
@@ -599,7 +599,7 @@ The gate returns a list of every missing item so operators fix the whole config 
 - **Privacy:** When `GLOBMINT_PRIVACY_MODE=true`, balances are hidden from block
   explorers via commitment-based storage, and every account funds its own pseudonymous
   clone address (which reveals nothing about the identity behind it). Users are strongly
-  encouraged to use a dedicated wallet address for Globe Mint that is not linked to their
+  encouraged to use a dedicated wallet address for GlobMint that is not linked to their
   identity. The app UI includes a privacy notice during onboarding and a "Privacy-protected
   balance" badge on the Add Money screen.
   - Full privacy security review (raw-address leak inventory, threat model,

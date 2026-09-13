@@ -3,7 +3,7 @@
 import 'package:shared_preferences/shared_preferences.dart';
 
 abstract final class AppConstants {
-  static const String appName = 'Globe Mint';
+  static const String appName = 'GlobMint';
   static const String appTagline = 'Your digital savings vault';
 
   static const double minDeposit = 1000;

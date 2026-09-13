@@ -26,6 +26,9 @@ type User struct {
 	Status       UserStatus
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
+	// EmailVerifiedAt is set the first time the user proves ownership of their
+	// email via a delivered one-time code. Nil until verified.
+	EmailVerifiedAt *time.Time
 }
 
 // Session represents an authenticated session (device login). The actual

@@ -89,10 +89,10 @@ class _NotificationsPageState extends ConsumerState<NotificationsPage> {
   Future<void> _openSummary(AppNotification n) async {
     await _markRead(n);
     if (!mounted) return;
-    await showModalBottomSheet<void>(
+    await showDialog<void>(
       context: context,
-      backgroundColor: Colors.transparent,
-      isScrollControlled: true,
+      barrierDismissible: true,
+      barrierColor: Colors.black.withValues(alpha: 0.6),
       builder: (_) => _NotificationSummarySheet(notification: n),
     );
   }
@@ -282,88 +282,90 @@ class _NotificationSummarySheet extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final (icon, color, iconBg) = notificationStyle(notification.category);
-    return Container(
-      decoration: const BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      padding: const EdgeInsets.fromLTRB(24, 12, 24, 32),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Center(
-            child: Container(
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                color: AppColors.border,
-                borderRadius: BorderRadius.circular(2),
+    final navigator = Navigator.of(context);
+    return Dialog.fullscreen(
+      backgroundColor: AppColors.surface,
+      child: SafeArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+              child: Row(
+                children: [
+                  IconButton(
+                    onPressed: () => navigator.pop(),
+                    icon: const Icon(Icons.close, color: AppColors.textSecondary),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  const SizedBox(width: 4),
+                  Text('Notification', style: context.typography.title),
+                ],
               ),
             ),
-          ),
-          const SizedBox(height: 20),
-          Row(
-            children: [
-              Container(
-                width: 48,
-                height: 48,
-                decoration: BoxDecoration(
-                  color: iconBg,
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: Icon(icon, color: color, size: 24),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
+            const Divider(height: 1, color: AppColors.divider),
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(24, 28, 24, 32),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      notificationCategoryLabel(notification.category),
-                      style: context.typography.labelSmall.copyWith(color: color),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      DateFormatter.full(notification.date),
-                      style: context.typography.bodySmall.copyWith(
-                        color: AppColors.textSecondary,
+                    Center(
+                      child: Container(
+                        width: 56,
+                        height: 56,
+                        decoration: BoxDecoration(
+                          color: iconBg,
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                        child: Icon(icon, color: color, size: 28),
                       ),
                     ),
+                    const SizedBox(height: 20),
+                    Center(
+                      child: Text(
+                        notificationCategoryLabel(notification.category),
+                        style: context.typography.labelSmall.copyWith(color: color),
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Center(
+                      child: Text(
+                        DateFormatter.full(notification.date),
+                        style: context.typography.bodySmall.copyWith(
+                          color: AppColors.textSecondary,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 28),
+                    Text(notification.title, style: context.typography.headline),
+                    const SizedBox(height: 12),
+                    Text(
+                      notification.body,
+                      style: context.typography.bodyMedium.copyWith(
+                        height: 1.5,
+                        color: AppColors.textPrimary,
+                      ),
+                    ),
+                    if (notificationHasActivity(notification.category)) ...[
+                      const SizedBox(height: 32),
+                      SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton(
+                          onPressed: () {
+                            navigator.pop();
+                            GoRouter.of(context).go('/activity');
+                          },
+                          child: const Text('View activity'),
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
-              IconButton(
-                onPressed: () => Navigator.pop(context),
-                icon: const Icon(Icons.close, color: AppColors.textSecondary),
-                visualDensity: VisualDensity.compact,
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Text(notification.title, style: context.typography.headline),
-          const SizedBox(height: 8),
-          Text(notification.body, style: context.typography.bodyMedium),
-          if (notificationHasActivity(notification.category)) ...[
-            const SizedBox(height: 20),
-            SizedBox(
-              width: double.infinity,
-              child: OutlinedButton(
-                onPressed: () {
-                  // Capture the router before the sheet pops: the sheet's
-                  // context is unmounted while it animates out, and using the
-                  // popped context would push onto a dead stack (blank page).
-                  // `go`, not `push`: `/activity` is a shell branch, so a push
-                  // stacks a second (empty) shell instead of switching tabs.
-                  final router = GoRouter.of(context);
-                  Navigator.pop(context);
-                  router.go('/activity');
-                },
-                child: const Text('View activity'),
-              ),
             ),
           ],
-        ],
+        ),
       ),
     );
   }

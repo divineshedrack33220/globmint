@@ -29,6 +29,10 @@ var (
 	ErrTooManyAttempts     = errors.New("too many attempts, try again later")
 	ErrTwoFactorRequired   = errors.New("two-factor authentication required")
 	ErrTwoFactorInvalid    = errors.New("two-factor challenge expired or invalid")
+	// Email OTP sending/verification errors.
+	ErrOTPCooldown  = errors.New("wait before requesting another code")
+	ErrOTPExpired   = errors.New("verification code expired")
+	ErrOTPNotFound  = errors.New("no verification code issued for this email")
 	// Withdrawal signature-gating (EIP-712) errors.
 	ErrWithdrawSignatureRequired = errors.New("a wallet signature is required for this withdrawal")
 	ErrInvalidSignature          = errors.New("invalid withdrawal signature")
@@ -62,7 +66,7 @@ func ErrorCode(err error) string {
 		return "INVALID_REQUEST"
 	case errors.Is(err, ErrInvalidPin):
 		return "INVALID_PIN"
-	case errors.Is(err, ErrInvalidCode):
+	case errors.Is(err, ErrInvalidCode), errors.Is(err, ErrOTPExpired), errors.Is(err, ErrOTPNotFound):
 		return "INVALID_CODE"
 	case errors.Is(err, ErrInvalidSignature):
 		return "INVALID_SIGNATURE"
@@ -80,7 +84,7 @@ func ErrorCode(err error) string {
 		return "LIMIT_EXCEEDED"
 	case errors.Is(err, ErrFeatureDisabled):
 		return "FEATURE_DISABLED"
-	case errors.Is(err, ErrTooManyAttempts):
+	case errors.Is(err, ErrTooManyAttempts), errors.Is(err, ErrOTPCooldown):
 		return "TOO_MANY_REQUESTS"
 	case errors.Is(err, ErrTwoFactorRequired):
 		return "TWO_FACTOR_REQUIRED"

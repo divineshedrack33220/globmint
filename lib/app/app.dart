@@ -10,7 +10,7 @@ class GlobeMintApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return ProviderScope(
       child: MaterialApp.router(
-        title: 'Globe Mint',
+        title: 'GlobMint',
         debugShowCheckedModeBanner: false,
         theme: AppTheme.dark(),
         routerConfig: appRouter,

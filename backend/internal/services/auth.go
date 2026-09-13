@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"regexp"
 	"strconv"
 	"strings"
@@ -30,6 +31,7 @@ type AuthService struct {
 	store        store
 	sessionTTL   time.Duration
 	challengeKey []byte
+	otpSender    OTPMailer
 
 	mu       sync.Mutex
 	attempts map[string]*attemptWindow // key: "login:<sha256(email)>" or "pin:<userID>"
@@ -40,14 +42,28 @@ type attemptWindow struct {
 	reset time.Time
 }
 
+// OTPMailer delivers one-time codes by email. Satisfied by the Resend-backed
+// sender (infrastructure/mailer) in production and by the console fallback in
+// dev; loadtest supplies a no-op.
+type OTPMailer interface {
+	SendOTP(ctx context.Context, to, code string) error
+}
+
 const (
 	loginMaxAttempts = 5
 	attemptWindowDur = 15 * time.Minute
 	pinMaxAttempts   = 5
 	totpChallengeTTL = 5 * time.Minute
+
+	// Email OTP policy: 6 digits, 10-minute validity, 60s resend cooldown,
+	// 5 verify attempts before the code is voided.
+	otpDigits     = 6
+	otpTTL        = 10 * time.Minute
+	otpCooldown   = 60 * time.Second
+	otpMaxAttempt = 5
 )
 
-func NewAuthService(store store, sessionTTL time.Duration, sessionSecret string) *AuthService {
+func NewAuthService(store store, sessionTTL time.Duration, sessionSecret string, otpSender OTPMailer) *AuthService {
 	if sessionSecret == "" {
 		sessionSecret = "dev-only-change-me-session-secret-0000000000"
 	}
@@ -55,6 +71,7 @@ func NewAuthService(store store, sessionTTL time.Duration, sessionSecret string)
 		store:        store,
 		sessionTTL:   sessionTTL,
 		challengeKey: []byte(sessionSecret),
+		otpSender:    otpSender,
 		attempts:     map[string]*attemptWindow{},
 	}
 }
@@ -113,47 +130,101 @@ type RegisterInput struct {
 	IP        string
 }
 
-// Register creates a user, provisions default accounts, and issues a session.
-func (s *AuthService) Register(ctx context.Context, req RegisterInput) (user *domain.User, token string, err error) {
+// pendingRegistration is the staged signup payload held on an email_otps row
+// until the user proves email ownership with the delivered code. No account
+// record is ever written for a signup that never verifies.
+type pendingRegistration struct {
+	FirstName    string
+	LastName     string
+	Phone        string
+	PasswordHash string
+}
+
+// StageRegistration records a signup payload and delivers a verification code
+// WITHOUT creating an account. The account (and its first session) is only
+// materialized when CompleteRegistration later confirms email ownership, so a
+// user row cannot exist before its email is verified. Returns resendAfter, the
+// earliest time a fresh code may be requested under the per-email cooldown.
+func (s *AuthService) StageRegistration(ctx context.Context, req RegisterInput) (resendAfter time.Time, err error) {
 	email := strings.ToLower(strings.TrimSpace(req.Email))
 	if !emailRe.MatchString(email) {
-		return nil, "", domain.ErrBadRequest
+		return time.Time{}, domain.ErrBadRequest
 	}
 	if len(req.Password) < 8 {
-		return nil, "", domain.ErrBadRequest
+		return time.Time{}, domain.ErrBadRequest
+	}
+	if _, err := s.store.UserRepo().FindByEmail(ctx, email); err == nil {
+		return time.Time{}, domain.ErrDuplicateEmail
+	} else if !errors.Is(err, domain.ErrNotFound) {
+		return time.Time{}, err
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
-		return nil, "", err
+		return time.Time{}, err
 	}
-
-	err = s.store.RunInTx(ctx, func(store storage.Store) error {
-		u := &domain.User{
-			Email:        email,
-			Phone:        req.Phone,
-			FirstName:    req.FirstName,
-			LastName:     req.LastName,
-			PasswordHash: string(hash),
-			Status:       domain.UserStatusActive,
-		}
-		if err := store.UserRepo().Create(ctx, u); err != nil {
-			return err
-		}
-		if err := store.AccountRepo().EnsureDefaultAccounts(ctx, u.ID); err != nil {
-			return err
-		}
-		user = u
-		return nil
+	_, resendAfter, err = s.issueAndSendOTP(ctx, email, &pendingRegistration{
+		FirstName:    req.FirstName,
+		LastName:     req.LastName,
+		Phone:        req.Phone,
+		PasswordHash: string(hash),
 	})
 	if err != nil {
-		return nil, "", err
+		return time.Time{}, err
 	}
+	return resendAfter, nil
+}
 
-	token, err = s.issueSession(ctx, user.ID, req.Device, req.IP)
+// ErrNoPendingRegistration is returned by CompleteRegistration when the email
+// holds a valid code but no staged signup (e.g. a code issued only to verify an
+// existing account). The HTTP layer then falls back to plain email verification.
+var ErrNoPendingRegistration = errors.New("no pending registration for this email")
+
+// CompleteRegistration turns a verified OTP for a staged signup into a real
+// account: it validates the code, creates the user from the staged profile with
+// email_verified_at already stamped, provisions default accounts, issues a
+// session, and clears the code. A user row is never written unless the code
+// verifies.
+func (s *AuthService) CompleteRegistration(ctx context.Context, email, code, device, ip string) (user *domain.User, token string, err error) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if !emailRe.MatchString(email) {
+		return nil, "", domain.ErrInvalidCode
+	}
+	otp, err := s.fetchAndValidateOTP(ctx, email, code)
 	if err != nil {
 		return nil, "", err
 	}
-	s.recordSecurity(ctx, user.ID, domain.SecurityEventRegister, "Account created", "Welcome to Globmint", req.IP, req.Device)
+	if otp.PasswordHash == "" {
+		return nil, "", ErrNoPendingRegistration
+	}
+
+	now := time.Now()
+	user = &domain.User{
+		Email:           email,
+		Phone:           otp.Phone,
+		FirstName:       otp.FirstName,
+		LastName:        otp.LastName,
+		PasswordHash:    otp.PasswordHash,
+		Status:          domain.UserStatusActive,
+		EmailVerifiedAt: &now,
+	}
+	if err := s.store.RunInTx(ctx, func(store storage.Store) error {
+		if err := store.UserRepo().Create(ctx, user); err != nil {
+			return err
+		}
+		if err := store.AccountRepo().EnsureDefaultAccounts(ctx, user.ID); err != nil {
+			return err
+		}
+		_ = store.EmailOTPRepo().Clear(ctx, email)
+		return nil
+	}); err != nil {
+		return nil, "", err
+	}
+
+	token, err = s.issueSession(ctx, user.ID, device, ip)
+	if err != nil {
+		return nil, "", err
+	}
+	s.recordSecurity(ctx, user.ID, domain.SecurityEventRegister, "Account created", "Welcome to Globmint", ip, device)
 	_ = s.store.NotificationRepo().Create(ctx, &domain.Notification{
 		UserID:   user.ID,
 		Category: domain.NotificationCategoryGeneral,
@@ -325,6 +396,150 @@ func (s *AuthService) ChangePassword(ctx context.Context, userID, current, next,
 	}
 	s.recordSecurity(ctx, userID, domain.SecurityEventRegister, "Password changed", "Your password was updated", "", "")
 	return nil
+}
+
+// SendOTPCode issues a short-lived email verification code to the supplied
+// address and delivers it via the configured mailer. Enforces a per-email
+// resend cooldown and caps outstanding attempts so the endpoint cannot be
+// abused to spam a mailbox. The code is stored only as a hash. A resend never
+// wipes a staged (but unverified) registration payload on the same row.
+func (s *AuthService) SendOTPCode(ctx context.Context, email string) error {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if !emailRe.MatchString(email) {
+		return domain.ErrBadRequest
+	}
+	if _, _, err := s.issueAndSendOTP(ctx, email, nil); err != nil {
+		return err
+	}
+	if user, uerr := s.store.UserRepo().FindByEmail(ctx, email); uerr == nil {
+		s.recordSecurity(ctx, user.ID, domain.SecurityEventRegister, "Verification code sent", "A one-time code was emailed to the account address", "", "")
+	}
+	return nil
+}
+
+// issueAndSendOTP enforces the per-email resend cooldown and attempt cap,
+// stores a fresh code hash (optionally alongside a staged registration
+// payload), and delivers the code. It returns the code and the earliest time a
+// new code may be requested.
+func (s *AuthService) issueAndSendOTP(ctx context.Context, email string, reg *pendingRegistration) (string, time.Time, error) {
+	existing, err := s.store.EmailOTPRepo().FindByEmail(ctx, email)
+	if err != nil && !errors.Is(err, domain.ErrNotFound) {
+		return "", time.Time{}, err
+	}
+	if existing != nil {
+		if existing.NextSendAt != nil && time.Now().Before(*existing.NextSendAt) {
+			return "", time.Time{}, domain.ErrOTPCooldown
+		}
+		if existing.Attempts >= otpMaxAttempt {
+			return "", time.Time{}, domain.ErrTooManyAttempts
+		}
+	}
+
+	code, err := generateOTP(otpDigits)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+
+	next := time.Now().Add(otpCooldown)
+	otp := &domain.EmailOTP{
+		Email:      email,
+		CodeHash:   hashOTP(code),
+		ExpiresAt:  time.Now().Add(otpTTL),
+		NextSendAt: &next,
+	}
+	if reg != nil {
+		otp.FirstName, otp.LastName, otp.Phone, otp.PasswordHash =
+			reg.FirstName, reg.LastName, reg.Phone, reg.PasswordHash
+	}
+	if err := s.store.EmailOTPRepo().Upsert(ctx, otp); err != nil {
+		return "", time.Time{}, err
+	}
+
+	if s.otpSender != nil {
+		if err := s.otpSender.SendOTP(ctx, email, code); err != nil {
+			return "", time.Time{}, err
+		}
+	} else {
+		log.Printf("auth: otp for %s -> %s (no mailer configured)", code, email)
+	}
+	return code, next, nil
+}
+
+// fetchAndValidateOTP loads the outstanding code for an email and checks the
+// supplied value against it, enforcing expiry, the brute-force attempt cap, and
+// single-use semantics. On success the code row is left in place for the caller
+// to complete against; failed/expired/exhausted states may clear it.
+func (s *AuthService) fetchAndValidateOTP(ctx context.Context, email, code string) (*domain.EmailOTP, error) {
+	if len(code) != otpDigits {
+		return nil, domain.ErrInvalidCode
+	}
+	otp, err := s.store.EmailOTPRepo().FindByEmail(ctx, email)
+	if errors.Is(err, domain.ErrNotFound) {
+		return nil, domain.ErrOTPNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if time.Now().After(otp.ExpiresAt) {
+		_ = s.store.EmailOTPRepo().Clear(ctx, email)
+		return nil, domain.ErrOTPExpired
+	}
+	if otp.Attempts >= otpMaxAttempt {
+		_ = s.store.EmailOTPRepo().Clear(ctx, email)
+		return nil, domain.ErrTooManyAttempts
+	}
+	if !secureEqual(otp.CodeHash, hashOTP(code)) {
+		_ = s.store.EmailOTPRepo().IncrementAttempts(ctx, email)
+		return nil, domain.ErrInvalidCode
+	}
+	return otp, nil
+}
+
+// VerifyOTPCode validates a submitted code against the issued hash, marking the
+// email verified on success. Used for accounts that already exist (no staged
+// signup); registration flows go through CompleteRegistration instead.
+func (s *AuthService) VerifyOTPCode(ctx context.Context, email, code string) error {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if !emailRe.MatchString(email) {
+		return domain.ErrInvalidCode
+	}
+	if _, err := s.fetchAndValidateOTP(ctx, email, code); err != nil {
+		return err
+	}
+	user, err := s.store.UserRepo().FindByEmail(ctx, email)
+	if err != nil {
+		_ = s.store.EmailOTPRepo().Clear(ctx, email)
+		return domain.ErrOTPNotFound
+	}
+	_ = s.store.EmailOTPRepo().Clear(ctx, email)
+	if err := s.store.UserRepo().MarkEmailVerified(ctx, user.ID); err != nil && !errors.Is(err, domain.ErrNotFound) {
+		return err
+	}
+	s.recordSecurity(ctx, user.ID, domain.SecurityEventRegister, "Email verified", "Ownership of the account email was confirmed with a one-time code", "", "")
+	return nil
+}
+
+// generateOTP returns a cryptographically random numeric code of length n.
+func generateOTP(n int) (string, error) {
+	buf := make([]byte, n)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	for i := range buf {
+		buf[i] = '0' + buf[i]%10
+	}
+	return string(buf), nil
+}
+
+// hashOTP returns the hex SHA-256 of a code. Only the hash is persisted.
+func hashOTP(code string) string {
+	sum := sha256.Sum256([]byte(code))
+	return hex.EncodeToString(sum[:])
+}
+
+// secureEqual compares two code hashes in constant time.
+func secureEqual(a, b string) bool {
+	return hmac.Equal([]byte(a), []byte(b))
 }
 
 // VerifyPINThrottled verifies the PIN with brute-force throttling. Used for the

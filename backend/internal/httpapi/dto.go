@@ -10,14 +10,15 @@ func ptr[T any](v T) *T { return &v }
 
 func newUserResponse(u *domain.User) userResponse {
 	return userResponse{
-		ID:        u.ID,
-		Email:     u.Email,
-		Phone:     u.Phone,
-		FirstName: u.FirstName,
-		LastName:  u.LastName,
-		Status:    string(u.Status),
+		ID:               u.ID,
+		Email:            u.Email,
+		Phone:            u.Phone,
+		FirstName:        u.FirstName,
+		LastName:         u.LastName,
+		Status:           string(u.Status),
 		TwoFactorEnabled: u.TOTPEnabled,
-		CreatedAt: u.CreatedAt,
+		EmailVerified:    u.EmailVerifiedAt != nil,
+		CreatedAt:        u.CreatedAt,
 	}
 }
 
@@ -29,6 +30,7 @@ type userResponse struct {
 	LastName         string    `json:"last_name"`
 	Status           string    `json:"status"`
 	TwoFactorEnabled bool      `json:"two_factor_enabled"`
+	EmailVerified    bool      `json:"email_verified"`
 	CreatedAt        time.Time `json:"created_at"`
 }
 
@@ -77,4 +79,33 @@ type totpDisableRequest struct {
 type totpSetupResponse struct {
 	Secret string `json:"secret"`
 	URI    string `json:"uri"`
+}
+
+// Email OTP (verification code delivered by email).
+type otpSendRequest struct {
+	Email string `json:"email"`
+}
+
+type otpSendResponse struct {
+	// Sent is true when a fresh code was issued and (attempted to be)
+	// delivered. The code itself is never returned.
+	Sent bool `json:"sent"`
+	// ResendAfter is the earliest unix time a new code may be requested.
+	ResendAfter int64 `json:"resend_after,omitempty"`
+}
+
+type otpVerifyRequest struct {
+	Email string `json:"email"`
+	Code  string `json:"code"`
+}
+
+type otpVerifyResponse struct {
+	Verified      bool   `json:"verified"`
+	EmailVerified bool   `json:"email_verified"`
+	Email         string `json:"email"`
+	// Token + User are present when verification completed a staged
+	// registration (the account was just created); the client must then show
+	// the PIN setup screen.
+	Token string        `json:"token,omitempty"`
+	User  *userResponse `json:"user,omitempty"`
 }

@@ -1,4 +1,4 @@
-# Globe Mint — Privacy Testing Checklist
+# GlobMint — Privacy Testing Checklist
 
 *Manual + automated checklist. Run before every mainnet privacy-mode release.
 Automated suites: `backend/contracts$ npx hardhat test`,

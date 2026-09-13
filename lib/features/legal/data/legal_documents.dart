@@ -9,8 +9,8 @@ class LegalDocuments {
 
   static const List<LegalSection> privacyPolicy = [
     LegalSection('1. Introduction', [
-      'Globe Mint is a self-custodial stablecoin savings and payments platform. This policy explains what personal data we collect, why, and what rights you have — in plain language.',
-      'Important context: Globe Mint is self-custodial. Your USDC lives in a smart-contract vault on the blockchain that has no owner and no admin — not even us. We never hold your funds and never touch fiat currency. Most of what the law calls "financial data" therefore never passes through our hands at all.',
+      'GlobMint is a self-custodial stablecoin savings and payments platform. This policy explains what personal data we collect, why, and what rights you have — in plain language.',
+      'Important context: GlobMint is self-custodial. Your USDC lives in a smart-contract vault on the blockchain that has no owner and no admin — not even us. We never hold your funds and never touch fiat currency. Most of what the law calls "financial data" therefore never passes through our hands at all.',
     ]),
     LegalSection('2. Data we collect', [
       'We deliberately collect as little as possible. There is no KYC and no identity verification.',
@@ -44,7 +44,7 @@ class LegalDocuments {
       'Subject to applicable law, you may request a copy of the data we hold about you, correct inaccurate data, request deletion of your account and associated data, and review or revoke sessions and devices at any time in the app. Contact $supportEmail for any of these.',
     ]),
     LegalSection('8. Children', [
-      'Globe Mint is not directed at children. You must be at least 18 years old (or the age of majority where you live) to use the service.',
+      'GlobMint is not directed at children. You must be at least 18 years old (or the age of majority where you live) to use the service.',
     ]),
     LegalSection('9. Changes to this policy', [
       'Material changes will be posted with a new "Last updated" date and, where appropriate, announced in the app or by email. Continued use after the changes take effect means you accept them.',
@@ -53,20 +53,20 @@ class LegalDocuments {
 
   static const List<LegalSection> termsOfService = [
     LegalSection('1. The service', [
-      'Globe Mint is a self-custodial stablecoin savings and payments platform. It lets you deposit USDC from your own Ethereum wallet into a smart-contract vault, view your balance with an NGN-equivalent display value, and withdraw USDC to any address you specify, confirmed with your 6-digit PIN. Larger withdrawals pass through a cancellable time-lock. The backend relays your signed withdrawal requests and keeps an NGN display ledger. It never takes custody of funds.',
+      'GlobMint is a self-custodial stablecoin savings and payments platform. It lets you deposit USDC from your own Ethereum wallet into a smart-contract vault, view your balance with an NGN-equivalent display value, and withdraw USDC to any address you specify, confirmed with your 6-digit PIN. Larger withdrawals pass through a cancellable time-lock. The backend relays your signed withdrawal requests and keeps an NGN display ledger. It never takes custody of funds.',
     ]),
     LegalSection('2. Self-custody and risk', [
       'You are always in control of your funds — which means you also carry the responsibilities of control.',
       'No owner, no admin, no recovery. The vault contract has no owner and no administrator: nobody, including us, can seize, freeze, move, or recover your USDC. There is no "forgot funds" button.',
       'Blockchain transactions are irreversible. A withdrawal sent to the wrong address cannot be undone by us or anyone else. Always double-check destination addresses.',
       'Your wallet, your keys. Deposits come from your own wallet (MetaMask, WalletConnect, or similar). If you lose access to that wallet, we cannot recover it for you.',
-      'Stablecoin risk. USDC is issued by Circle, a private company — not by Globe Mint. It aims to track US\$1 but can depeg or face redemption problems in stressed markets.',
+      'Stablecoin risk. USDC is issued by Circle, a private company — not by GlobMint. It aims to track US\$1 but can depeg or face redemption problems in stressed markets.',
       'Network risk. Blockchains can congest, reorganize, or halt. Deposits credit only after a confirmation window; withdrawals depend on the network accepting the broadcast.',
       'Gas fees. You pay network gas for your own deposit transactions. Gas on Ethereum mainnet can be significant — Layer 2 networks (Base, Arbitrum, Optimism) are recommended.',
       'Display values are not guarantees. NGN equivalents are convenience conversions at the current rate, not a promise of redemption value.',
     ]),
     LegalSection('3. Eligibility', [
-      'You must be at least 18 (or the age of majority where you live) and legally able to use crypto-asset software in your location. You are responsible for determining whether using Globe Mint is lawful for you, including any tax obligations on your activity.',
+      'You must be at least 18 (or the age of majority where you live) and legally able to use crypto-asset software in your location. You are responsible for determining whether using GlobMint is lawful for you, including any tax obligations on your activity.',
     ]),
     LegalSection('4. Your account and its security', [
       'Only an email and password are required; there is no identity verification. You are responsible for everything done through your account: keep your password, PIN, email account, and personal wallet secure, and enable 2FA.',
@@ -88,19 +88,19 @@ class LegalDocuments {
       'You agree not to use the service for money laundering, fraud, sanctions evasion, or any unlawful purpose; not to attack, probe, or degrade the platform (including circumventing rate limits, PIN throttling, or withdrawal caps); not to submit false information to support; and not to copy, reverse-engineer, or redistribute our proprietary backend or frontend code. The smart-contract code is public by nature of being on-chain; everything else is ours.',
     ]),
     LegalSection('8. Intellectual property', [
-      'The Globe Mint name, branding, backend, and frontend are proprietary. The vault smart contract is deployed on public blockchains and its bytecode is inherently visible; no license to our off-chain software is granted except the right to use the service normally.',
+      'The GlobMint name, branding, backend, and frontend are proprietary. The vault smart contract is deployed on public blockchains and its bytecode is inherently visible; no license to our off-chain software is granted except the right to use the service normally.',
     ]),
     LegalSection('9. Disclaimers', [
-      'The service is provided "as is" and "as available", without warranties of any kind — including availability, accuracy of display values or quotes, uninterrupted operation, or fitness for a particular purpose. We do not promise any return, yield, or interest: Globe Mint is a savings rails product, not an investment.',
+      'The service is provided "as is" and "as available", without warranties of any kind — including availability, accuracy of display values or quotes, uninterrupted operation, or fitness for a particular purpose. We do not promise any return, yield, or interest: GlobMint is a savings rails product, not an investment.',
     ]),
     LegalSection('10. Limitation of liability', [
       'To the maximum extent permitted by applicable law, we are not liable for losses arising from blockchain behavior, stablecoin depegging or issuer actions, gas costs, your lost credentials or compromised devices, your addressing mistakes, or third-party wallets and networks.',
     ]),
     LegalSection('11. Indemnification', [
-      'You agree to indemnify and hold harmless Globe Mint, its team, and service providers against claims, losses, and expenses arising from your misuse of the service, your violation of these terms, or your violation of any law.',
+      'You agree to indemnify and hold harmless GlobMint, its team, and service providers against claims, losses, and expenses arising from your misuse of the service, your violation of these terms, or your violation of any law.',
     ]),
     LegalSection('12. Termination', [
-      'You may stop using Globe Mint at any time — withdraw your funds and close your account. We may suspend or terminate accounts that violate these terms, abuse the platform, or where required by law. Termination never affects USDC already in the vault contract: because it has no admin, your on-chain funds remain accessible to whoever controls the depositing wallet regardless of your account status.',
+      'You may stop using GlobMint at any time — withdraw your funds and close your account. We may suspend or terminate accounts that violate these terms, abuse the platform, or where required by law. Termination never affects USDC already in the vault contract: because it has no admin, your on-chain funds remain accessible to whoever controls the depositing wallet regardless of your account status.',
     ]),
     LegalSection('13. Governing law and disputes', [
       'These terms are governed by applicable law. Disputes should first be raised with $supportEmail; we will attempt good-faith resolution before either party pursues formal remedies.',
@@ -112,12 +112,12 @@ class LegalDocuments {
 
   static const List<FaqEntry> faq = [
     FaqEntry(
-      'What is Globe Mint?',
+      'What is GlobMint?',
       'A savings and payments app built on USDC, a dollar-pegged stablecoin. You deposit USDC into a smart-contract vault, see its value in naira, and withdraw to any crypto address whenever you like — a dollar-denominated savings jar that lives on the blockchain instead of in a bank.',
     ),
     FaqEntry(
-      'Is Globe Mint a bank? Is my money insured?',
-      'No to both. Globe Mint is not a bank, holds no banking license, and offers no deposit insurance or guaranteed returns. Your USDC sits in a smart contract, not in any company account.',
+      'Is GlobMint a bank? Is my money insured?',
+      'No to both. GlobMint is not a bank, holds no banking license, and offers no deposit insurance or guaranteed returns. Your USDC sits in a smart contract, not in any company account.',
     ),
     FaqEntry(
       'What does "self-custodial" mean for me?',
@@ -125,7 +125,7 @@ class LegalDocuments {
     ),
     FaqEntry(
       'How is this different from keeping money on an exchange?',
-      'On an exchange, the company holds your coins and can freeze withdrawals, get hacked, or go insolvent with your money inside. With Globe Mint, the platform only relays your instructions; the funds rest in a contract that answers to the blockchain alone.',
+      'On an exchange, the company holds your coins and can freeze withdrawals, get hacked, or go insolvent with your money inside. With GlobMint, the platform only relays your instructions; the funds rest in a contract that answers to the blockchain alone.',
     ),
     FaqEntry(
       'Do I need KYC or ID verification?',
@@ -153,10 +153,10 @@ class LegalDocuments {
     ),
     FaqEntry(
       'What if I lose access to my crypto wallet?',
-      'If you can still log in to Globe Mint, withdraw your vault funds to a new wallet address you control (subject to PIN, limits, and any time-lock). If you have lost both, contact $supportEmail — we will help with what we can, but self-custody has hard limits.',
+      'If you can still log in to GlobMint, withdraw your vault funds to a new wallet address you control (subject to PIN, limits, and any time-lock). If you have lost both, contact $supportEmail — we will help with what we can, but self-custody has hard limits.',
     ),
     FaqEntry(
-      'Why should I trust Globe Mint?',
+      'Why should I trust GlobMint?',
       'You do not have to trust us with your money, because we cannot touch it. What you can verify: the vault contract is on a public blockchain for anyone to inspect, and every deposit and withdrawal is visible on-chain. Trust the code and the chain, not our promises.',
     ),
     FaqEntry(
@@ -165,15 +165,15 @@ class LegalDocuments {
     ),
     FaqEntry(
       'What are the risks of USDC itself?',
-      'USDC is issued by Circle, a private company — not by Globe Mint and not by any government. It is designed to stay at US\$1 but is not guaranteed: it can temporarily depeg, and in extreme scenarios Circle or market stress could affect redemption. Only save what you can afford to expose to that risk.',
+      'USDC is issued by Circle, a private company — not by GlobMint and not by any government. It is designed to stay at US\$1 but is not guaranteed: it can temporarily depeg, and in extreme scenarios Circle or market stress could affect redemption. Only save what you can afford to expose to that risk.',
     ),
     FaqEntry(
       'Can I convert back to naira in my bank account?',
-      'Globe Mint has no fiat off-ramp: we never touch naira or bank transfers. To cash out, withdraw USDC to your own wallet and convert it through an exchange or peer-to-peer service of your choice — which will have its own fees and rates. NGN values in the app are display conversions, not redemption promises.',
+      'GlobMint has no fiat off-ramp: we never touch naira or bank transfers. To cash out, withdraw USDC to your own wallet and convert it through an exchange or peer-to-peer service of your choice — which will have its own fees and rates. NGN values in the app are display conversions, not redemption promises.',
     ),
     FaqEntry(
       'Is there a mobile app?',
-      'Globe Mint runs as a mobile-friendly web app today, with the same features on phone and desktop browsers.',
+      'GlobMint runs as a mobile-friendly web app today, with the same features on phone and desktop browsers.',
     ),
     FaqEntry(
       'How do I get started?',

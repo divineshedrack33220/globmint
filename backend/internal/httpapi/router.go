@@ -38,6 +38,11 @@ func NewHandler(deps *Deps, auth middleware.Authenticator, corsOrigins []string,
 	mux.Handle("POST "+api+"/auth/register", middleware.RateLimiter(http.HandlerFunc(deps.handleRegister), time.Second, limits.AuthBurst, clientIPKey))
 	mux.Handle("POST "+api+"/auth/login", middleware.RateLimiter(http.HandlerFunc(deps.handleLogin), time.Second, limits.AuthBurst, clientIPKey))
 	mux.Handle("POST "+api+"/auth/2fa/verify", middleware.RateLimiter(http.HandlerFunc(deps.handleVerify2FA), time.Second, limits.AuthBurst, clientIPKey))
+	// Email OTP (public, rate-limited per IP + per-email cooldown in the
+	// service). Send issues+delivers a code; Verify checks it and marks the
+	// account email verified.
+	mux.Handle("POST "+api+"/auth/otp/send", middleware.RateLimiter(http.HandlerFunc(deps.handleSendOTP), time.Second, limits.AuthBurst, clientIPKey))
+	mux.Handle("POST "+api+"/auth/otp/verify", middleware.RateLimiter(http.HandlerFunc(deps.handleVerifyOTP), time.Second, limits.AuthBurst, clientIPKey))
 
 	// Authenticated
 	mux.Handle("POST "+api+"/auth/logout", middleware.Auth(auth, http.HandlerFunc(deps.handleLogout)))

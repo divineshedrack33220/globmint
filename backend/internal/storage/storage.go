@@ -16,6 +16,26 @@ type UserRepository interface {
 	UpdatePIN(ctx context.Context, id, pinHash string) error
 	UpdatePassword(ctx context.Context, id, passwordHash string) error
 	UpdateTOTP(ctx context.Context, id, secret string, enabled bool) error
+	// MarkEmailVerified stamps users.email_verified_at when the user first
+	// proves ownership of their email with a delivered one-time code.
+	MarkEmailVerified(ctx context.Context, id string) error
+}
+
+// EmailOTPRepository persists short-lived email verification codes (stored
+// hashed). The row for an email is single-use: issuing a new code replaces the
+// previous one, and a successful (or exhausted) verification clears it.
+type EmailOTPRepository interface {
+	// Upsert records a freshly issued code hash + expiry for the email, also
+	// storing the next-allowed resend time. Existing rows are replaced.
+	Upsert(ctx context.Context, otp *domain.EmailOTP) error
+	// FindByEmail returns the current code for an email, or nil when none is
+	// outstanding.
+	FindByEmail(ctx context.Context, email string) (*domain.EmailOTP, error)
+	// IncrementAttempts counts one failed verification against the code. Used
+	// to bound brute force before a code can be re-issued.
+	IncrementAttempts(ctx context.Context, email string) error
+	// Clear removes the outstanding code for an email.
+	Clear(ctx context.Context, email string) error
 }
 
 // SessionRepository persists sessions.
@@ -226,6 +246,7 @@ type Store interface {
 	// balance privacy. When GLOBMINT_PRIVACY_MODE is enabled, each user's salt
 	// is stored here so the backend can derive keccak256(user, salt) commitments.
 	UserSaltsRepo() UserSaltsRepository
+	EmailOTPRepo() EmailOTPRepository
 	// TryAcquireIndexerLeadership attempts a Postgres session-level advisory
 	// lock so only one indexer instance scans at a time. On success it returns
 	// a release func and ok=true; the caller must hold the lock for the whole

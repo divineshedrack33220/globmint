@@ -86,7 +86,10 @@ class AuthService {
     );
   }
 
-  Future<User> register({
+  /// Starts email-OTP-gated registration: the signup profile is staged and a
+  /// verification code is sent, but NO account is created until that code is
+  /// verified via [verifyOtp]. Returns when a code will be resendable from.
+  Future<OtpSendResult> register({
     required String firstName,
     required String lastName,
     required String email,
@@ -104,11 +107,10 @@ class AuthService {
       },
     );
     if (data == null) throw ApiException(0, 'Empty response from server');
-    await _storeToken(data['token'] as String? ?? '');
-    final user = _userFromApi(data['user'] as Map<String, dynamic>? ?? {});
-    _currentUser = user;
-    _isAuthenticated = true;
-    return user;
+    return OtpSendResult(
+      sent: data['sent'] == true,
+      resendAfter: _epochSeconds(data['resend_after']),
+    );
   }
 
   Future<void> logout() async {
@@ -132,7 +134,45 @@ class AuthService {
     return user;
   }
 
-  Future<bool> verifyOtp(String otp) async => otp.length == 6;
+  /// Requests a fresh 6-digit verification code for [email] (email OTP). The
+  /// code is delivered by email and never returned in the response; a 60s
+  /// resend cooldown applies per address.
+  Future<void> sendOtp(String email) async {
+    await _api.post(
+      '${AppConstants.apiV1Prefix}/auth/otp/send',
+      body: {'email': email},
+    );
+  }
+
+  /// Checks the emailed [code] for [email]. When the verification completes a
+  /// staged registration, the backend creates the account and returns a session
+  /// [OtpVerifyResult.token] + [OtpVerifyResult.user] — the client must then
+  /// show the PIN setup screen. Throws [ApiException] with code `INVALID_CODE`
+  /// for wrong/expired codes and `TOO_MANY_REQUESTS` on the attempt limit.
+  Future<OtpVerifyResult> verifyOtp(String email, String code) async {
+    final data = await _api.post(
+      '${AppConstants.apiV1Prefix}/auth/otp/verify',
+      body: {'email': email, 'code': code},
+    );
+    if (data == null) throw ApiException(0, 'Empty response from server');
+    final token = data['token'] as String?;
+    if (token != null && token.isNotEmpty) {
+      await _storeToken(token);
+      final user = _userFromApi(data['user'] as Map<String, dynamic>? ?? {});
+      _currentUser = user;
+      _isAuthenticated = true;
+      return OtpVerifyResult(
+        verified: data['verified'] == true,
+        emailVerified: data['email_verified'] == true,
+        token: token,
+        user: user,
+      );
+    }
+    return OtpVerifyResult(
+      verified: data['verified'] == true,
+      emailVerified: data['email_verified'] == true,
+    );
+  }
 
   /// Verifies the user's transaction PIN against the backend. Throws
   /// [ApiException] (code INVALID_PIN) on mismatch.
@@ -165,6 +205,18 @@ class AuthService {
     await prefs.setString(AppConstants.authTokenKey, token);
   }
 
+  /// Parses a unix-seconds value (as sent by the backend) into a local time,
+  /// or null when absent/invalid.
+  DateTime? _epochSeconds(Object? seconds) {
+    if (seconds is num && seconds > 0) {
+      return DateTime.fromMillisecondsSinceEpoch(
+        (seconds * 1000).round(),
+        isUtc: true,
+      ).toLocal();
+    }
+    return null;
+  }
+
   User _userFromApi(Map<String, dynamic> j) {
     return User(
       id: j['id'] as String? ?? '',
@@ -190,4 +242,29 @@ class LoginResult {
   final User? user;
   final bool requiresTwoFactor;
   final String challengeToken;
+}
+
+/// Outcome of issuing a verification code. The code itself is never returned;
+/// [resendAfter] is the earliest time a fresh code may be requested.
+class OtpSendResult {
+  const OtpSendResult({this.sent = false, this.resendAfter});
+
+  final bool sent;
+  final DateTime? resendAfter;
+}
+
+/// Outcome of verifying an emailed code. When the code completed a staged
+/// registration, [token] and [user] carry the freshly created session.
+class OtpVerifyResult {
+  const OtpVerifyResult({
+    this.verified = false,
+    this.emailVerified = false,
+    this.token,
+    this.user,
+  });
+
+  final bool verified;
+  final bool emailVerified;
+  final String? token;
+  final User? user;
 }

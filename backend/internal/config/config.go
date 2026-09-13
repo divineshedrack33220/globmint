@@ -76,6 +76,11 @@ type Config struct {
 	ChaosFailureRate  float64
 	ChaosLatencyMaxMS int
 
+	// Email OTP delivery. The from address uses the verified Resend sending
+	// domain (clawbet.it.com) so deliverability stays out of spam.
+	ResendAPIKey string
+	EmailFrom    string
+
 	// Blockchain holds settings for the on-chain settlement layer.
 	Blockchain BlockchainConfig
 }
@@ -137,6 +142,8 @@ func Load() Config {
 		RequireUserSignature:                 boolEnv("GLOBMINT_REQUIRE_USER_SIGNATURE", false),
 		RateLimitAuthBurst:                   intEnv("GLOBMINT_RATE_LIMIT_AUTH_BURST", 5),
 		RateLimitMoneyBurst:                  intEnv("GLOBMINT_RATE_LIMIT_MONEY_BURST", 20),
+		ResendAPIKey:                         os.Getenv("GLOBMINT_RESEND_API_KEY"),
+		EmailFrom:                            envOr("GLOBMINT_EMAIL_FROM", "Globmint <noreply@clawbet.it.com>"),
 		ChaosFailureRate:                     float64Env("GLOBMINT_CHAOS_FAILURE_RATE", 0),
 		ChaosLatencyMaxMS:                    intEnv("GLOBMINT_CHAOS_LATENCY_MAX_MS", 0),
 		Blockchain: BlockchainConfig{

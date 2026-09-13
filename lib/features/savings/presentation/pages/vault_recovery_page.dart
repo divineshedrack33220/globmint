@@ -163,7 +163,7 @@ class _VaultRecoveryPageState extends ConsumerState<VaultRecoveryPage> {
               const SizedBox(height: 6),
               Text(
                 'The wallet that owns your savings address signs the change; '
-                'Globe Mint only relays it.',
+                'GlobMint only relays it.',
                 style: context.typography.bodySmall,
               ),
               if (status != null && status.owner.isNotEmpty) ...[

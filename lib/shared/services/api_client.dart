@@ -7,7 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../core/constants/app_constants.dart';
 import 'connectivity.dart';
 
-/// A thin, shared HTTP client for the Globe Mint Go backend.
+/// A thin, shared HTTP client for the GlobMint Go backend.
 ///
 /// Responsibilities:
 ///   - resolves the base URL (host vs. Android-emulator loopback),

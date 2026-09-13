@@ -4,6 +4,9 @@
 //   1. Deploys MockUSDC.
 //   2. Deploys GlobmintVault bound to MockUSDC (kept for API exposure).
 //   3. Deploys GlobmintVaultFactory bound to MockUSDC (per-user clones).
+//      Privacy mode (salt-commitment deposits/withdrawals) is OPT-IN via
+//      INITIAL_PRIVACY=true; default off so clones accept plain payments and
+//      the app's signature-gated withdrawWithSig flow works end to end.
 //   4. Mints USDC to the vault/signer (Account #0) so withdrawals can pay out.
 //   5. Mints USDC to a "demo depositor" (Account #1) so the deposit indexer
 //      has a distinct sender to detect.
@@ -47,10 +50,11 @@ async function main() {
   console.log("GlobmintVault =", contractAddress);
 
   const GlobmintVaultFactory = await ethers.getContractFactory("GlobmintVaultFactory");
-  const factory = await GlobmintVaultFactory.deploy(tokenAddress, true);
+  const privacy = process.env.INITIAL_PRIVACY === "true";
+  const factory = await GlobmintVaultFactory.deploy(tokenAddress, privacy);
   await factory.waitForDeployment();
   const factoryAddress = await factory.getAddress();
-  console.log("GlobmintVaultFactory (privacy on) =", factoryAddress);
+  console.log("GlobmintVaultFactory (privacy", privacy ? "on" : "off", ") =", factoryAddress);
 
   // Mint 100,000 USDC to the vault/signer so it can pay out withdrawals.
   const mintVault = await token.mint(vaultAddress, ethers.parseUnits("100000", 6));

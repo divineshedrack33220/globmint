@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
+	"strings"
 
 	"globmint/backend/internal/domain"
 	"globmint/backend/internal/httpapi/middleware"
@@ -14,20 +16,20 @@ func (d *Deps) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err, "")
 		return
 	}
-	user, token, err := d.Auth.Register(r.Context(), services.RegisterInput{
+	// Staged, email-OTP-gated signup: no user record is created here. The
+	// account materializes only when the emailed code is verified.
+	resendAfter, err := d.Auth.StageRegistration(r.Context(), services.RegisterInput{
 		Email:     req.Email,
 		Phone:     req.Phone,
 		FirstName: req.FirstName,
 		LastName:  req.LastName,
 		Password:  req.Password,
-		Device:    r.Header.Get("User-Agent"),
-		IP:        r.RemoteAddr,
 	})
 	if err != nil {
 		writeError(w, r, err, "")
 		return
 	}
-	writeJSON(w, http.StatusCreated, authResponse{Token: token, User: ptr(newUserResponse(user))})
+	writeJSON(w, http.StatusOK, otpSendResponse{Sent: true, ResendAfter: resendAfter.Unix()})
 }
 
 func (d *Deps) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -64,6 +66,62 @@ func (d *Deps) handleVerify2FA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, authResponse{Token: result.Token, User: ptr(newUserResponse(result.User))})
+}
+
+// handleSendOTP issues (and emails) a fresh verification code for the
+// supplied address. Public and rate-limited; the code is never returned in a
+// response.
+func (d *Deps) handleSendOTP(w http.ResponseWriter, r *http.Request) {
+	var req otpSendRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, r, err, "")
+		return
+	}
+	if err := d.Auth.SendOTPCode(r.Context(), req.Email); err != nil {
+		writeError(w, r, err, "")
+		return
+	}
+	writeJSON(w, http.StatusOK, otpSendResponse{Sent: true})
+}
+
+// handleVerifyOTP checks the emailed code. When the address has a staged
+// signup (the registration flow), success creates the account — email already
+// verified — and issues its first session (returned as token + user). For codes
+// issued against an existing account it only marks the email verified. Public;
+// bounded by per-email attempt limits enforced in the service.
+func (d *Deps) handleVerifyOTP(w http.ResponseWriter, r *http.Request) {
+	var req otpVerifyRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, r, err, "")
+		return
+	}
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+	user, token, err := d.Auth.CompleteRegistration(r.Context(), email, req.Code,
+		r.Header.Get("User-Agent"), r.RemoteAddr)
+	if err != nil {
+		if errors.Is(err, services.ErrNoPendingRegistration) {
+			// Certificate-only flow: just stamp the existing account as verified.
+			if verr := d.Auth.VerifyOTPCode(r.Context(), email, req.Code); verr != nil {
+				writeError(w, r, verr, "")
+				return
+			}
+			writeJSON(w, http.StatusOK, otpVerifyResponse{
+				Verified:      true,
+				EmailVerified: true,
+				Email:         email,
+			})
+			return
+		}
+		writeError(w, r, err, "")
+		return
+	}
+	writeJSON(w, http.StatusOK, otpVerifyResponse{
+		Verified:      true,
+		EmailVerified: true,
+		Email:         email,
+		Token:         token,
+		User:          ptr(newUserResponse(user)),
+	})
 }
 
 func (d *Deps) handleLogout(w http.ResponseWriter, r *http.Request) {

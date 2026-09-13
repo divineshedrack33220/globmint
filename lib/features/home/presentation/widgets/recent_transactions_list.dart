@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../../../app/providers.dart';
-import '../../../../core/enums/transaction_type.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/radius_tokens.dart';
 import '../../../../core/theme/theme_extensions.dart';
@@ -11,6 +10,7 @@ import '../../../../core/widgets/animated_press.dart';
 import '../../../../core/widgets/empty_state.dart';
 import '../../../../core/widgets/section_header.dart';
 import '../../../../core/widgets/shimmer.dart';
+import '../../../../core/widgets/transaction_style.dart';
 import '../../../../shared/models/transaction.dart';
 
 class RecentTransactionsList extends ConsumerWidget {
@@ -82,8 +82,7 @@ class _TransactionTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final iconData = _getIcon();
-    final iconColor = _getIconColor();
+    final (iconData, iconColor, iconBg) = transactionStyle(transaction.type);
     final isPositive =
         transaction.type.name == 'deposit' ||
         (transaction.type.name == 'conversion' &&
@@ -99,7 +98,7 @@ class _TransactionTile extends StatelessWidget {
               width: 44,
               height: 44,
               decoration: BoxDecoration(
-                color: _getIconBgColor(),
+                color: iconBg,
                 borderRadius: BorderRadius.circular(12),
               ),
               child: Icon(iconData, color: iconColor, size: 20),
@@ -155,68 +154,5 @@ class _TransactionTile extends StatelessWidget {
         ),
       ),
     );
-  }
-
-  IconData _getIcon() {
-    switch (transaction.type) {
-      case TransactionType.deposit:
-        return Icons.arrow_downward;
-      case TransactionType.withdrawal:
-        return Icons.arrow_upward;
-      case TransactionType.conversion:
-        return Icons.currency_exchange;
-      case TransactionType.transfer:
-        return Icons.send;
-      case TransactionType.savings:
-        return Icons.savings;
-      case TransactionType.fee:
-        return Icons.receipt;
-      case TransactionType.adjustment:
-        return Icons.tune;
-      case TransactionType.reversal:
-        return Icons.swap_horiz;
-    }
-  }
-
-  Color _getIconColor() {
-    switch (transaction.type) {
-      case TransactionType.deposit:
-        return AppColors.success;
-      case TransactionType.withdrawal:
-        return AppColors.destructive;
-      case TransactionType.conversion:
-        return AppColors.primary;
-      case TransactionType.transfer:
-        return AppColors.info;
-      case TransactionType.savings:
-        return AppColors.primary;
-      case TransactionType.fee:
-        return AppColors.warning;
-      case TransactionType.adjustment:
-        return AppColors.info;
-      case TransactionType.reversal:
-        return AppColors.destructive;
-    }
-  }
-
-  Color _getIconBgColor() {
-    switch (transaction.type) {
-      case TransactionType.deposit:
-        return AppColors.successMuted;
-      case TransactionType.withdrawal:
-        return AppColors.destructiveMuted;
-      case TransactionType.conversion:
-        return AppColors.primarySubtle;
-      case TransactionType.transfer:
-        return AppColors.infoMuted;
-      case TransactionType.savings:
-        return AppColors.primarySubtle;
-      case TransactionType.fee:
-        return AppColors.warningMuted;
-      case TransactionType.adjustment:
-        return AppColors.infoMuted;
-      case TransactionType.reversal:
-        return AppColors.destructiveMuted;
-    }
   }
 }

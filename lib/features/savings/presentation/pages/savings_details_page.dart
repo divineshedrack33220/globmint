@@ -7,6 +7,7 @@ import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/utils/formatters.dart';
 import '../../../../core/widgets/app_button.dart';
+import '../../../../core/widgets/transaction_style.dart';
 import '../../../../shared/models/models.dart';
 import '../../../../shared/services/savings_client.dart';
 
@@ -178,20 +179,20 @@ class SavingsDetailsPage extends ConsumerWidget {
     }
 
     return txns.map((tx) {
-      final IconData icon;
+      final (icon, iconColor, iconBg) = transactionStyle(tx.type);
+      final bool isPositive =
+          tx.type == TransactionType.deposit ||
+          (tx.type == TransactionType.conversion && tx.toCurrency == 'USDT');
       final String title;
       final String amountText;
       switch (tx.type) {
         case TransactionType.deposit:
-          icon = Icons.arrow_downward;
           title = 'Vault deposit';
           amountText = '+${_money(tx.amount, tx.currency)}';
         case TransactionType.withdrawal:
-          icon = Icons.arrow_upward;
           title = 'Vault withdrawal';
           amountText = '−${_money(tx.amount, tx.currency)}';
         case TransactionType.conversion:
-          icon = Icons.currency_exchange;
           final from =
               (tx.fromCurrency?.isNotEmpty ?? false) ? tx.fromCurrency! : '—';
           final to =
@@ -201,7 +202,6 @@ class SavingsDetailsPage extends ConsumerWidget {
               to == '—' ? tx.currency : to);
         case TransactionType.savings:
         default:
-          icon = Icons.savings;
           title = 'Savings move';
           amountText = _money(tx.amount, tx.currency);
       }
@@ -214,10 +214,10 @@ class SavingsDetailsPage extends ConsumerWidget {
             width: 40,
             height: 40,
             decoration: BoxDecoration(
-              color: AppColors.primarySubtle,
+              color: iconBg,
               borderRadius: BorderRadius.circular(10),
             ),
-            child: Icon(icon, color: AppColors.primary, size: 18),
+            child: Icon(icon, color: iconColor, size: 18),
           ),
           title: Text(title, style: context.typography.labelLarge),
           subtitle: Text(DateFormatter.date(tx.date),
@@ -225,7 +225,7 @@ class SavingsDetailsPage extends ConsumerWidget {
           trailing: Text(
             amountText,
             style: context.typography.labelLarge.copyWith(
-              color: AppColors.success,
+              color: isPositive ? AppColors.success : AppColors.textPrimary,
             ),
           ),
         ),

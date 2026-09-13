@@ -44,6 +44,20 @@ type summary struct {
 	mu          sync.Mutex
 }
 
+// seedMailer captures OTP codes long enough for seeding to complete the staged
+// registration without a real mail service.
+type seedMailer struct {
+	mu   sync.Mutex
+	sent map[string]string
+}
+
+func (m *seedMailer) SendOTP(_ context.Context, to, code string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sent[to] = code
+	return nil
+}
+
 func (s *summary) add(code int, ms int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -106,7 +120,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	authSvc := services.NewAuthService(db, 12*time.Hour, "loadtest-session-secret")
+	sm := &seedMailer{sent: map[string]string{}}
+	authSvc := services.NewAuthService(db, 12*time.Hour, "loadtest-session-secret", sm)
 	balanceSvc := services.NewBalanceService(db)
 	moneySvc := services.NewMoneyService(db)
 	chain := blockchain.NewMockBlockchainService()
@@ -135,11 +150,22 @@ func main() {
 	seededUsers := make([]seeded, *users)
 	for i := 0; i < *users; i++ {
 		email := fmt.Sprintf("loadtest-%d@example.com", time.Now().UnixNano()+int64(i))
-		user, _, err := authSvc.Register(ctx, services.RegisterInput{
-			Email: email, Password: "LoadTestPass123!", FirstName: "Load", LastName: "Test", Device: "loadtest",
-		})
+		// Staged (OTP-gated) registration mirrors production: the account is
+		// created only after the emailed code is verified.
+		if _, err := authSvc.StageRegistration(ctx, services.RegisterInput{
+			Email: email, Password: "LoadTestPass123!", FirstName: "Load", LastName: "Test",
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "seed stage %d: %v\n", i, err)
+			os.Exit(1)
+		}
+		code, ok := sm.sent[email]
+		if !ok {
+			fmt.Fprintf(os.Stderr, "seed stage %d: no code captured for %s\n", i, email)
+			os.Exit(1)
+		}
+		user, _, err := authSvc.CompleteRegistration(ctx, email, code, "loadtest", "127.0.0.1")
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "seed user %d: %v\n", i, err)
+			fmt.Fprintf(os.Stderr, "seed verify %d: %v\n", i, err)
 			os.Exit(1)
 		}
 		if _, err := moneySvc.Deposit(ctx, user.ID, "NGN", 500_000_00, fmt.Sprintf("loadtest-seed-%s", user.ID)); err != nil {

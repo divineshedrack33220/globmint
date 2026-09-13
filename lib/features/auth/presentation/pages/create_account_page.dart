@@ -48,7 +48,7 @@ class _CreateAccountPageState extends ConsumerState<CreateAccountPage> {
     if (!_formKey.currentState!.validate()) return;
     setState(() => _isLoading = true);
     try {
-      await ref.read(authServiceProvider).register(
+      final result = await ref.read(authServiceProvider).register(
             firstName: _firstNameController.text.trim(),
             lastName: _lastNameController.text.trim(),
             email: _emailController.text.trim(),
@@ -57,7 +57,10 @@ class _CreateAccountPageState extends ConsumerState<CreateAccountPage> {
           );
       if (!mounted) return;
       setState(() => _isLoading = false);
-      context.push('/verify', extra: _emailController.text.trim());
+      context.push('/verify', extra: <String, dynamic>{
+        'email': _emailController.text.trim(),
+        'resend_after': result.resendAfter?.millisecondsSinceEpoch,
+      });
     } on ApiException catch (e) {
       if (!mounted) return;
       setState(() => _isLoading = false);

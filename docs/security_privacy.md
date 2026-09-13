@@ -1,4 +1,4 @@
-# Globe Mint — Vault Privacy: Security Review
+# GlobMint — Vault Privacy: Security Review
 
 *Companion to README §7 (Security). Target: teams auditing the commitment-based
 privacy mode (`GLOBMINT_PRIVACY_MODE=true`) before mainnet.*
