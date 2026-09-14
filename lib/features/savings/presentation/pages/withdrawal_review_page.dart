@@ -198,16 +198,76 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
     }
   }
 
-  /// Explains why the withdrawal needs a wallet signature (SIGNATURE_REQUIRED
-  /// / custody still held by the platform signer) and points to the Vault
-  /// Recovery page.
-  Future<void> _showSignatureRequired() async {
+  /// The current custody snapshot: the provider when it has resolved, else a
+  /// one-off chain-authoritative fetch so gating is never blocked on a slow
+  /// background refresh.
+  Future<CustodyStatus?> _currentCustody() async {
+    final cached = ref.read(custodyProvider).valueOrNull;
+    if (cached != null) return cached;
+    try {
+      return await ref.read(savingsClientProvider).getCustodyStatus();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Guards the signed-withdrawal path on custody: an unclaimed clone is owned
+  /// by the platform placeholder, so a user wallet can never authorize it.
+  /// Takes custody first (claiming with the connected wallet) and re-quotes for
+  /// the bumped nonce. Returns true when the clone is owner-signable afterwards.
+  Future<bool> _takeCustodyForWithdrawal() async {
+    final custody = await _currentCustody();
+    if (!mounted) return false;
+    if (custody == null || custody.claimed) return custody?.claimed ?? false;
+    if (custody.clone.isEmpty) {
+      _toast('No savings address to take custody of.');
+      return false;
+    }
+    final result = await CustodyClaimSheet.show(context, custody);
+    return result?.claimed == true;
+  }
+
+  /// Explains why the withdrawal needs a wallet signature (SIGNATURE_REQUIRED /
+  /// custody still held by the platform signer). When the clone is unclaimed it
+  /// offers taking custody, which claims with the connected wallet and
+  /// re-quotes so the next attempt can sign. Returns true when custody was just
+  /// claimed (the caller should retry signing).
+  Future<bool> _showSignatureRequired() async {
     final wallet = ref.read(walletProvider);
     final owner = _ownerShort;
+    final custody = await _currentCustody();
+    if (!mounted) return false;
     final connectedGood = wallet.isConnected &&
         owner != null &&
         wallet.address?.toLowerCase() == _quote!.cloneOwner.toLowerCase();
-    return showDialog<void>(
+    if (custody != null && !custody.claimed && custody.clone.isNotEmpty) {
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Take custody of your savings address'),
+          content: Text(
+            'Your savings address is still owned by the platform placeholder, '
+            'so it cannot sign this withdrawal. Take custody with your '
+            'connected wallet to authorize it yourself.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Not now'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Take custody'),
+            ),
+          ],
+        ),
+      );
+      if (confirm != true || !mounted) return false;
+      final claimed = await _takeCustodyForWithdrawal();
+      if (claimed) await _loadQuote();
+      return claimed;
+    }
+    await showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Wallet signature required'),
@@ -220,8 +280,8 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
                   ? 'Only the wallet that owns your savings address '
                       '($owner) can authorize this withdrawal. Connect that '
                       'wallet and try again.\n\nIf that wallet belongs to a '
-                      'device you no longer have, use Vault Recovery to '
-                      'designate a backup address.'
+                      'device you no longer have, take custody or use Vault '
+                      'Recovery to designate a backup address.'
                   : 'This withdrawal must be authorized by the wallet that '
                       'owns your savings address. Connect that wallet and '
                       'try again.',
@@ -234,6 +294,7 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
         ],
       ),
     );
+    return false;
   }
 
   Future<void> _confirmWithdrawal() async {
@@ -277,20 +338,30 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
 
     if (confirmed != true || !mounted) return;
 
-    setState(() => _isProcessing = true);
     String pin = '';
     WithdrawSignature? outSig;
     try {
       final client = ref.read(savingsClientProvider);
 
       if (requiresSignature) {
+        // A clone still owned by the platform placeholder can never be signed
+        // by a user wallet — gate on custody first, claiming + re-quoting.
+        final custody = ref.read(custodyProvider).valueOrNull;
+        if (custody != null && !custody.claimed && custody.clone.isNotEmpty) {
+          final claimed = await _takeCustodyForWithdrawal();
+          if (!claimed) return;
+          await _loadQuote();
+          if (!mounted) return;
+        }
         if (!await _connectOwnerFor(_quote)) return;
         outSig = await _signQuoteIfOwner(_quote);
         if (outSig == null) {
-          // Connected wallet isn't the owner (or the owner is still the
-          // platform signer): the backend would refuse with SIGNATURE_REQUIRED.
-          await _showSignatureRequired();
-          return;
+          // Not signable yet: either the wrong wallet is connected or the owner
+          // seat is still the platform placeholder (take custody to fix it).
+          final resumed = await _showSignatureRequired();
+          if (!resumed || !mounted) return;
+          outSig = await _signQuoteIfOwner(_quote);
+          if (outSig == null) return;
         }
       } else {
         // Transitional mode (backend advertises require_user_signature=false):
@@ -310,6 +381,8 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
           if (pin.isEmpty || !mounted) return;
         }
       }
+
+      if (mounted) setState(() => _isProcessing = true);
 
       final result = await client.withdrawToAddress(
         amount: a.toStringAsFixed(2),
@@ -333,7 +406,10 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
       }
     } on ApiException catch (e) {
       if (e.code == 'SIGNATURE_REQUIRED') {
-        await _showSignatureRequired();
+        final claimed = await _showSignatureRequired();
+        if (claimed && mounted) {
+          _toast('Custody claimed — tap Sign & Withdraw again to sign now.');
+        }
       } else {
         _toast('Withdrawal failed: ${e.message}');
       }
@@ -435,7 +511,13 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
     }
     if (requiresSignature && custody != null && !custody.claimed && custody.clone.isNotEmpty) {
       return GestureDetector(
-        onTap: () => CustodyClaimSheet.show(context, custody),
+        onTap: () async {
+          final result = await CustodyClaimSheet.show(context, custody);
+          // Owning the clone bumps its request nonce and moves the owner seat
+          // to the wallet — re-quote so "Sign & Withdraw" covers that fresh
+          // nonce and the new owner instead of signing a stale payload.
+          if (result?.claimed == true && mounted) await _loadQuote();
+        },
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           decoration: BoxDecoration(
