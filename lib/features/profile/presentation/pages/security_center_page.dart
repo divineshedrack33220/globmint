@@ -8,6 +8,7 @@ import '../../../../core/widgets/app_button.dart';
 import '../../../../core/widgets/app_text_field.dart';
 import '../../../../shared/services/api_client.dart';
 import '../../../../shared/services/wallet_service.dart';
+import '../../../savings/presentation/widgets/custody_claim_sheet.dart';
 import '../widgets/wallet_connect_button.dart';
 
 class SecurityCenterPage extends ConsumerStatefulWidget {
@@ -221,6 +222,89 @@ Text(
     );
   }
 
+  Widget _buildCustodyCard(BuildContext context) {
+    final custody = ref.watch(custodyProvider).valueOrNull;
+
+    final String title;
+    final String? subtitle;
+    final Color iconColor;
+    final IconData icon;
+    if (custody == null) {
+      title = 'Checking your savings address…';
+      subtitle = null;
+      iconColor = AppColors.textSecondary;
+      icon = Icons.sync;
+    } else if (custody.claimed) {
+      title = 'Owned by your wallet';
+      subtitle = '${_shortenAddress(custody.owner)} — signs withdrawals directly.';
+      iconColor = AppColors.success;
+      icon = Icons.verified_user_outlined;
+    } else {
+      title = 'Held by the platform placeholder';
+      subtitle =
+          'Your savings address is still owned by the platform signer. '
+          'Take custody so only your wallet can sign withdrawals.';
+      iconColor = AppColors.warning;
+      icon = Icons.lock_outline;
+    }
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.border, width: 1),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: AppColors.surfaceHighlight,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(icon, color: iconColor, size: 20),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title, style: context.typography.bodyLarge),
+                    if (subtitle != null) ...[
+                      const SizedBox(height: 2),
+                      Text(subtitle, style: context.typography.bodySmall),
+                    ],
+                  ],
+                ),
+              ),
+            ],
+          ),
+          if (custody != null &&
+              !custody.claimed &&
+              custody.clone.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: AppButton(
+                text: 'Take custody with your wallet',
+                isExpanded: true,
+                height: 48,
+                onPressed: () =>
+                    CustodyClaimSheet.show(context, custody),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   static String _shortenAddress(String addr) {
     if (addr.isEmpty) return '';
     if (addr.length <= 12) return addr;
@@ -274,6 +358,10 @@ Text(
               Text('Connected Wallet', style: context.typography.title),
               const SizedBox(height: 12),
               _buildWalletCard(context),
+              const SizedBox(height: 24),
+              Text('Savings Address Custody', style: context.typography.title),
+              const SizedBox(height: 12),
+              _buildCustodyCard(context),
               const SizedBox(height: 24),
               Text('Account Protection', style: context.typography.title),
               const SizedBox(height: 12),

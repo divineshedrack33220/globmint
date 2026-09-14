@@ -1677,6 +1677,132 @@ func (v *VaultService) isCustodyClaimed(owner string) bool {
 	return !strings.EqualFold(owner, v.cfg.VaultAddress)
 }
 
+// CustodyQuote is the exact EIP-712 message the CURRENT owner (the platform
+// signer, while the clone is unclaimed) must sign to hand the owner seat to
+// the user's wallet — the custody claim. Shaped for eth_signTypedData_v4 in
+// the same envelope as the withdraw/recovery prepares.
+type CustodyQuote struct {
+	Domain  eip712.Domain
+	Message eip712.TransferOwnershipRequest
+	// Owner is the clone's CURRENT owner seat (the platform placeholder)
+	// whose key produces the signature. The client shows this to explain who
+	// is being asked to sign.
+	Owner string
+}
+
+// PrepareCustodyClaim quotes the transferOwnershipBySig request a claim needs:
+// the platform signer (current owner of the unclaimed clone) hands the owner
+// seat to the user's wallet at [newOwner]. Nothing moves and nothing is
+// persisted. Returns ErrWithdrawRequiresCustody when the account has no clone
+// yet, and ErrCustodyAlreadyClaimed once the wallet already owns the clone.
+func (v *VaultService) PrepareCustodyClaim(ctx context.Context, userID, newOwner string) (*CustodyQuote, error) {
+	if !common.IsHexAddress(strings.TrimSpace(newOwner)) || common.HexToAddress(newOwner) == (common.Address{}) {
+		return nil, domain.ErrInvalidAddress
+	}
+	cloneAddr, err := v.CloneAddress(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if cloneAddr == "" {
+		return nil, domain.ErrWithdrawRequiresCustody
+	}
+	owner, err := v.chain.CloneOwner(ctx, cloneAddr)
+	if err != nil {
+		return nil, err
+	}
+	if owner == "" {
+		return nil, domain.ErrInvalidSignature
+	}
+	if v.isCustodyClaimed(owner) {
+		return nil, domain.ErrCustodyAlreadyClaimed
+	}
+	if strings.EqualFold(owner, newOwner) {
+		return nil, domain.ErrInvalidAddress
+	}
+	nonce, err := v.chain.CloneNonce(ctx, cloneAddr)
+	if err != nil {
+		return nil, err
+	}
+	return &CustodyQuote{
+		Domain: eip712.Domain{
+			Name:              eip712.DomainName,
+			Version:           eip712.DomainVersion,
+			ChainID:           v.cfg.ChainID,
+			VerifyingContract: cloneAddr,
+		},
+		Message: eip712.TransferOwnershipRequest{
+			NewOwner: common.HexToAddress(newOwner),
+			Nonce:    nonce,
+			Deadline: time.Now().UTC().Add(defaultSignatureLifetime).Unix(),
+		},
+		Owner: owner,
+	}, nil
+}
+
+// ClaimCustody hands the clone owner seat from the platform placeholder signer
+// to the user's wallet at [newOwner]. The transfer is signed by the CURRENT
+// owner — the platform signer — which is the only signer the clone contract
+// accepts before the claim. After it lands the user's wallet owns the clone
+// and only the user's own signature can author withdrawals or recovery
+// changes. Returns ErrCustodyAlreadyClaimed when the wallet already owns it.
+func (v *VaultService) ClaimCustody(ctx context.Context, userID, newOwner string) (string, error) {
+	if !common.IsHexAddress(strings.TrimSpace(newOwner)) || common.HexToAddress(newOwner) == (common.Address{}) {
+		return "", domain.ErrInvalidAddress
+	}
+	cloneAddr, err := v.CloneAddress(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+	if cloneAddr == "" {
+		return "", domain.ErrWithdrawRequiresCustody
+	}
+	owner, err := v.chain.CloneOwner(ctx, cloneAddr)
+	if err != nil {
+		return "", err
+	}
+	if owner == "" {
+		return "", domain.ErrInvalidSignature
+	}
+	if v.isCustodyClaimed(owner) {
+		return "", domain.ErrCustodyAlreadyClaimed
+	}
+	if strings.EqualFold(owner, newOwner) {
+		return "", domain.ErrInvalidAddress
+	}
+	nonce, err := v.chain.CloneNonce(ctx, cloneAddr)
+	if err != nil {
+		return "", err
+	}
+	deadline := time.Now().UTC().Add(defaultSignatureLifetime).Unix()
+	sig, err := v.chain.SignOwnershipTransfer(ctx, v.cfg.ChainID, cloneAddr, newOwner, nonce, deadline)
+	if err != nil {
+		return "", err
+	}
+	txHash, err := v.chain.TransferOwnershipBySig(ctx, blockchain.RelayOwnershipTransfer{
+		Clone:    cloneAddr,
+		NewOwner: newOwner,
+		Nonce:    nonce,
+		Deadline: deadline,
+		Sig:      sig,
+	})
+	if err != nil {
+		return "", err
+	}
+	// Write-through the cache so custody reads reflect the claim immediately
+	// without waiting for the reconciler's next tick.
+	if cerr := v.store.VaultCloneRepo().CacheRecovery(ctx, userID, &domain.CloneRecovery{Owner: newOwner}); cerr != nil {
+		log.Printf("vault: cache custody owner after claim for %s: %v", userID, cerr)
+	}
+	if v.Hub != nil {
+		v.Hub.Publish(events.Event{
+			Type: "data.changed", UserID: userID, Kind: "all",
+			At: time.Now().UTC().Format(time.RFC3339),
+		})
+	}
+	log.Printf("vault: custody claimed for clone %s (user %s, new owner %s, tx %s)", cloneAddr, userID, newOwner, txHash)
+	return txHash, nil
+}
+
 // RunRecoveryReconciler keeps the DB recovery cache close to chain truth: on
 // every tick it walks all deployed clones and refreshes their cached recovery
 // state from the chain. The chain stays authoritative; the cache exists so API

@@ -72,4 +72,104 @@ void main() {
     expect(status.claimed, isFalse);
     expect(status.nonce, 7);
   });
+
+  test('CustodyQuote.fromJson parses a transfer-ownership quote', () {
+    final quote = CustodyQuote.fromJson({
+      'domain': {
+        'name': 'GlobmintVault',
+        'version': '1',
+        'chain_id': 1337,
+        'verifying_contract': '0x0925F132e9d44D70e6A106f173d8842c81765c51',
+      },
+      'primary_type': 'TransferOwnership',
+      'message': {
+        'new_owner': '0x4444444444444444444444444444444444444444',
+        'nonce': 3,
+        'deadline': 1710000000,
+      },
+      'clone_owner': '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266',
+    });
+
+    expect(quote.primaryType, 'TransferOwnership');
+    expect(quote.message.newOwner, '0x4444444444444444444444444444444444444444');
+    expect(quote.message.nonce, 3);
+    expect(quote.message.deadline, 1710000000);
+    expect(quote.cloneOwner, '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266');
+    expect(quote.domain.verifyingContract, '0x0925F132e9d44D70e6A106f173d8842c81765c51');
+  });
+
+  test('prepareCustody requests GET /savings/custody/prepare?new_owner=…',
+      () async {
+    late http.Request captured;
+    final client = ApiClient(
+      baseUrl: 'http://x',
+      httpClient: MockClient((request) async {
+        captured = request;
+        return http.Response(
+          jsonEncode({
+            'domain': {
+              'name': 'GlobmintVault',
+              'version': '1',
+              'chain_id': 1337,
+              'verifying_contract': '0xClone',
+            },
+            'primary_type': 'TransferOwnership',
+            'message': {
+              'new_owner': '0x4444444444444444444444444444444444444444',
+              'nonce': 0,
+              'deadline': 1710000000,
+            },
+            'clone_owner': '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266',
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }),
+    );
+    final savings = SavingsClient(client);
+
+    final quote = await savings.prepareCustody(
+      '0x4444444444444444444444444444444444444444',
+    );
+
+    expect(captured.method, 'GET');
+    expect(captured.url.path, '/api/v1/savings/custody/prepare');
+    expect(captured.url.queryParameters['new_owner'],
+        '0x4444444444444444444444444444444444444444');
+    expect(quote.message.newOwner, '0x4444444444444444444444444444444444444444');
+    expect(quote.message.nonce, 0);
+  });
+
+  test('claimCustody POSTs /savings/custody/claim with an idempotency key',
+      () async {
+    late http.Request captured;
+    final client = ApiClient(
+      baseUrl: 'http://x',
+      httpClient: MockClient((request) async {
+        captured = request;
+        return http.Response(
+          jsonEncode({
+            'claimed': true,
+            'new_owner': '0x4444444444444444444444444444444444444444',
+            'tx_hash': '0xTXN',
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }),
+    );
+    final savings = SavingsClient(client);
+
+    final result = await savings.claimCustody(
+      '0x4444444444444444444444444444444444444444',
+    );
+
+    expect(captured.method, 'POST');
+    expect(captured.url.path, '/api/v1/savings/custody/claim');
+    final body = jsonDecode(captured.body) as Map<String, dynamic>;
+    expect(body['new_owner'], '0x4444444444444444444444444444444444444444');
+    expect(captured.headers.containsKey('Idempotency-Key'), isTrue);
+    expect(result.claimed, isTrue);
+    expect(result.txHash, '0xTXN');
+  });
 }

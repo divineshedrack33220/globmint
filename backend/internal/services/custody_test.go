@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"globmint/backend/internal/domain"
+	"globmint/backend/internal/eip712"
 	"globmint/backend/internal/infrastructure/blockchain"
 )
 
@@ -181,5 +183,155 @@ func TestCustody_NodeErrorWithNoCacheStaysUnclaimed(t *testing.T) {
 	}
 	if status.Claimed {
 		t.Error("must never claim without chain or cache truth")
+	}
+}
+
+// TestCustodyClaim_PrepareAndRelay covers the happy path: the platform signer
+// (the CURRENT owner of the unclaimed clone) quotes and then signs the
+// transferOwnershipBySig handing the owner seat to the user's wallet.
+func TestCustodyClaim_PrepareAndRelay(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	u := newTestUser(t, st, "custody-claim@example.com")
+
+	chain := blockchain.NewMockBlockchainService()
+	v := newSignatureVault(t, st, chain, u.ID, true)
+
+	clone := seedClone(t, v, chain, u.ID, vaultAddr)
+	newOwner := "0x4444444444444444444444444444444444444444"
+
+	quote, err := v.PrepareCustodyClaim(ctx, u.ID, newOwner)
+	if err != nil {
+		t.Fatalf("prepare custody: %v", err)
+	}
+	if quote.Domain.Name != eip712.DomainName || quote.Domain.VerifyingContract != clone {
+		t.Errorf("quote domain mismatch: %+v", quote.Domain)
+	}
+	if quote.Message.NewOwner.Hex() != newOwner {
+		t.Errorf("quote new owner = %s, want %s", quote.Message.NewOwner.Hex(), newOwner)
+	}
+	if !strings.EqualFold(quote.Owner, vaultAddr) {
+		t.Errorf("quote owner = %s, want placeholder %s", quote.Owner, vaultAddr)
+	}
+	if quote.Message.Deadline <= 0 {
+		t.Error("quote deadline must be a fresh unix timestamp")
+	}
+
+	txHash, err := v.ClaimCustody(ctx, u.ID, newOwner)
+	if err != nil {
+		t.Fatalf("claim custody: %v", err)
+	}
+	if txHash == "" {
+		t.Fatal("expected a tx hash")
+	}
+
+	transfers := chain.OwnershipTransfers()
+	if len(transfers) != 1 {
+		t.Fatalf("ownership transfers = %d, want 1", len(transfers))
+	}
+	tr := transfers[0]
+	if tr.Clone != clone {
+		t.Errorf("relay clone = %s, want %s", tr.Clone, clone)
+	}
+	if tr.NewOwner != newOwner {
+		t.Errorf("relay new owner = %s, want %s", tr.NewOwner, newOwner)
+	}
+	if tr.Nonce != 0 {
+		t.Errorf("relay nonce = %d, want 0 (the shared current nonce)", tr.Nonce)
+	}
+	if tr.Deadline <= 0 {
+		t.Errorf("relay deadline = %d, want fresh", tr.Deadline)
+	}
+
+	// The claim used the CURRENT nonce — quote and claim agree.
+	if quote.Message.Nonce != tr.Nonce {
+		t.Errorf("quote nonce = %d, relay nonce = %d: prepare and claim must cover the same nonce",
+			quote.Message.Nonce, tr.Nonce)
+	}
+
+	// State after the relay: the wallet owns the clone and it is claimed.
+	ownerNow, _ := chain.CloneOwner(ctx, clone)
+	if !strings.EqualFold(ownerNow, newOwner) {
+		t.Errorf("chain owner after claim = %s, want %s", ownerNow, newOwner)
+	}
+	if nextNonce, _ := chain.CloneNonce(ctx, clone); nextNonce != 1 {
+		t.Errorf("clone nonce after claim = %d, want 1", nextNonce)
+	}
+	status, err := v.CustodyStatus(ctx, u.ID)
+	if err != nil {
+		t.Fatalf("custody status after claim: %v", err)
+	}
+	if !status.Claimed {
+		t.Error("clone must be claimed after the transfer")
+	}
+	if !strings.EqualFold(status.Owner, newOwner) {
+		t.Errorf("status owner after claim = %s, want %s", status.Owner, newOwner)
+	}
+}
+
+// TestCustodyClaim_SealedOnceClaimed covers idempotence: once the wallet owns
+// the clone, both prepare and claim refuse with ErrCustodyAlreadyClaimed.
+func TestCustodyClaim_SealedOnceClaimed(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	u := newTestUser(t, st, "custody-claimed-sealed@example.com")
+
+	chain := blockchain.NewMockBlockchainService()
+	v := newSignatureVault(t, st, chain, u.ID, true)
+
+	seedClone(t, v, chain, u.ID, "0x4444444444444444444444444444444444444444")
+
+	if _, err := v.PrepareCustodyClaim(ctx, u.ID, "0x5555555555555555555555555555555555555555"); !errors.Is(err, domain.ErrCustodyAlreadyClaimed) {
+		t.Fatalf("prepare on claimed clone error = %v, want ErrCustodyAlreadyClaimed", err)
+	}
+	if _, err := v.ClaimCustody(ctx, u.ID, "0x5555555555555555555555555555555555555555"); !errors.Is(err, domain.ErrCustodyAlreadyClaimed) {
+		t.Fatalf("claim on claimed clone error = %v, want ErrCustodyAlreadyClaimed", err)
+	}
+	if n := len(chain.OwnershipTransfers()); n != 0 {
+		t.Errorf("ownership transfers = %d, want 0 (nothing may relay)", n)
+	}
+}
+
+// TestCustodyClaim_NoCloneRequiresCustody covers the missing-clone guard: an
+// account with no deposited clone cannot claim custody (it has nothing to
+// claim) — surfaced as the withdrawal custody error.
+func TestCustodyClaim_NoCloneRequiresCustody(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	u := newTestUser(t, st, "custody-noclone-gated@example.com")
+
+	chain := blockchain.NewMockBlockchainService()
+	v := newSignatureVault(t, st, chain, u.ID, true)
+
+	if _, err := v.ClaimCustody(ctx, u.ID, "0x4444444444444444444444444444444444444444"); !errors.Is(err, domain.ErrWithdrawRequiresCustody) {
+		t.Fatalf("claim without a clone error = %v, want ErrWithdrawRequiresCustody", err)
+	}
+}
+
+// TestCustodyClaim_ValidatesNewOwner covers input guards: invalid addresses,
+// zero addresses, and the current owner being asked to re-claim are refused.
+func TestCustodyClaim_ValidatesNewOwner(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	u := newTestUser(t, st, "custody-validation@example.com")
+
+	chain := blockchain.NewMockBlockchainService()
+	v := newSignatureVault(t, st, chain, u.ID, true)
+
+	clone := seedClone(t, v, chain, u.ID, vaultAddr)
+
+	if _, err := v.ClaimCustody(ctx, u.ID, "not-an-address"); !errors.Is(err, domain.ErrInvalidAddress) {
+		t.Fatalf("invalid address error = %v, want ErrInvalidAddress", err)
+	}
+	if _, err := v.ClaimCustody(ctx, u.ID, "0x0000000000000000000000000000000000000000"); !errors.Is(err, domain.ErrInvalidAddress) {
+		t.Fatalf("zero address error = %v, want ErrInvalidAddress", err)
+	}
+	// The placeholder cannot claim from itself.
+	if _, err := v.ClaimCustody(ctx, u.ID, strings.ToLower(vaultAddr)); !errors.Is(err, domain.ErrInvalidAddress) {
+		t.Fatalf("same-owner error = %v, want ErrInvalidAddress", err)
+	}
+	_ = clone
+	if n := len(chain.OwnershipTransfers()); n != 0 {
+		t.Errorf("ownership transfers = %d, want 0", n)
 	}
 }

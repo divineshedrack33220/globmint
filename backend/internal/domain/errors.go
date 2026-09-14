@@ -38,6 +38,7 @@ var (
 	ErrInvalidSignature          = errors.New("invalid withdrawal signature")
 	ErrSignatureExpired          = errors.New("withdrawal signature expired")
 	ErrWithdrawRequiresCustody   = errors.New("take custody of your vault before withdrawing")
+	ErrCustodyAlreadyClaimed     = errors.New("your savings address is already owned by your wallet")
 	// Privacy salt derivation errors.
 	ErrInvalidOperation = errors.New("operation not allowed in this mode")
 	ErrInvalidSalt      = errors.New("invalid privacy salt")
@@ -50,7 +51,7 @@ func ErrorCode(err error) string {
 	switch {
 	case errors.Is(err, ErrNotFound), errors.Is(err, ErrAccountNotFound), errors.Is(err, ErrRateNotFound):
 		return "NOT_FOUND"
-	case errors.Is(err, ErrConflict), errors.Is(err, ErrIdempotentReplay), errors.Is(err, ErrRateExpired):
+	case errors.Is(err, ErrConflict), errors.Is(err, ErrIdempotentReplay), errors.Is(err, ErrRateExpired), errors.Is(err, ErrCustodyAlreadyClaimed):
 		return "CONFLICT"
 	case errors.Is(err, ErrUnauthenticated), errors.Is(err, ErrInvalidToken):
 		return "UNAUTHENTICATED"

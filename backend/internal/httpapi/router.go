@@ -120,6 +120,18 @@ func NewHandler(deps *Deps, auth middleware.Authenticator, corsOrigins []string,
 	// platform placeholder). Read-only; the claim flow lives under
 	// GET /savings/custody/prepare + POST /savings/custody/claim.
 	mux.Handle("GET "+api+"/savings/custody", middleware.Auth(auth, http.HandlerFunc(deps.handleCustodyStatus)))
+	mux.Handle("GET "+api+"/savings/custody/prepare", middleware.RateLimiter(
+		middleware.Auth(auth, http.HandlerFunc(deps.handlePrepareCustody)),
+		time.Second,
+		limits.MoneyBurst,
+		clientIPKey,
+	))
+	mux.Handle("POST "+api+"/savings/custody/claim", middleware.RateLimiter(
+		middleware.Auth(auth, middleware.Idempotency(http.HandlerFunc(deps.handleClaimCustody))),
+		time.Second,
+		limits.MoneyBurst,
+		clientIPKey,
+	))
 	mux.Handle("GET "+api+"/savings/recovery/prepare", middleware.RateLimiter(
 		middleware.Auth(auth, http.HandlerFunc(deps.handlePrepareRecovery)),
 		time.Second,

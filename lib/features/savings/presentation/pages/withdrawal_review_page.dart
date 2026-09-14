@@ -14,6 +14,7 @@ import '../../../../shared/services/conversion_service.dart';
 import '../../../../shared/services/ethereum_provider.dart';
 import '../../../../shared/services/savings_client.dart';
 import '../../../../shared/services/wallet_service.dart';
+import '../widgets/custody_claim_sheet.dart';
 
 class WithdrawalReviewPage extends ConsumerStatefulWidget {
   const WithdrawalReviewPage({
@@ -433,26 +434,42 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
       );
     }
     if (requiresSignature && custody != null && !custody.claimed && custody.clone.isNotEmpty) {
-      return Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        decoration: BoxDecoration(
-          color: AppColors.warningMuted,
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Icon(Icons.lock_outline, size: 16, color: AppColors.warning),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                wallet.isConnected
-                    ? 'Your savings address is still owned by the platform placeholder. Take custody to sign withdrawals with your wallet.'
-                    : 'Your savings address is still owned by the platform placeholder. Take custody before withdrawing.',
-                style: context.typography.bodySmall,
+      return GestureDetector(
+        onTap: () => CustodyClaimSheet.show(context, custody),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: AppColors.warningMuted,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Icon(Icons.lock_outline, size: 16, color: AppColors.warning),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      wallet.isConnected
+                          ? 'Your savings address is still owned by the platform placeholder. Take custody to sign withdrawals with your wallet.'
+                          : 'Your savings address is still owned by the platform placeholder. Take custody before withdrawing.',
+                      style: context.typography.bodySmall,
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Take custody →',
+                      style: context.typography.bodySmall.copyWith(
+                        color: AppColors.warning,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       );
     }

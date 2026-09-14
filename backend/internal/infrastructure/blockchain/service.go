@@ -74,6 +74,17 @@ type RelayRecoverySet struct {
 	Sig              WithdrawSignature
 }
 
+// RelayOwnershipTransfer is a fully-built transferOwnershipBySig call ready to
+// broadcast: the clone, the new owner taking custody, the exact nonce +
+// deadline the CURRENT owner's signature covers, and the signature itself.
+type RelayOwnershipTransfer struct {
+	Clone    string
+	NewOwner string
+	Nonce    uint64
+	Deadline int64
+	Sig      WithdrawSignature
+}
+
 // BlockchainService defines the interface for blockchain operations.
 type BlockchainService interface {
 	GetBalance(ctx context.Context, address string) (string, error)
@@ -144,6 +155,17 @@ type BlockchainService interface {
 	// setRecoveryAddressBySig call designating the clone's recovery address.
 	// Returns the broadcast tx hash.
 	SetRecoveryAddressBySig(ctx context.Context, relay RelayRecoverySet) (string, error)
+	// TransferOwnershipBySig relays a pre-signed EIP-712 transferOwnershipBySig
+	// call handing the clone's owner seat from the current owner to
+	// RelayOwnershipTransfer.NewOwner (the custody claim). The clone contract
+	// verifies the signature recovers to the CURRENT owner. Returns the
+	// broadcast tx hash.
+	TransferOwnershipBySig(ctx context.Context, relay RelayOwnershipTransfer) (string, error)
+	// SignOwnershipTransfer signs a transferOwnershipBySig request with the
+	// platform signer key — the CURRENT owner of any unclaimed clone. This is
+	// the custody-claim path: the platform hands the owner seat to the user's
+	// wallet, after which only the user's own wallet can sign withdrawals.
+	SignOwnershipTransfer(ctx context.Context, chainID int64, clone, newOwner string, nonce uint64, deadline int64) (WithdrawSignature, error)
 }
 
 // ---------- Mock ----------
@@ -175,6 +197,9 @@ type MockBlockchainService struct {
 	recoveryRequestedAts map[string]uint64
 	// recoverySets records every setRecoveryAddressBySig relay, for tests.
 	recoverySets []RelayRecoverySet
+	// ownershipTransfers records every transferOwnershipBySig relay the mock
+	// accepted (the custody claims), for tests.
+	ownershipTransfers []RelayOwnershipTransfer
 	// cloneReadErr injects a failure on the next clone state read
 	// (CloneOwner / CloneRecovery*); nil = no failure. Mock-only, for tests.
 	cloneReadErr error
@@ -399,6 +424,45 @@ func (m *MockBlockchainService) SetRecoveryAddressBySig(ctx context.Context, rel
 	m.recoveryRequestedAts[key] = 0
 	m.recoverySets = append(m.recoverySets, relay)
 	return "0x" + fmt.Sprintf("%064x", time.Now().UnixNano()), nil
+}
+
+// TransferOwnershipBySig records the custody claim, hands the owner seat to
+// the new owner, bumps the shared nonce, and returns a synthetic hash
+// (mock-only).
+func (m *MockBlockchainService) TransferOwnershipBySig(ctx context.Context, relay RelayOwnershipTransfer) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := strings.ToLower(relay.Clone)
+	if relay.NewOwner == "" {
+		return "", fmt.Errorf("mock: empty new owner")
+	}
+	m.cloneOwners[key] = strings.ToLower(relay.NewOwner)
+	m.cloneNonces[key] = relay.Nonce + 1
+	m.ownershipTransfers = append(m.ownershipTransfers, relay)
+	return "0x" + fmt.Sprintf("%064x", time.Now().UnixNano()), nil
+}
+
+// OwnershipTransfers returns every transferOwnershipBySig relay the mock
+// accepted (the custody claims), for tests (mock-only).
+func (m *MockBlockchainService) OwnershipTransfers() []RelayOwnershipTransfer {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]RelayOwnershipTransfer, len(m.ownershipTransfers))
+	copy(out, m.ownershipTransfers)
+	return out
+}
+
+// SignOwnershipTransfer signs a transferOwnershipBySig request with the
+// platform signer key (the CURRENT owner of any unclaimed clone). The mock
+// returns a deterministic synthetic signature; verification is the vault
+// service's/pre-contract's job, the mock records the relay when it arrives.
+func (m *MockBlockchainService) SignOwnershipTransfer(ctx context.Context, chainID int64, clone, newOwner string, nonce uint64, deadline int64) (WithdrawSignature, error) {
+	payload := fmt.Sprintf("mock-transfer:%s:%s:%d:%d", clone, newOwner, nonce, deadline)
+	hash := crypto.Keccak256Hash([]byte(payload))
+	var r, s [32]byte
+	copy(r[:], hash.Bytes()[:32])
+	copy(s[:], hash.Bytes()[:32])
+	return WithdrawSignature{V: 27, R: r, S: s}, nil
 }
 
 // RecoveryRelays returns every setRecoveryAddressBySig relay the mock accepted
@@ -1004,6 +1068,69 @@ func encodeSetRecoveryBySig(relay RelayRecoverySet) []byte {
 	data := make([]byte, 4+32+32+32+32+32+32)
 	copy(data[:4], common.FromHex("b2059d18"))
 	copy(data[4+12:4+32], common.HexToAddress(relay.RecoveryAddress).Bytes())
+	new(big.Int).SetUint64(relay.Nonce).FillBytes(data[4+32 : 4+64])
+	new(big.Int).SetInt64(relay.Deadline).FillBytes(data[4+64 : 4+96])
+	data[4+96+31] = relay.Sig.V // uint8 right-aligned in its word
+	copy(data[4+128:4+160], relay.Sig.R[:])
+	copy(data[4+160:4+192], relay.Sig.S[:])
+	return data
+}
+
+// TransferOwnershipBySig relays a pre-signed EIP-712 transferOwnershipBySig
+// call on the clone, handing the owner seat from the current signer to the
+// user's wallet (the custody claim). The signer pays the gas; the signature
+// inside the relay authorizes the exact transfer and the clone contract
+// re-verifies it against the clone's CURRENT owner before changing ownership.
+func (s *EthereumService) TransferOwnershipBySig(ctx context.Context, relay RelayOwnershipTransfer) (string, error) {
+	if !common.IsHexAddress(relay.Clone) || !common.IsHexAddress(relay.NewOwner) {
+		return "", fmt.Errorf("invalid relay address")
+	}
+	clone := common.HexToAddress(relay.Clone)
+	data := encodeTransferOwnershipBySig(relay)
+	txHash, err := s.sendTx(ctx, clone, data)
+	if err != nil {
+		return "", fmt.Errorf("relay transferOwnershipBySig: %w", err)
+	}
+	return txHash, nil
+}
+
+// SignOwnershipTransfer signs a transferOwnershipBySig request with the
+// platform signer key. The clone the request targets is still owned by that
+// signer (it is unclaimed), and the contract requires the CURRENT owner's
+// signature — so this is the custody-claim path: the platform hands the owner
+// seat to the user's wallet. Once signed and relayed the platform signer can
+// no longer authorize anything on that clone.
+func (s *EthereumService) SignOwnershipTransfer(ctx context.Context, chainID int64, clone, newOwner string, nonce uint64, deadline int64) (WithdrawSignature, error) {
+	if s.signerKey == nil {
+		return WithdrawSignature{}, fmt.Errorf("signer key not configured")
+	}
+	if !common.IsHexAddress(clone) || !common.IsHexAddress(newOwner) {
+		return WithdrawSignature{}, fmt.Errorf("invalid relay address")
+	}
+	digest := eip712.TransferOwnershipDigest(chainID, common.HexToAddress(clone), eip712.TransferOwnershipRequest{
+		NewOwner: common.HexToAddress(newOwner),
+		Nonce:    nonce,
+		Deadline: deadline,
+	})
+	sig, err := eip712.SignDigest(digest, s.signerKey)
+	if err != nil {
+		return WithdrawSignature{}, err
+	}
+	v, r, sPart, err := eip712.ParseSignature(common.Bytes2Hex(sig))
+	if err != nil {
+		return WithdrawSignature{}, err
+	}
+	return WithdrawSignature{V: v, R: r, S: sPart}, nil
+}
+
+// encodeTransferOwnershipBySig builds the ABI payload for
+// transferOwnershipBySig(address,uint256,uint256,uint8,bytes32,bytes32):
+// 4-byte selector + newOwner + nonce + deadline + v (right-aligned byte) + r +
+// s, each a 32-byte word.
+func encodeTransferOwnershipBySig(relay RelayOwnershipTransfer) []byte {
+	data := make([]byte, 4+32+32+32+32+32+32)
+	copy(data[:4], common.FromHex("6db464f1"))
+	copy(data[4+12:4+32], common.HexToAddress(relay.NewOwner).Bytes())
 	new(big.Int).SetUint64(relay.Nonce).FillBytes(data[4+32 : 4+64])
 	new(big.Int).SetInt64(relay.Deadline).FillBytes(data[4+64 : 4+96])
 	data[4+96+31] = relay.Sig.V // uint8 right-aligned in its word

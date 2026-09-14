@@ -308,6 +308,25 @@ class SavingsClient {
     return data?['cancelled'] == true;
   }
 
+  /// Relays the platform-signed `transferOwnershipBySig` handing the clone
+  /// owner seat to the user's connected wallet [newOwner]. The signature comes
+  /// from the CURRENT owner — the platform signer — because the clone contract
+  /// only accepts the current owner's signature; claiming with the same key is
+  /// refused as CONFLICT so retries under an idempotency key are safe.
+  Future<CustodyClaimResult> claimCustody(String newOwner) async {
+    final data = await _api.post(
+      '${AppConstants.apiV1Prefix}/savings/custody/claim',
+      idempotent: true,
+      body: {'new_owner': newOwner},
+    );
+    if (data == null) throw ApiException(0, 'Empty response from server');
+    return CustodyClaimResult(
+      claimed: data['claimed'] == true,
+      newOwner: data['new_owner'] as String? ?? newOwner,
+      txHash: data['tx_hash'] as String? ?? '',
+    );
+  }
+
   /// Returns the user's clone recovery state as read from the chain:
   /// the designated recovery address, the armed delay, and any in-flight
   /// recovery window. Chain-authoritative with a cache fallback server-side.
@@ -325,6 +344,20 @@ class SavingsClient {
     final data = await _api.get('${AppConstants.apiV1Prefix}/savings/custody');
     if (data == null) throw ApiException(0, 'Empty response from server');
     return CustodyStatus.fromJson(data);
+  }
+
+  /// Quotes the exact EIP-712 `TransferOwnership` payload the CURRENT owner of
+  /// an unclaimed clone authorizes when the platform signer hands the owner
+  /// seat to the user's wallet: the domain + message (covering the current
+  /// clone nonce) plus the owner seat so the client can explain who signs. No
+  /// funds move and nothing is persisted.
+  Future<CustodyQuote> prepareCustody(String newOwner) async {
+    final q = Uri(queryParameters: {'new_owner': newOwner});
+    final data = await _api.get(
+      '${AppConstants.apiV1Prefix}/savings/custody/prepare?${q.query}',
+    );
+    if (data == null) throw ApiException(0, 'Empty response from server');
+    return CustodyQuote.fromJson(data);
   }
 
   /// Quotes the exact EIP-712 `SetRecovery` payload a user would sign before
@@ -643,6 +676,83 @@ class CustodyStatus {
         claimed: j['claimed'] == true,
         nonce: (j['nonce'] as num?)?.toInt() ?? 0,
       );
+}
+
+/// The `TransferOwnership(newOwner, nonce, deadline)` message the CURRENT
+/// owner of an unclaimed clone authorizes to hand the owner seat away.
+class CustodyMessage {
+  const CustodyMessage({
+    required this.newOwner,
+    required this.nonce,
+    required this.deadline,
+  });
+
+  /// The wallet address taking custody of the clone.
+  final String newOwner;
+
+  /// Current on-chain clone nonce the signature must cover.
+  final int nonce;
+
+  /// Unix-seconds expiry of the signature.
+  final int deadline;
+
+  factory CustodyMessage.fromJson(Map<String, dynamic> j) => CustodyMessage(
+        newOwner: j['new_owner'] as String? ??
+            j['newOwner'] as String? ??
+            '',
+        nonce: (j['nonce'] as num?)?.toInt() ?? 0,
+        deadline: (j['deadline'] as num?)?.toInt() ?? 0,
+      );
+}
+
+/// The full quote returned by `GET /savings/custody/prepare`: the exact
+/// `TransferOwnership` typed data the current owner must authorize, plus the
+/// owner seat. While the clone is unclaimed the owner IS the platform
+/// placeholder, so the platform signer (the only address the contract accepts)
+/// produces the signature; this quote exists so the client can show users
+/// exactly what is being signed and to whom custody is handed.
+class CustodyQuote {
+  const CustodyQuote({
+    required this.domain,
+    required this.primaryType,
+    required this.message,
+    required this.cloneOwner,
+  });
+
+  final Eip712Domain domain;
+  final String primaryType;
+  final CustodyMessage message;
+
+  /// The current clone owner seat — the address whose key must sign.
+  final String cloneOwner;
+
+  factory CustodyQuote.fromJson(Map<String, dynamic> j) => CustodyQuote(
+        domain: Eip712Domain.fromJson(
+            (j['domain'] as Map<String, dynamic>?) ?? const {}),
+        primaryType: j['primary_type'] as String? ?? 'TransferOwnership',
+        message: CustodyMessage.fromJson(
+            (j['message'] as Map<String, dynamic>?) ?? const {}),
+        cloneOwner: j['clone_owner'] as String? ?? '',
+      );
+}
+
+/// The acknowledged result of `POST /savings/custody/claim`.
+class CustodyClaimResult {
+  const CustodyClaimResult({
+    required this.claimed,
+    required this.newOwner,
+    required this.txHash,
+  });
+
+  /// True after the relay succeeded; also true when the clone was already
+  /// claimed (the claim is idempotent and returns a friendly conflict).
+  final bool claimed;
+
+  /// The wallet that now owns the clone.
+  final String newOwner;
+
+  /// On-chain transaction hash of the `transferOwnershipBySig` relay.
+  final String txHash;
 }
 
 /// The `SetRecovery(recoveryAddress, nonce, deadline)` message to sign.

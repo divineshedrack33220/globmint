@@ -197,3 +197,66 @@ func inRecoverSet(other common.Hash, sig []byte, want common.Address) bool {
 	addr, err := RecoverSigner(other, sig)
 	return err == nil && addr == want
 }
+
+func TestTransferOwnershipRoundTrip(t *testing.T) {
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	chainID := int64(31337)
+	clone := common.HexToAddress("0x2FA1d346639EFADa7AcDEad8bFE54f167708F93F")
+	newOwner := common.HexToAddress("0x4444444444444444444444444444444444444444")
+	req := TransferOwnershipRequest{
+		NewOwner: newOwner,
+		Nonce:    0,
+		Deadline: 1_700_000_000,
+	}
+	digest := TransferOwnershipDigest(chainID, clone, req)
+
+	sig, err := SignDigest(digest, key)
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	got, err := RecoverSigner(digest, sig)
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	want := crypto.PubkeyToAddress(key.PublicKey)
+	if got != want {
+		t.Fatalf("recovered %s, want %s", got.Hex(), want.Hex())
+	}
+
+	// Every field must participate: mutating newOwner/nonce/deadline, the
+	// chain id, or the verifying contract must invalidate the signature.
+	mutations := []TransferOwnershipRequest{
+		{NewOwner: common.HexToAddress("0x5555555555555555555555555555555555555555"), Nonce: req.Nonce, Deadline: req.Deadline},
+		{NewOwner: req.NewOwner, Nonce: req.Nonce + 1, Deadline: req.Deadline},
+		{NewOwner: req.NewOwner, Nonce: req.Nonce, Deadline: req.Deadline + 1},
+	}
+	for i, m := range mutations {
+		other := TransferOwnershipDigest(chainID, clone, m)
+		if other == digest {
+			t.Fatalf("mutation %d produced the same digest", i)
+		}
+		if addr, err := RecoverSigner(other, sig); err == nil && addr == want {
+			t.Fatalf("mutation %d still recovered original signer", i)
+		}
+	}
+	if other := TransferOwnershipDigest(chainID+1, clone, req); inRecoverSet(other, sig, want) {
+		t.Fatal("a different chain id still recovered the signer")
+	}
+	if other := TransferOwnershipDigest(chainID, common.HexToAddress("0x5555555555555555555555555555555555555555"), req); inRecoverSet(other, sig, want) {
+		t.Fatal("a different verifying contract still recovered the signer")
+	}
+	// Cross-intent replay guard: the shared nonce must never let a transfer
+	// signature be replayed as a recovery (or withdrawal) of the same address
+	// and nonce — the typehash prefixes each intent.
+	recovery := SetRecoveryDigest(chainID, clone, SetRecoveryRequest{RecoveryAddress: newOwner, Nonce: req.Nonce, Deadline: req.Deadline})
+	if recovery == digest {
+		t.Fatal("transfer and recovery digests must differ")
+	}
+	withdraw := WithdrawDigest(chainID, clone, WithdrawRequest{To: newOwner, Amount: big.NewInt(0), Nonce: req.Nonce, Deadline: req.Deadline})
+	if withdraw == digest {
+		t.Fatal("transfer and withdrawal digests must differ")
+	}
+}

@@ -39,15 +39,17 @@ const (
 
 	withdrawTypeString    = "WithdrawRequest(address to,uint256 amount,uint256 nonce,uint256 deadline)"
 	setRecoveryTypeString = "SetRecovery(address recoveryAddress,uint256 nonce,uint256 deadline)"
+	transferOwnershipTypeString = "TransferOwnership(address newOwner,uint256 nonce,uint256 deadline)"
 	domainTypeString      = "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
 )
 
 var (
-	withdrawTypeHash    = crypto.Keccak256Hash([]byte(withdrawTypeString))
-	setRecoveryTypeHash = crypto.Keccak256Hash([]byte(setRecoveryTypeString))
-	domainTypeHash      = crypto.Keccak256Hash([]byte(domainTypeString))
-	nameHash            = crypto.Keccak256Hash([]byte(DomainName))
-	versionHash         = crypto.Keccak256Hash([]byte(DomainVersion))
+	withdrawTypeHash        = crypto.Keccak256Hash([]byte(withdrawTypeString))
+	setRecoveryTypeHash     = crypto.Keccak256Hash([]byte(setRecoveryTypeString))
+	transferOwnershipTypeHash = crypto.Keccak256Hash([]byte(transferOwnershipTypeString))
+	domainTypeHash          = crypto.Keccak256Hash([]byte(domainTypeString))
+	nameHash                = crypto.Keccak256Hash([]byte(DomainName))
+	versionHash             = crypto.Keccak256Hash([]byte(DomainVersion))
 )
 
 // WithdrawRequest is the typed struct a withdrawal signature authorizes.
@@ -121,6 +123,35 @@ func SetRecoveryDigest(chainID int64, verifyingContract common.Address, req SetR
 	structHash := crypto.Keccak256Hash(
 		setRecoveryTypeHash.Bytes(),
 		abiAddress(req.RecoveryAddress),
+		abiUint256(new(big.Int).SetUint64(req.Nonce)),
+		abiUint256(big.NewInt(req.Deadline)),
+	)
+	return crypto.Keccak256Hash(
+		[]byte{0x19, 0x01},
+		DomainSeparator(chainID, verifyingContract).Bytes(),
+		structHash.Bytes(),
+	)
+}
+
+// TransferOwnershipRequest is the message a clone's current owner signs to hand
+// the owner seat to [NewOwner] (the custody claim). Field encoding must match
+// the contract's TRANSFER_TYPEHASH — "TransferOwnership(address newOwner,
+// uint256 nonce, uint256 deadline)" — with the first field named "newOwner".
+type TransferOwnershipRequest struct {
+	NewOwner common.Address
+	Nonce    uint64
+	Deadline int64 // unix seconds; the signature expires after this
+}
+
+// TransferOwnershipDigest returns the fully prefixed EIP-712 digest of an
+// ownership transfer bound to verifyingContract — the signature
+// transferOwnershipBySig checks on the clone. It shares the per-clone nonce
+// with withdrawals/recovery so one signed intent can never be replayed as
+// another.
+func TransferOwnershipDigest(chainID int64, verifyingContract common.Address, req TransferOwnershipRequest) common.Hash {
+	structHash := crypto.Keccak256Hash(
+		transferOwnershipTypeHash.Bytes(),
+		abiAddress(req.NewOwner),
 		abiUint256(new(big.Int).SetUint64(req.Nonce)),
 		abiUint256(big.NewInt(req.Deadline)),
 	)

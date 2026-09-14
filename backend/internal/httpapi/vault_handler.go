@@ -358,6 +358,98 @@ func (d *Deps) handleCustodyStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handlePrepareCustody quotes the exact EIP-712 TransferOwnership request the
+// platform signer must sign to hand the user's clone to their wallet — the
+// custody claim. Nothing moves and nothing is persisted. The response is
+// shaped for eth_signTypedData_v4 (domain + message + primaryType + types),
+// reusing the WithdrawRequest-style envelope.
+func (d *Deps) handlePrepareCustody(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	if user == nil {
+		writeError(w, r, domain.ErrUnauthenticated, "")
+		return
+	}
+	if d.Vault == nil {
+		writeError(w, r, domain.ErrNotFound, "")
+		return
+	}
+	newOwner := r.URL.Query().Get("new_owner")
+	if newOwner == "" {
+		writeError(w, r, domain.ErrBadRequest, "")
+		return
+	}
+	quote, err := d.Vault.PrepareCustodyClaim(r.Context(), user.ID, newOwner)
+	if err != nil {
+		writeError(w, r, err, "")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"domain": map[string]any{
+			"name":               quote.Domain.Name,
+			"version":            quote.Domain.Version,
+			"chain_id":           quote.Domain.ChainID,
+			"verifying_contract": quote.Domain.VerifyingContract,
+		},
+		"message": map[string]any{
+			"new_owner": quote.Message.NewOwner.Hex(),
+			"nonce":     quote.Message.Nonce,
+			"deadline":  quote.Message.Deadline,
+		},
+		"primary_type": "TransferOwnership",
+		"types": map[string]any{
+			"EIP712Domain": []map[string]string{
+				{"name": "name", "type": "string"},
+				{"name": "version", "type": "string"},
+				{"name": "chainId", "type": "uint256"},
+				{"name": "verifyingContract", "type": "address"},
+			},
+			"TransferOwnership": []map[string]string{
+				{"name": "newOwner", "type": "address"},
+				{"name": "nonce", "type": "uint256"},
+				{"name": "deadline", "type": "uint256"},
+			},
+		},
+		"clone_owner": quote.Owner,
+	})
+}
+
+// handleClaimCustody hands the clone owner seat from the platform placeholder
+// signer to the user's wallet. The transfer is signed by the platform signer
+// (the CURRENT owner, the only signer the contract accepts pre-claim) — the
+// user authenticates with their account and names the wallet taking custody.
+func (d *Deps) handleClaimCustody(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	if user == nil {
+		writeError(w, r, domain.ErrUnauthenticated, "")
+		return
+	}
+	if d.Vault == nil {
+		writeError(w, r, domain.ErrNotFound, "")
+		return
+	}
+	var req struct {
+		NewOwner string `json:"new_owner"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, r, domain.ErrBadRequest, "")
+		return
+	}
+	if req.NewOwner == "" {
+		writeError(w, r, domain.ErrBadRequest, "")
+		return
+	}
+	txHash, err := d.Vault.ClaimCustody(r.Context(), user.ID, req.NewOwner)
+	if err != nil {
+		writeError(w, r, err, "")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"claimed":   true,
+		"new_owner": req.NewOwner,
+		"tx_hash":   txHash,
+	})
+}
+
 // handlePrepareRecovery quotes the exact EIP-712 SetRecovery request a client
 // must sign before designating a recovery address. Nothing moves and nothing
 // is persisted. The response is shaped for eth_signTypedData_v4 (domain +
