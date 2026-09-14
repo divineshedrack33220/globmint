@@ -317,6 +317,16 @@ class SavingsClient {
     return RecoveryStatus.fromJson(data);
   }
 
+  /// Returns who currently controls the user's clone owner seat: the user's own
+  /// wallet (claimed) or the platform placeholder signer (unclaimed — custody
+  /// must be taken before signing withdrawals). The placeholder comes from the
+  /// server so the client never hardcodes a signer address.
+  Future<CustodyStatus> getCustodyStatus() async {
+    final data = await _api.get('${AppConstants.apiV1Prefix}/savings/custody');
+    if (data == null) throw ApiException(0, 'Empty response from server');
+    return CustodyStatus.fromJson(data);
+  }
+
   /// Quotes the exact EIP-712 `SetRecovery` payload a user would sign before
   /// designating [recoveryAddress] on their clone: the domain + message
   /// (covering the current clone nonce) plus the owner seat so the client can
@@ -583,6 +593,55 @@ class RecoveryStatus {
         recoveryRequestedAt: (j['recovery_requested_at'] as num?)?.toInt() ?? 0,
         recoveryAt: (j['recovery_at'] as num?)?.toInt() ?? 0,
         recoveryPending: j['recovery_pending'] == true,
+      );
+}
+
+/// The clone's custody state returned by `GET /savings/custody`. The clone
+/// contract is the source of truth; the cache only backs the UI when the node
+/// is unreachable.
+class CustodyStatus {
+  const CustodyStatus({
+    required this.clone,
+    required this.owner,
+    required this.placeholder,
+    required this.claimed,
+    required this.nonce,
+  });
+
+  /// The per-user clone address. Empty when the account has none.
+  final String clone;
+
+  /// The current owner seat (the user's wallet, or the platform signer as a
+  /// placeholder until the user claims custody).
+  final String owner;
+
+  /// The platform signer address an unclaimed clone reverts to; empty when the
+  /// server has none configured (then any real owner counts as claimed).
+  final String placeholder;
+
+  /// Whether the clone owner is NOT the platform placeholder — i.e. the user's
+  /// own wallet controls it and can sign withdrawals.
+  final bool claimed;
+
+  /// The clone's current request nonce, shared by `withdrawWithSig`,
+  /// `setRecoveryAddressBySig` and `transferOwnershipBySig`.
+  final int nonce;
+
+  String get ownerShort => _shorten(owner);
+  String get cloneShort => _shorten(clone);
+  String get placeholderShort => _shorten(placeholder);
+
+  static String _shorten(String addr) {
+    if (addr.length <= 12) return addr;
+    return '${addr.substring(0, 6)}…${addr.substring(addr.length - 4)}';
+  }
+
+  factory CustodyStatus.fromJson(Map<String, dynamic> j) => CustodyStatus(
+        clone: j['clone'] as String? ?? '',
+        owner: j['owner'] as String? ?? '',
+        placeholder: j['placeholder'] as String? ?? '',
+        claimed: j['claimed'] == true,
+        nonce: (j['nonce'] as num?)?.toInt() ?? 0,
       );
 }
 

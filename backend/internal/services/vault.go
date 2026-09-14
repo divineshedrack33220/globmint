@@ -1599,6 +1599,84 @@ func fillRecoveryStatus(st *RecoveryStatus, rec *domain.CloneRecovery) {
 	}
 }
 
+// CustodyStatus reports who currently controls the user's clone owner seat:
+// the user's own wallet or the platform signer placeholder. The clone contract
+// is the source of truth (owner != placeholder ⇒ claimed); the recovery cache
+// backs the read when the node is unreachable.
+type CustodyStatus struct {
+	// Clone is the per-user clone address. Empty when the account has none.
+	Clone string
+	// Owner is the current owner seat as read from the chain.
+	Owner string
+	// Placeholder is the platform signer address an unclaimed clone reverts
+	// to when the user has not linked a wallet; "" when no signer is
+	// configured (then any non-empty owner is treated as claimed).
+	Placeholder string
+	// Claimed reports whether the clone owner is NOT the platform placeholder,
+	// i.e. the user's own wallet controls it and can sign withdrawals.
+	Claimed bool
+	// Nonce is the clone's current request nonce, shared by withdrawWithSig,
+	// setRecoveryAddressBySig and transferOwnershipBySig; 0 when unreadable.
+	Nonce uint64
+}
+
+// CustodyStatus reads the user's clone ownership from the chain. Chain
+// authoritative with a cache fallback mirroring RecoveryStatus: a node outage
+// never invents claimed/unclaimed, it repeats the last known good snapshot.
+func (v *VaultService) CustodyStatus(ctx context.Context, userID string) (*CustodyStatus, error) {
+	cloneAddr, err := v.CloneAddress(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	st := &CustodyStatus{Placeholder: v.DepositAddress()}
+	if cloneAddr == "" {
+		return st, nil
+	}
+	st.Clone = cloneAddr
+
+	owner, err := v.chain.CloneOwner(ctx, cloneAddr)
+	if err != nil {
+		return v.custodyStatusFromCache(ctx, userID, st)
+	}
+	nonce, nerr := v.chain.CloneNonce(ctx, cloneAddr)
+	if nerr != nil {
+		log.Printf("vault: custody nonce read failed for %s: %v", userID, nerr)
+	}
+	st.Owner = owner
+	st.Nonce = nonce
+	st.Claimed = v.isCustodyClaimed(owner)
+	// Write-through the cache so a subsequent node outage still reports the
+	// current owner (and the recovery status surface agrees with custody).
+	if cerr := v.store.VaultCloneRepo().CacheRecovery(ctx, userID, &domain.CloneRecovery{Owner: owner}); cerr != nil {
+		log.Printf("vault: cache custody owner for %s: %v", userID, cerr)
+	}
+	return st, nil
+}
+
+func (v *VaultService) custodyStatusFromCache(ctx context.Context, userID string, st *CustodyStatus) (*CustodyStatus, error) {
+	rec, err := v.store.VaultCloneRepo().RecoveryCache(ctx, userID)
+	if err != nil || rec == nil {
+		log.Printf("vault: custody cache miss for %s (err=%v); owner unknown", userID, err)
+		return st, nil
+	}
+	st.Owner = rec.Owner
+	st.Claimed = v.isCustodyClaimed(rec.Owner)
+	return st, nil
+}
+
+// isCustodyClaimed reports whether an owner seat belongs to the user rather
+// than the platform placeholder. With no placeholder configured any real owner
+// counts as claimed; an empty owner is never claimed.
+func (v *VaultService) isCustodyClaimed(owner string) bool {
+	if owner == "" {
+		return false
+	}
+	if v.cfg.VaultAddress == "" {
+		return true
+	}
+	return !strings.EqualFold(owner, v.cfg.VaultAddress)
+}
+
 // RunRecoveryReconciler keeps the DB recovery cache close to chain truth: on
 // every tick it walks all deployed clones and refreshes their cached recovery
 // state from the chain. The chain stays authoritative; the cache exists so API

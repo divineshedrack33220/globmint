@@ -116,6 +116,10 @@ func NewHandler(deps *Deps, auth middleware.Authenticator, corsOrigins []string,
 	// quote the EIP-712 SetRecovery request the user must sign, and relay the
 	// signed designation.
 	mux.Handle("GET "+api+"/savings/recovery", middleware.Auth(auth, http.HandlerFunc(deps.handleRecoveryStatus)))
+	// Custody: who controls the clone owner seat (the user's wallet vs the
+	// platform placeholder). Read-only; the claim flow lives under
+	// GET /savings/custody/prepare + POST /savings/custody/claim.
+	mux.Handle("GET "+api+"/savings/custody", middleware.Auth(auth, http.HandlerFunc(deps.handleCustodyStatus)))
 	mux.Handle("GET "+api+"/savings/recovery/prepare", middleware.RateLimiter(
 		middleware.Auth(auth, http.HandlerFunc(deps.handlePrepareRecovery)),
 		time.Second,

@@ -138,6 +138,12 @@ final vaultRecoveryProvider = FutureProvider<RecoveryStatus>((ref) async {
   return ref.watch(savingsClientProvider).getRecoveryStatus();
 });
 
+/// Who controls the user's clone owner seat (the user's wallet vs the platform
+/// placeholder signer). Refreshed after a custody claim.
+final custodyProvider = FutureProvider<CustodyStatus>((ref) async {
+  return ref.watch(savingsClientProvider).getCustodyStatus();
+});
+
 final devicesProvider = FutureProvider<List<Device>>((ref) async {
   return ref.watch(securityServiceProvider).getDevices();
 });

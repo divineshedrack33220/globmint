@@ -330,6 +330,34 @@ func (d *Deps) handleRecoveryStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleCustodyStatus reports who controls the user's clone owner seat as read
+// from the chain: the user's own wallet (claimed) or the platform placeholder
+// signer (unclaimed — the account must take custody before signing
+// withdrawals). The placeholder is returned so the client never hardcodes it.
+func (d *Deps) handleCustodyStatus(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	if user == nil {
+		writeError(w, r, domain.ErrUnauthenticated, "")
+		return
+	}
+	if d.Vault == nil {
+		writeError(w, r, domain.ErrNotFound, "")
+		return
+	}
+	st, err := d.Vault.CustodyStatus(r.Context(), user.ID)
+	if err != nil {
+		writeError(w, r, err, "")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"clone":       st.Clone,
+		"owner":       st.Owner,
+		"placeholder": st.Placeholder,
+		"claimed":     st.Claimed,
+		"nonce":       st.Nonce,
+	})
+}
+
 // handlePrepareRecovery quotes the exact EIP-712 SetRecovery request a client
 // must sign before designating a recovery address. Nothing moves and nothing
 // is persisted. The response is shaped for eth_signTypedData_v4 (domain +

@@ -386,6 +386,7 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
     final wallet = ref.watch(walletProvider);
     final requiresSignature =
         ref.read(depositInfoProvider).valueOrNull?.requireUserSignature ?? false;
+    final custody = ref.watch(custodyProvider).valueOrNull;
     final owner = _ownerShort;
 
     if (_selfCustodySigned && _signingWallet != null) {
@@ -424,6 +425,30 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
             Expanded(
               child: Text(
                 'Connected as owner — you\u2019ll sign this withdrawal in your wallet.',
+                style: context.typography.bodySmall,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    if (requiresSignature && custody != null && !custody.claimed && custody.clone.isNotEmpty) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: AppColors.warningMuted,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Icon(Icons.lock_outline, size: 16, color: AppColors.warning),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                wallet.isConnected
+                    ? 'Your savings address is still owned by the platform placeholder. Take custody to sign withdrawals with your wallet.'
+                    : 'Your savings address is still owned by the platform placeholder. Take custody before withdrawing.',
                 style: context.typography.bodySmall,
               ),
             ),
