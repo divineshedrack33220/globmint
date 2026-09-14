@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../shared/models/models.dart';
@@ -13,6 +15,7 @@ import '../shared/services/savings_client.dart';
 import '../shared/services/security_service.dart';
 import '../shared/services/transaction_service.dart';
 import '../shared/services/transfer_service.dart';
+import '../shared/services/wallet_service.dart';
 
 /// Shared online/offline signal fed by both the HTTP [ApiClient] and the SSE
 /// [EventsServer]; drives the "no internet" banner.
@@ -152,3 +155,102 @@ final notificationsProvider =
 final transactionRepoProvider = Provider<TransactionService>(
   (ref) => ref.watch(transactionServiceProvider),
 );
+
+/// The signing backend used for EIP-712 withdrawals and recovery changes.
+/// Long-lived: pages connect/sign through it and watch [walletProvider].
+final walletServiceProvider = Provider<WalletService>(
+  (ref) => WalletService(),
+);
+
+/// Live wallet connection state {address, chainId, status, signing, hasWallet}.
+/// Pages watch this to render the connect/sign affordances and to gate the
+/// self-custody (wallet-signed) path on the connected owner.
+final walletProvider = StateNotifierProvider<WalletNotifier, WalletState>(
+  (ref) => WalletNotifier(ref.watch(walletServiceProvider)),
+);
+
+/// Imperative interface over [WalletService], keeping UI state (signing flag,
+/// last error, availability) in sync with the service's stream.
+class WalletNotifier extends StateNotifier<WalletState> {
+  WalletNotifier(this._service) : super(WalletState.initial().copyWith(
+            hasWallet: _service.hasWallet,
+          )) {
+    _sub = _service.stateStream.listen((connection) {
+      state = WalletState(
+        status: connection.status,
+        address: connection.address,
+        chainId: connection.chainId,
+        expectedChainId: connection.expectedChainId,
+        hasWallet: _service.hasWallet,
+      );
+    });
+  }
+
+  final WalletService _service;
+  late final StreamSubscription<WalletConnectionState> _sub;
+
+  /// Connects a wallet, optionally pinned to [expectedChainId]. On a wrong
+  /// chain the state becomes [WalletConnectionStatus.wrongChain] and the typed
+  /// exception propagates so the caller can offer to switch.
+  Future<void> connect({int? expectedChainId}) async {
+    state = state.copyWith(error: null);
+    try {
+      await _service.connect(expectedChainId: expectedChainId);
+    } on WalletUnavailableException catch (e) {
+      state = state.copyWith(error: e.message);
+      rethrow;
+    } on WalletConnectionException catch (e) {
+      state = state.copyWith(error: e.message);
+      rethrow;
+    } on WalletWrongChainException catch (e) {
+      state = state.copyWith(error: e.toString());
+      rethrow;
+    }
+  }
+
+  /// Asks the wallet to switch to [expectedChainId], then re-verifies.
+  Future<void> ensureChain(int expectedChainId) async {
+    state = state.copyWith(error: null);
+    try {
+      await _service.ensureChain(expectedChainId);
+    } on WalletWrongChainException catch (e) {
+      state = state.copyWith(error: e.toString());
+      rethrow;
+    }
+  }
+
+  Future<void> disconnect() => _service.disconnect();
+
+  /// Signs [typedData]; sets the transient [WalletState.signing] flag so the UI
+  /// shows an in-progress indicator that a mid-flight disconnect clears via the
+  /// connection stream. Malformed payloads surface as a typed [ApiException].
+  Future<String> signTypedData(Map<String, dynamic> typedData) async {
+    state = state.copyWith(signing: true, error: null);
+    try {
+      final signature = await _service.signTypedData(typedData);
+      state = state.copyWith(signing: false, error: null);
+      return signature;
+    } on ApiException catch (e) {
+      state = state.copyWith(signing: false, error: e.message);
+      rethrow;
+    } on WalletSignatureException catch (e) {
+      state = state.copyWith(signing: false, error: e.message);
+      rethrow;
+    } on WalletWrongChainException catch (e) {
+      state = state.copyWith(signing: false, error: e.toString());
+      rethrow;
+    } on WalletConnectionException catch (e) {
+      state = state.copyWith(signing: false, error: e.message);
+      rethrow;
+    } on WalletUnavailableException catch (e) {
+      state = state.copyWith(signing: false, error: e.message);
+      rethrow;
+    }
+  }
+
+  @override
+  void dispose() {
+    _sub.cancel();
+    super.dispose();
+  }
+}

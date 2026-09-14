@@ -12,30 +12,32 @@ import (
 
 // depositInfoResponse mirrors services.DepositInfo for the JSON API.
 type depositInfoResponse struct {
-	Address            string `json:"address"`
-	VaultContract      string `json:"vault_contract"`
-	StablecoinSymbol   string `json:"stablecoin_symbol"`
-	StablecoinName     string `json:"stablecoin_name"`
-	StablecoinDecimals int    `json:"stablecoin_decimals"`
-	StablecoinContract string `json:"stablecoin_contract"`
-	Network            string `json:"network"`
-	ChainID            int64  `json:"chain_id"`
-	Mode               string `json:"mode"`
-	PrivacyEnabled     bool   `json:"privacy_enabled"`
+	Address              string `json:"address"`
+	VaultContract        string `json:"vault_contract"`
+	StablecoinSymbol     string `json:"stablecoin_symbol"`
+	StablecoinName       string `json:"stablecoin_name"`
+	StablecoinDecimals   int    `json:"stablecoin_decimals"`
+	StablecoinContract   string `json:"stablecoin_contract"`
+	Network              string `json:"network"`
+	ChainID              int64  `json:"chain_id"`
+	Mode                 string `json:"mode"`
+	PrivacyEnabled       bool   `json:"privacy_enabled"`
+	RequireUserSignature bool   `json:"require_user_signature"`
 }
 
 func toDepositInfoResponse(info *services.DepositInfo) depositInfoResponse {
 	return depositInfoResponse{
-		Address:            info.Address,
-		VaultContract:      info.VaultContract,
-		StablecoinSymbol:   info.StablecoinSymbol,
-		StablecoinName:     info.StablecoinName,
-		StablecoinDecimals: info.StablecoinDecimals,
-		StablecoinContract: info.StablecoinContract,
-		Network:            info.Network,
-		ChainID:            info.ChainID,
-		Mode:               info.Mode,
-		PrivacyEnabled:     info.PrivacyEnabled,
+		Address:              info.Address,
+		VaultContract:        info.VaultContract,
+		StablecoinSymbol:     info.StablecoinSymbol,
+		StablecoinName:       info.StablecoinName,
+		StablecoinDecimals:   info.StablecoinDecimals,
+		StablecoinContract:   info.StablecoinContract,
+		Network:              info.Network,
+		ChainID:              info.ChainID,
+		Mode:                 info.Mode,
+		PrivacyEnabled:       info.PrivacyEnabled,
+		RequireUserSignature: info.RequireUserSignature,
 	}
 }
 
@@ -51,6 +53,9 @@ func (d *Deps) depositInfoFor(ctx context.Context, userID string) (*services.Dep
 	if err != nil {
 		return nil, err
 	}
+	// Advertise the withdrawal signing mode so clients can pick the PIN
+	// (transitional) vs. wallet-signature path without hardcoding it.
+	info.RequireUserSignature = d.RequireUserSignature
 	// Per-user clones hold the deposit address: anyone can send to it and the
 	// funds belong to this account without any wallet linking. Deploy on first
 	// use (deterministic CREATE2, idempotent), so the address is stable.

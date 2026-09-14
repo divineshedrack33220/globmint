@@ -18,6 +18,7 @@ class DepositInfo {
     required this.chainId,
     required this.mode,
     this.privacyEnabled = false,
+    this.requireUserSignature = false,
   });
 
   final String address;
@@ -34,6 +35,12 @@ class DepositInfo {
   /// via keccak256(address, salt) and the raw address never appears in on-chain
   /// deposit events.
   final bool privacyEnabled;
+
+  /// When true EIP-712 signature-gated withdrawals are enforced: withdrawals
+  /// and recovery changes must be signed by the user's wallet, and the
+  /// transitional platform-signer (PIN) path is disabled. Absent on older
+  /// servers → false (transitional).
+  final bool requireUserSignature;
 
   bool get hasAddress => address.isNotEmpty && address != '0x0000000000000000000000000000000000000000';
 
@@ -84,6 +91,7 @@ class DepositInfo {
         chainId: (j['chain_id'] as num?)?.toInt() ?? 0,
         mode: j['mode'] as String? ?? '',
         privacyEnabled: j['privacy_enabled'] == true,
+        requireUserSignature: j['require_user_signature'] == true,
       );
 }
 
@@ -102,6 +110,7 @@ class VaultStatus {
     required this.mode,
     required this.vaultUsdcBalance,
     this.privacyEnabled = false,
+    this.requireUserSignature = false,
     this.withdrawMinMinor = 0,
     this.withdrawMaxMinor = 0,
     this.withdrawDailyCapMinor = 0,
@@ -122,6 +131,10 @@ class VaultStatus {
 
   /// When true the vault uses commitment-based (salt-hashed) balances.
   final bool privacyEnabled;
+
+  /// When true EIP-712 signature-gated withdrawals are enforced (see
+  /// [DepositInfo.requireUserSignature]); false = transitional PIN path.
+  final bool requireUserSignature;
 
   /// Operator-configured withdrawal guards in NGN minor units (kobo).
   /// Zero means that guard is disabled. Absent on older servers.
@@ -181,6 +194,7 @@ class VaultStatus {
       chainId: (info['chain_id'] as num?)?.toInt() ?? 0,
       mode: info['mode'] as String? ?? '',
       privacyEnabled: info['privacy_enabled'] == true,
+      requireUserSignature: info['require_user_signature'] == true,
       vaultUsdcBalance: j['vault_usdc_balance'] as String? ?? '0',
       withdrawMinMinor: (limits['min_minor'] as num?)?.toInt() ?? 0,
       withdrawMaxMinor: (limits['max_minor'] as num?)?.toInt() ?? 0,

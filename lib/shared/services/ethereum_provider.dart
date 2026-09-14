@@ -25,11 +25,27 @@ class EthereumProvider {
   /// Currently connected/authorized accounts without prompting.
   Future<List<String>> accounts() => bridge.bridgeAccounts();
 
+  /// The currently connected chain id (`eth_chainId`), 0 when unreachable.
+  Future<int> chainId() async {
+    final hex = await bridge.bridgeChainId();
+    return int.tryParse(hex.replaceFirst('0x', ''), radix: 16) ?? 0;
+  }
+
+  /// Asks the wallet to switch to [chainId] (EIP-3326). Throws when the wallet
+  /// refuses or the network is unknown to it.
+  Future<void> switchChain(int chainId) => bridge.bridgeSwitchChain(chainId);
+
   /// Signs an EIP-712 typed-data payload with `from`'s key via the wallet UI.
   /// Returns the 65-byte `0x`-prefixed signature.
   Future<String> signTypedDataV4(
       String from, Map<String, dynamic> typedData) {
     return bridge.bridgeSignTypedDataV4(from, jsonEncode(typedData));
+  }
+
+  /// Signs an already-serialized `eth_signTypedData_v4` payload. Used by
+  /// [WalletService] after it validates the typed-data JSON itself.
+  Future<String> signTypedDataV4Raw(String from, String typedDataJson) {
+    return bridge.bridgeSignTypedDataV4(from, typedDataJson);
   }
 
   /// Builds the exact eth_signTypedData_v4 payload for a server quote. The

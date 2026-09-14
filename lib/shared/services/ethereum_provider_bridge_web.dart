@@ -61,3 +61,18 @@ Future<String> bridgeSignTypedDataV4(
   ]);
   return (result as JSString).toDart;
 }
+
+/// The currently connected chain id as a `0x`-prefixed hex string
+/// (`eth_chainId`). `0x0` when the wallet is locked or unreachable.
+Future<String> bridgeChainId() async {
+  final result = await _request('eth_chainId', []);
+  return (result as JSString).toDart;
+}
+
+/// Requests the wallet to switch to [chainId] (`wallet_switchEthereumChain`,
+/// EIP-3326). Throws when the wallet refuses or lacks the network.
+Future<void> bridgeSwitchChain(int chainId) async {
+  await _request('wallet_switchEthereumChain', [
+    <String, JSAny?>{'chainId': '0x${chainId.toRadixString(16)}'.toJS}.jsify(),
+  ]);
+}

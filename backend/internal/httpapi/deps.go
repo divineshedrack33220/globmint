@@ -23,4 +23,9 @@ type Deps struct {
 	// deposit review/attribution) via the X-Operator-Token header. Empty
 	// disables those endpoints.
 	OperatorToken string
+	// RequireUserSignature mirrors GLOBMINT_REQUIRE_USER_SIGNATURE and is
+	// advertised to clients on deposit-info / vault-status so they know whether
+	// withdrawals must be signed by the user's wallet (true) or may still run
+	// through the transitional platform-signer path (false).
+	RequireUserSignature bool
 }

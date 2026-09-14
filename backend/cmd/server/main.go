@@ -138,16 +138,17 @@ func main() {
 	eventsHub := events.NewHub()
 
 	deps := &httpapi.Deps{
-		Auth:          authSvc,
-		Balance:       balanceSvc,
-		Ledger:        ledgerSvc,
-		Money:         moneySvc,
-		Savings:       savingsSvc,
-		Security:      securitySvc,
-		Blockchain:    chainSvc,
-		Vault:         vaultSvc,
-		Events:        eventsHub,
-		OperatorToken: cfg.OperatorToken,
+		Auth:                 authSvc,
+		Balance:              balanceSvc,
+		Ledger:               ledgerSvc,
+		Money:                moneySvc,
+		Savings:              savingsSvc,
+		Security:             securitySvc,
+		Blockchain:           chainSvc,
+		Vault:                vaultSvc,
+		Events:               eventsHub,
+		OperatorToken:        cfg.OperatorToken,
+		RequireUserSignature: cfg.RequireUserSignature,
 	}
 	vaultSvc.Hub = eventsHub
 

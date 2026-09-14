@@ -13,6 +13,7 @@ import '../../../../shared/services/api_client.dart';
 import '../../../../shared/services/conversion_service.dart';
 import '../../../../shared/services/ethereum_provider.dart';
 import '../../../../shared/services/savings_client.dart';
+import '../../../../shared/services/wallet_service.dart';
 
 class WithdrawalReviewPage extends ConsumerStatefulWidget {
   const WithdrawalReviewPage({
@@ -38,6 +39,7 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
   double? _usdcEstimate;
   bool _selfCustodySigned = false;
   String? _signingWallet;
+  WithdrawQuote? _quote;
 
   static final _addressPattern = RegExp(r'^0x[0-9a-fA-F]{40}$');
 
@@ -48,6 +50,16 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
     if (amountNgn <= 0) return 0;
     final raw = amountNgn * 20 / 10000;
     return raw.clamp(10.0, 100.0);
+  }
+
+  /// The fee shown on the review screen: the server-prepared figure when the
+  /// quote loaded, else the client-side mirror.
+  double get _feeNgn {
+    final quote = _quote;
+    if (quote != null && quote.feeNgnMinor > 0) {
+      return quote.feeNgnMinor / 100;
+    }
+    return _withdrawalFee(widget.amount ?? 0);
   }
 
   /// Human-friendly network name for display and confirmation: prefers the
@@ -67,6 +79,18 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
   Future<void> _loadQuote() async {
     final a = widget.amount ?? 0;
     if (a <= 0 || a < ConversionService.minQuoteAmount) return;
+    final client = ref.read(savingsClientProvider);
+    try {
+      // Prepare the exact EIP-712 payload up front so the review screen shows
+      // server-authoritative NGN/fee figures and knows which wallet must sign.
+      final quote = await client.prepareWithdrawal(
+        amount: a.toStringAsFixed(2),
+        destination: widget.destination?.trim() ?? '',
+      );
+      if (mounted) setState(() => _quote = quote);
+    } catch (_) {
+      // Prepare is advisory; the NGN->USDC line below still loads.
+    }
     try {
       final q = await ref
           .read(conversionServiceProvider)
@@ -77,20 +101,154 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
     }
   }
 
+  /// The owner seat the quote says must sign, shortened for display.
+  String? get _ownerShort {
+    final q = _quote;
+    if (q == null || q.cloneOwner.isEmpty) return null;
+    return _shorten(q.cloneOwner);
+  }
+
+  /// The expected chain for signing: the quote's domain, else the deposit info.
+  int get _chainId {
+    final quote = _quote;
+    if (quote != null && quote.domain.chainId != 0) return quote.domain.chainId;
+    final depositInfo = ref.read(depositInfoProvider).valueOrNull;
+    return depositInfo?.chainId ?? 0;
+  }
+
+  /// Signs the [WithdrawQuote] when the connected wallet is the clone owner.
+  /// Returns null when the wallet isn't connected or isn't the owner (the
+  /// caller then falls back to the PIN path or the custody walkthrough).
+  Future<WithdrawSignature?> _signQuoteIfOwner(WithdrawQuote? quote) async {
+    if (quote == null) return null;
+    final wallet = ref.read(walletProvider);
+    if (!wallet.isConnected || wallet.address == null) return null;
+    final owner = quote.cloneOwner.toLowerCase();
+    if (owner.isNotEmpty && wallet.address!.toLowerCase() != owner) return null;
+
+    final typedData = EthereumProvider.instance.typedDataV4For(quote);
+    final signature = await ref.read(walletProvider.notifier).signTypedData(typedData);
+    final m = quote.message;
+    return WithdrawSignature(
+      signature: signature,
+      deadline: m.deadline,
+      nonce: m.nonce,
+      amountMinorBase: BigInt.parse(m.amount).toInt(),
+    );
+  }
+
+  /// Connects the owner wallet, pinning to the expected chain. Prompts to
+  /// switch when the connected wallet is on the wrong network. Returns true
+  /// when a wallet is connected afterwards.
+  Future<bool> _connectOwnerFor(WithdrawQuote? quote) async {
+    final notifier = ref.read(walletProvider.notifier);
+    final expected = _chainId;
+    if (!ref.read(walletProvider).hasWallet) {
+      _toast('No wallet detected. Use a browser with MetaMask installed '
+          'to sign this withdrawal yourself.');
+      return false;
+    }
+    if (!ref.read(walletProvider).isConnected) {
+      try {
+        await notifier.connect(expectedChainId: expected);
+      } on WalletWrongChainException {
+        if (!await _offerChainSwitch(expected)) return false;
+      }
+    }
+    if (ref.read(walletProvider).status == WalletConnectionStatus.wrongChain) {
+      if (!await _offerChainSwitch(expected)) return false;
+    }
+    final wallet = ref.read(walletProvider);
+    if (!wallet.isConnected || wallet.address == null) return false;
+    return true;
+  }
+
+  /// Asks the wallet to switch to [expected]; returns true when the wallet is
+  /// then on the right chain.
+  Future<bool> _offerChainSwitch(int expected) async {
+    if (expected == 0) return false;
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Switch network?'),
+        content: Text(
+          'Your wallet is on a different network. Switch it to chain '
+          '$expected so this withdrawal can be signed?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Not now'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Switch'),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true || !mounted) return false;
+    try {
+      await ref.read(walletProvider.notifier).ensureChain(expected);
+      return ref.read(walletProvider).isConnected;
+    } on WalletWrongChainException catch (e) {
+      _toast('Could not switch networks: ${e.toString()}');
+      return false;
+    }
+  }
+
+  /// Explains why the withdrawal needs a wallet signature (SIGNATURE_REQUIRED
+  /// / custody still held by the platform signer) and points to the Vault
+  /// Recovery page.
+  Future<void> _showSignatureRequired() async {
+    final wallet = ref.read(walletProvider);
+    final owner = _ownerShort;
+    final connectedGood = wallet.isConnected &&
+        owner != null &&
+        wallet.address?.toLowerCase() == _quote!.cloneOwner.toLowerCase();
+    return showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Wallet signature required'),
+        content: Text(
+          connectedGood
+              ? 'This withdrawal must be authorized in your wallet. Tap '
+                  'Sign & Withdraw again and approve the request when your '
+                  'wallet opens.'
+              : owner != null
+                  ? 'Only the wallet that owns your savings address '
+                      '($owner) can authorize this withdrawal. Connect that '
+                      'wallet and try again.\n\nIf that wallet belongs to a '
+                      'device you no longer have, use Vault Recovery to '
+                      'designate a backup address.'
+                  : 'This withdrawal must be authorized by the wallet that '
+                      'owns your savings address. Connect that wallet and '
+                      'try again.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Got it'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _confirmWithdrawal() async {
     final a = widget.amount ?? 0;
     final destination = widget.destination?.trim() ?? '';
     if (a <= 0 || destination.isEmpty) return;
     if (!_addressPattern.hasMatch(destination)) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text(
-                'Invalid destination address — it must be 0x followed by 40 hex characters.')),
-      );
+      _toast(
+          'Invalid destination address — it must be 0x followed by 40 hex characters.');
       return;
     }
-    final fee = _withdrawalFee(a);
+    final fee = _feeNgn;
     final depositInfo = ref.read(depositInfoProvider).valueOrNull;
+    // The PIN (platform-relayed) path is only offered when the backend
+    // advertises transitional mode. Signature-gated mode requires a wallet.
+    final requiresSignature = depositInfo?.requireUserSignature ?? false;
 
     final confirmed = await ConfirmationModal.show(
       context: context,
@@ -116,72 +274,86 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
       isDestructive: true,
     );
 
-    if (confirmed == true && mounted) {
-      final pin = await showPinVerifySheet(
-        context,
-        title: 'Enter your PIN',
-        subtitle: 'Verify it\u2019s you before sending ${CurrencyFormatter.ngn(a)}',
-        onVerify: (pin) => ref.read(authServiceProvider).verifyPin(pin),
-      );
-      if (pin == null || !mounted) return;
+    if (confirmed != true || !mounted) return;
 
-      setState(() => _isProcessing = true);
-      try {
-        final client = ref.read(savingsClientProvider);
+    setState(() => _isProcessing = true);
+    String pin = '';
+    WithdrawSignature? outSig;
+    try {
+      final client = ref.read(savingsClientProvider);
 
-        // Quote the exact EIP-712 payload: if the owner's wallet is connected,
-        // sign it in the wallet so the backend only relays the owner-authorized
-        // withdrawWithSig. Otherwise the transitional server-relayed path runs
-        // (and is refused server-side when signature-gating is enforced).
-        WithdrawSignature? outSig;
-        try {
-          final quote = await client.prepareWithdrawal(
-            amount: a.toStringAsFixed(2),
-            destination: destination,
-          );
-          if (EthereumProvider.available &&
-              await EthereumProvider.instance.isConnectedOwner(quote.cloneOwner)) {
-            final signer = (await EthereumProvider.instance.accounts()).first;
-            outSig = await EthereumProvider.instance.signWithdrawal(quote, signer);
-            _signingWallet = signer;
-          }
-        } catch (_) {
-          // Quote/prepare is advisory; any failure falls back to the server path.
+      if (requiresSignature) {
+        if (!await _connectOwnerFor(_quote)) return;
+        outSig = await _signQuoteIfOwner(_quote);
+        if (outSig == null) {
+          // Connected wallet isn't the owner (or the owner is still the
+          // platform signer): the backend would refuse with SIGNATURE_REQUIRED.
+          await _showSignatureRequired();
+          return;
         }
-
-        final result = await client.withdrawToAddress(
-          amount: a.toStringAsFixed(2),
-          destination: destination,
-          pin: pin,
-          signature: outSig,
-        );
-
-        if (mounted) {
-          setState(() {
-            _isProcessing = false;
-            _selfCustodySigned = outSig != null;
-          });
-          ref.invalidate(accountSummaryProvider);
-          ref.invalidate(transactionsProvider);
-          ref.invalidate(vaultStatusProvider);
-          if (result.elevation != null) {
-            _showPendingLock(a, result.elevation!);
-          } else {
-            _showSuccess(a, result.txHash);
-          }
-        }
-      } catch (e) {
-        if (mounted) {
-          setState(() {
-            _isProcessing = false;
-          });
-          final message = e is ApiException ? e.message : '$e';
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Withdrawal failed: $message')),
-          );
+      } else {
+        // Transitional mode (backend advertises require_user_signature=false):
+        // prefer a connected owner's signature, else fall back to the PIN path.
+        outSig = await _signQuoteIfOwner(_quote);
+        if (outSig == null) {
+          if (!mounted) return;
+          pin = await showPinVerifySheet(
+                context,
+                title: 'Enter your PIN',
+                subtitle:
+                    'Verify it\u2019s you before sending ${CurrencyFormatter.ngn(a)}',
+                onVerify: (value) =>
+                    ref.read(authServiceProvider).verifyPin(value),
+              ) ??
+              '';
+          if (pin.isEmpty || !mounted) return;
         }
       }
+
+      final result = await client.withdrawToAddress(
+        amount: a.toStringAsFixed(2),
+        destination: destination,
+        pin: pin,
+        signature: outSig,
+      );
+
+      if (!mounted) return;
+      if (outSig != null && outSig.signature.isNotEmpty) {
+        _signingWallet = ref.read(walletProvider).address;
+        _selfCustodySigned = true;
+      }
+      ref.invalidate(accountSummaryProvider);
+      ref.invalidate(transactionsProvider);
+      ref.invalidate(vaultStatusProvider);
+      if (result.elevation != null) {
+        _showPendingLock(a, result.elevation!);
+      } else {
+        _showSuccess(a, result.txHash);
+      }
+    } on ApiException catch (e) {
+      if (e.code == 'SIGNATURE_REQUIRED') {
+        await _showSignatureRequired();
+      } else {
+        _toast('Withdrawal failed: ${e.message}');
+      }
+    } on WalletWrongChainException {
+      await _offerChainSwitch(_chainId);
+    } on WalletSignatureException catch (e) {
+      _toast('Withdrawal not signed: ${e.message}. Tap again to retry.');
+    } on WalletConnectionException catch (e) {
+      _toast(e.message);
+    } on WalletUnavailableException catch (e) {
+      _toast(e.message);
+    } catch (e) {
+      _toast('Withdrawal failed: $e');
+    } finally {
+      if (mounted) setState(() => _isProcessing = false);
     }
+  }
+
+  void _toast(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
   }
 
   void _showSuccess(double amount, String txHash) {
@@ -211,9 +383,12 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
   }
 
   Widget _custodyBadge() {
-    final connected = EthereumProvider.available;
-    final owner = _signingWallet;
-    if (_selfCustodySigned && owner != null) {
+    final wallet = ref.watch(walletProvider);
+    final requiresSignature =
+        ref.read(depositInfoProvider).valueOrNull?.requireUserSignature ?? false;
+    final owner = _ownerShort;
+
+    if (_selfCustodySigned && _signingWallet != null) {
       return Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         decoration: BoxDecoration(
@@ -226,7 +401,7 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
             const SizedBox(width: 8),
             Expanded(
               child: Text(
-                'Authorized by your wallet ${_shorten(owner)} — only this exact signed withdrawal can be sent.',
+                'Authorized by your wallet ${_shorten(_signingWallet!)} — only this exact signed withdrawal can be sent.',
                 style: context.typography.bodySmall,
               ),
             ),
@@ -234,22 +409,48 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
         ),
       );
     }
-    if (connected) {
+    if (wallet.isConnected && owner != null && wallet.address?.toLowerCase() == _quote!.cloneOwner.toLowerCase()) {
       return Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         decoration: BoxDecoration(
-          color: AppColors.successMuted.withValues(alpha: 0.5),
+          color: AppColors.successMuted.withValues(alpha: 0.6),
           borderRadius: BorderRadius.circular(12),
         ),
         child: Row(
           children: [
             const Icon(Icons.account_balance_wallet_outlined,
-                size: 16, color: AppColors.textSecondary),
+                size: 16, color: AppColors.success),
             const SizedBox(width: 8),
             Expanded(
               child: Text(
-                'A wallet is connected. Connect the wallet that owns your '
-                'savings address to sign this withdrawal yourself.',
+                'Connected as owner — you\u2019ll sign this withdrawal in your wallet.',
+                style: context.typography.bodySmall,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    if (requiresSignature) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: AppColors.warningMuted,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Icon(Icons.verified_user_outlined,
+                size: 16, color: AppColors.warning),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                wallet.isConnected
+                    ? (owner != null
+                        ? 'Connect ${_shorten(owner)} in your wallet to authorize this withdrawal.'
+                        : 'Connect the wallet that owns your savings address to authorize this withdrawal.')
+                    : 'This withdrawal must be signed by the wallet that owns your savings address.',
                 style: context.typography.bodySmall,
               ),
             ),
@@ -269,8 +470,10 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
   Widget build(BuildContext context) {
     final a = widget.amount ?? 0;
     final destination = widget.destination?.trim() ?? '';
-    final fee = _withdrawalFee(a);
+    final fee = _feeNgn;
     final depositInfo = ref.watch(depositInfoProvider).valueOrNull;
+    final requiresSignature = depositInfo?.requireUserSignature ?? false;
+    final wallet = ref.watch(walletProvider);
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -341,10 +544,12 @@ class _WithdrawalReviewPageState extends ConsumerState<WithdrawalReviewPage> {
               _custodyBadge(),
               const SizedBox(height: 32),
               AppButton(
-                text: 'Confirm Withdrawal',
+                text: requiresSignature || wallet.isConnected
+                    ? 'Connect & Sign Withdraw'
+                    : 'Confirm Withdrawal',
                 isExpanded: true,
                 isLoading: _isProcessing,
-                onPressed: _confirmWithdrawal,
+                onPressed: _isProcessing ? null : _confirmWithdrawal,
               ),
             ],
           ),

@@ -14,3 +14,10 @@ Future<List<String>> bridgeAccounts() =>
 
 Future<String> bridgeSignTypedDataV4(String from, String typedDataJson) =>
     throw UnsupportedError('EthereumProvider requires a web target.');
+
+/// Current connected chain id as a `0x`-prefixed hex string; `0x0` here.
+Future<String> bridgeChainId() async => '0x0';
+
+/// Requests the wallet to switch to [chainId] (EIP-3326). Unsupported here.
+Future<void> bridgeSwitchChain(int chainId) =>
+    throw UnsupportedError('EthereumProvider requires a web target.');

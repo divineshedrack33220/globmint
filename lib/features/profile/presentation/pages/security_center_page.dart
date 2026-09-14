@@ -7,6 +7,7 @@ import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/widgets/app_button.dart';
 import '../../../../core/widgets/app_text_field.dart';
 import '../../../../shared/services/api_client.dart';
+import '../../../../shared/services/wallet_service.dart';
 
 class SecurityCenterPage extends ConsumerStatefulWidget {
   const SecurityCenterPage({super.key});
@@ -131,6 +132,159 @@ class _SecurityCenterPageState extends ConsumerState<SecurityCenterPage> {
     );
   }
 
+  /// Connects the wallet, pinned to the savings network when known.
+  Future<void> _connectWallet() async {
+    final expected =
+        ref.read(depositInfoProvider).valueOrNull?.chainId ?? 0;
+    final notifier = ref.read(walletProvider.notifier);
+    try {
+      await notifier.connect(expectedChainId: expected == 0 ? null : expected);
+    } on WalletWrongChainException {
+      await _switchWalletChain(expected == 0 ? null : expected);
+    } catch (_) {
+      // The failure reason is surfaced in walletProvider.error for the card.
+    }
+  }
+
+  Future<void> _switchWalletChain(int? expected) async {
+    if (expected == null || expected == 0) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Switch network?'),
+        content: Text(
+          'Switch your wallet to chain $expected so it can sign withdrawals?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Not now'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Switch'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    try {
+      await ref.read(walletProvider.notifier).ensureChain(expected);
+    } on WalletWrongChainException {
+      // Card reflects the wrongChain state; nothing else to do.
+    }
+  }
+
+  Widget _buildWalletCard(BuildContext context) {
+    final wallet = ref.watch(walletProvider);
+    final chain = wallet.chainId ?? 0;
+
+    final Color iconColor;
+    final IconData icon;
+    final String title;
+    final String? subtitle;
+    if (wallet.status == WalletConnectionStatus.connected) {
+      iconColor = AppColors.success;
+      icon = Icons.account_balance_wallet_outlined;
+      title = _shortenAddress(wallet.address ?? '');
+      subtitle = 'Chain $chain — signs withdrawals in your wallet';
+    } else if (wallet.status == WalletConnectionStatus.wrongChain) {
+      iconColor = AppColors.warning;
+      icon = Icons.warning_amber_rounded;
+      title = 'Wrong network';
+      subtitle = 'Switch your wallet to the supported chain.';
+    } else if (wallet.status == WalletConnectionStatus.connecting) {
+      iconColor = AppColors.primary;
+      icon = Icons.sync;
+      title = 'Connecting…';
+      subtitle = null;
+    } else {
+      iconColor = AppColors.textSecondary;
+      icon = Icons.link;
+      title = wallet.hasWallet ? 'Not connected' : 'No wallet detected';
+      subtitle = wallet.hasWallet
+          ? 'Connect a wallet to sign withdrawals yourself.'
+          : 'Install MetaMask in this browser to sign withdrawals yourself.';
+    }
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.border, width: 1),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: AppColors.surfaceHighlight,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(icon, color: iconColor, size: 20),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title, style: context.typography.bodyLarge),
+                    if (subtitle != null) ...[
+                      const SizedBox(height: 2),
+                      Text(subtitle, style: context.typography.bodySmall),
+                    ],
+                    if (wallet.error != null) ...[
+                      const SizedBox(height: 2),
+Text(
+                          wallet.error!,
+                          style: context.typography.bodySmall.copyWith(
+                            color: AppColors.destructive,
+                          ),
+                        ),
+                    ],
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          if (wallet.status == WalletConnectionStatus.wrongChain &&
+              (wallet.chainId ?? 0) != 0)
+            OutlinedButton.icon(
+              onPressed: () => _switchWalletChain(
+                  ref.read(depositInfoProvider).valueOrNull?.chainId),
+              icon: const Icon(Icons.swap_horiz, size: 18),
+              label: const Text('Switch network'),
+            )
+          else if (wallet.isConnected)
+            TextButton.icon(
+              onPressed: () => ref.read(walletProvider.notifier).disconnect(),
+              icon: const Icon(Icons.link_off, size: 18),
+              label: const Text('Disconnect'),
+            )
+          else if (wallet.hasWallet && !wallet.isBusy)
+            OutlinedButton.icon(
+              onPressed: _connectWallet,
+              icon: const Icon(Icons.link, size: 18),
+              label: const Text('Connect wallet'),
+            ),
+        ],
+      ),
+    );
+  }
+
+  static String _shortenAddress(String addr) {
+    if (addr.isEmpty) return '';
+    if (addr.length <= 12) return addr;
+    return '${addr.substring(0, 6)}…${addr.substring(addr.length - 4)}';
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -174,6 +328,10 @@ class _SecurityCenterPageState extends ConsumerState<SecurityCenterPage> {
                   ],
                 ),
               ),
+              const SizedBox(height: 24),
+              Text('Connected Wallet', style: context.typography.title),
+              const SizedBox(height: 12),
+              _buildWalletCard(context),
               const SizedBox(height: 24),
               Text('Account Protection', style: context.typography.title),
               const SizedBox(height: 12),

@@ -61,6 +61,12 @@ type DepositInfo struct {
 	// are active. When true, clients must use the salt-aware vault entry points
 	// and the raw address never appears in deposit events.
 	PrivacyEnabled bool `json:"privacy_enabled"`
+	// RequireUserSignature reports whether EIP-712 signature-gated withdrawals
+	// are enforced (GLOBMINT_REQUIRE_USER_SIGNATURE). When true the platform
+	// signer never signs on the user's behalf: withdrawals and recovery changes
+	// must carry the clone owner's own wallet signature. When false the server
+	// is in transitional mode and may still relay via the platform signer.
+	RequireUserSignature bool `json:"require_user_signature"`
 }
 
 // GetDepositInfo returns the on-chain deposit address (vault) along with the
