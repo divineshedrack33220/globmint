@@ -1306,26 +1306,28 @@ same behaviour through the real HTTP endpoints.
   elevation delay (§9.3.1). The exact mainnet gating (`GLOBMINT_REQUIRE_USER_SIGNATURE`)
   is enforced by the production gate (§7.5); the default remains the transitional mode
   where the platform placeholder owner may sign for unclaimed accounts.
-- **Recovery is contract + API complete, client UI pending.** The clone contract, the
-  `GET/PUT /savings/recovery*` endpoints, and the cache/reconciler are shipped and tested;
-  the Flutter client does not yet surface recovery status or a "designate recovery address"
-  flow, and arming the delay is an operator factory action, not a user setting. Until the
-  client wires it, recovery is usable via direct contract/API calls.
+- **Recovery is contract + API + client complete.** The clone contract, the
+  `GET /savings/recovery*` / `PUT /savings/recovery` endpoints, and the cache/reconciler
+  are shipped and tested; the Flutter Vault Recovery page (reached from the savings
+  screen) shows clone/owner/recovery status and lets the owner sign & designate a
+  recovery address. The recovery **delay** is a fleet policy — armed by an operator
+  factory action (`setRecoveryDelay`) and surfaced read-only in the UI — so a user can
+  choose the recovery address but not how long recovery waits.
 - **Wallet signing is in-wallet now; custody handover shipped.** Self-custody
   withdrawal signing is wired end-to-end in the Flutter app: WalletConnect/MetaMask
   connect, the review screen signs the exact `WithdrawRequest` payload (§2.3.1), and
   custody handover is a first-class client flow — a "Savings Address Custody" card on
   the Security Center page, a claim sheet that presents the `TransferOwnership` payload
   and relays the server-signed claim, and a withdraw gate that takes custody (then
-  re-quotes for the bumped nonce) before ever attempting a signature. Remaining client
-  work: the in-app recovery UX (see next bullet).
+  re-quotes for the bumped nonce) before ever attempting a signature.
 - **FX rates are seeded static values**, not streamed market data; the quote endpoint is
   the extension point for a price feed.
 - **Future work:** real price feeds, email/SMS notification delivery, a QR-code flow for
-  the TOTP secret, wallet-deep-link deposit flow (WalletConnect/MetaMask), in-app recovery
-  UX, and multi-chain UX once the L2 groundwork (§9.4) is exercised on a testnet. The app
-  surfaces the Circle USDC risk disclosure and watch-only clarity before any real money
-  moves.
+  the TOTP secret, wallet-deep-link deposit flow (WalletConnect/MetaMask), recovery
+  designation through the WalletConnect bridge (the recovery page currently signs via the
+  browser-extension wallet), and multi-chain UX once the L2 groundwork (§9.4) is exercised
+  on a testnet. The app surfaces the Circle USDC risk disclosure and watch-only clarity
+  before any real money moves.
 - **Privacy withdrawal linkage is accepted for v1.** The salt proof proves
   commitment ownership without a ZK circuit, but the withdrawal transaction
   ultimately pays the user's own address, so an on-chain observer can correlate

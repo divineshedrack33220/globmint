@@ -158,6 +158,17 @@ class _VaultRecoveryPageState extends ConsumerState<VaultRecoveryPage> {
                 _statusCard(status)
               else
                 _errorCard(null),
+              if (status != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  'The recovery time-lock is a GlobMint platform policy set '
+                  'across all vaults — you choose which address recovers it, '
+                  'but not how long recovery waits.',
+                  style: context.typography.bodySmall.copyWith(
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+              ],
               const SizedBox(height: 24),
               Text('Designate a recovery address', style: context.typography.title),
               const SizedBox(height: 6),
