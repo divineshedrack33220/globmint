@@ -8,6 +8,7 @@ import '../../../../core/widgets/app_button.dart';
 import '../../../../core/widgets/app_text_field.dart';
 import '../../../../shared/services/api_client.dart';
 import '../../../../shared/services/wallet_service.dart';
+import '../widgets/wallet_connect_button.dart';
 
 class SecurityCenterPage extends ConsumerStatefulWidget {
   const SecurityCenterPage({super.key});
@@ -132,49 +133,6 @@ class _SecurityCenterPageState extends ConsumerState<SecurityCenterPage> {
     );
   }
 
-  /// Connects the wallet, pinned to the savings network when known.
-  Future<void> _connectWallet() async {
-    final expected =
-        ref.read(depositInfoProvider).valueOrNull?.chainId ?? 0;
-    final notifier = ref.read(walletProvider.notifier);
-    try {
-      await notifier.connect(expectedChainId: expected == 0 ? null : expected);
-    } on WalletWrongChainException {
-      await _switchWalletChain(expected == 0 ? null : expected);
-    } catch (_) {
-      // The failure reason is surfaced in walletProvider.error for the card.
-    }
-  }
-
-  Future<void> _switchWalletChain(int? expected) async {
-    if (expected == null || expected == 0) return;
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Switch network?'),
-        content: Text(
-          'Switch your wallet to chain $expected so it can sign withdrawals?',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Not now'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Switch'),
-          ),
-        ],
-      ),
-    );
-    if (ok != true || !mounted) return;
-    try {
-      await ref.read(walletProvider.notifier).ensureChain(expected);
-    } on WalletWrongChainException {
-      // Card reflects the wrongChain state; nothing else to do.
-    }
-  }
-
   Widget _buildWalletCard(BuildContext context) {
     final wallet = ref.watch(walletProvider);
     final chain = wallet.chainId ?? 0;
@@ -254,26 +212,10 @@ Text(
             ],
           ),
           const SizedBox(height: 12),
-          if (wallet.status == WalletConnectionStatus.wrongChain &&
-              (wallet.chainId ?? 0) != 0)
-            OutlinedButton.icon(
-              onPressed: () => _switchWalletChain(
-                  ref.read(depositInfoProvider).valueOrNull?.chainId),
-              icon: const Icon(Icons.swap_horiz, size: 18),
-              label: const Text('Switch network'),
-            )
-          else if (wallet.isConnected)
-            TextButton.icon(
-              onPressed: () => ref.read(walletProvider.notifier).disconnect(),
-              icon: const Icon(Icons.link_off, size: 18),
-              label: const Text('Disconnect'),
-            )
-          else if (wallet.hasWallet && !wallet.isBusy)
-            OutlinedButton.icon(
-              onPressed: _connectWallet,
-              icon: const Icon(Icons.link, size: 18),
-              label: const Text('Connect wallet'),
-            ),
+          WalletConnectButton(
+            expectedChainId:
+                ref.read(depositInfoProvider).valueOrNull?.chainId,
+          ),
         ],
       ),
     );
