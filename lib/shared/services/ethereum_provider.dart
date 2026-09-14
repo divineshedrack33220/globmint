@@ -1,9 +1,6 @@
 import 'dart:convert';
-import 'dart:js_interop';
-import 'dart:js_interop_unsafe';
 
-import 'package:flutter/foundation.dart' show kIsWeb;
-
+import 'ethereum_provider_bridge.dart' as bridge;
 import 'savings_client.dart';
 
 /// A minimal EIP-1193 wallet bridge (MetaMask / injected providers) used to
@@ -20,59 +17,19 @@ class EthereumProvider {
   static final EthereumProvider instance = EthereumProvider._();
 
   /// True when `window.ethereum` exists (web target with an injected wallet).
-  static bool get available {
-    if (!kIsWeb) return false;
-    try {
-      return globalContext.getProperty('ethereum'.toJS) != null;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  JSObject get _ethereum {
-    final eth = globalContext.getProperty('ethereum'.toJS);
-    if (eth == null) {
-      throw StateError('No wallet provider found in this browser.');
-    }
-    return eth as JSObject;
-  }
-
-  Future<JSAny?> _request(String method, List<JSAny?> params) async {
-    final req =
-        <String, JSAny?>{'method': method.toJS, 'params': params.jsify()}.jsify()
-            as JSObject;
-    final result = _ethereum.callMethodVarArgs('request'.toJS, [req]);
-    return (result as JSPromise<JSAny?>).toDart;
-  }
+  static bool get available => bridge.bridgeAvailable();
 
   /// Requests an unlocked account (opens the wallet's connect flow).
-  Future<List<String>> requestAccounts() async {
-    final result = await _request('eth_requestAccounts', []);
-    final list = result as JSArray<JSString>;
-    return list.toDart.map((a) => a.toDart).toList();
-  }
+  Future<List<String>> requestAccounts() => bridge.bridgeRequestAccounts();
 
   /// Currently connected/authorized accounts without prompting.
-  Future<List<String>> accounts() async {
-    final result = await _request('eth_accounts', []);
-    final list = result as JSArray<JSString>;
-    return list.toDart.map((a) => a.toDart).toList();
-  }
-
-  /// The provider's current chain id (hex, e.g. "0x539" for mainnet).
-  Future<String> chainId() async {
-    final result = await _request('eth_chainId', []);
-    return (result as JSString).toDart;
-  }
+  Future<List<String>> accounts() => bridge.bridgeAccounts();
 
   /// Signs an EIP-712 typed-data payload with `from`'s key via the wallet UI.
   /// Returns the 65-byte `0x`-prefixed signature.
-  Future<String> signTypedDataV4(String from, Map<String, dynamic> typedData) async {
-    final result = await _request('eth_signTypedData_v4', [
-      from.toJS,
-      jsonEncode(typedData).toJS,
-    ]);
-    return (result as JSString).toDart;
+  Future<String> signTypedDataV4(
+      String from, Map<String, dynamic> typedData) {
+    return bridge.bridgeSignTypedDataV4(from, jsonEncode(typedData));
   }
 
   /// Builds the exact eth_signTypedData_v4 payload for a server quote. The
