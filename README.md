@@ -239,10 +239,13 @@ user's clone unless that user's wallet signed it**:
 Accounts whose clone owner is still the platform-signer **placeholder** (never claimed)
 must first "sign to take custody": the owner's `transferOwnershipBySig` signature moves the
 owner seat to the user's wallet. Until then, signed withdrawals and recovery designation
-are refused with `SIGNATURE_REQUIRED` (`ErrWithdrawRequiresCustody`). In the transitional
-`GLOBMINT_REQUIRE_USER_SIGNATURE=false` mode the platform placeholder owner may still sign
-on behalf of unclaimed accounts; the production gate requires the strict mode so that
-transitional path is unreachable on mainnet.
+are refused with `SIGNATURE_REQUIRED` (`ErrWithdrawRequiresCustody`). The client gates
+signed withdrawals on this precondition — offering the custody claim sheet instead of a
+doomed signature — and re-quotes after the handover so the next `Sign & Withdraw` covers
+the bumped nonce (the claim is idempotent, so a CONFLICT replay reads as already claimed).
+In the transitional `GLOBMINT_REQUIRE_USER_SIGNATURE=false` mode the platform placeholder
+owner may still sign on behalf of unclaimed accounts; the production gate requires the
+strict mode so that transitional path is unreachable on mainnet.
 
 ---
 
@@ -421,7 +424,7 @@ flowchart TB
 | Balances | `GET /balances` |
 | Transactions | `GET /transactions` |
 | Money | `POST /money/deposit`, `withdraw`, `transfer`, `convert`, `quote` |
-| Savings/Vault | `GET /savings/deposit-info`, `PUT /savings/deposit-address`, `GET /savings/vault-status`, `GET /savings/withdraw/prepare` (quotes the EIP-712 payload to sign), `POST /savings/withdraw` (relays the signed `withdrawWithSig`), `GET /savings/withdraw` (pending time-locks), `POST /savings/withdraw/{id}/cancel`, `GET /savings/recovery` (clone recovery state; chain-authoritative, cache fallback), `GET /savings/recovery/prepare?recovery_address=…` (quotes the `SetRecovery` payload to sign), `PUT /savings/recovery` (relays the signed `setRecoveryAddressBySig`) |
+| Savings/Vault | `GET /savings/deposit-info`, `PUT /savings/deposit-address`, `GET /savings/vault-status`, `GET /savings/custody` (clone owner-seat snapshot; chain-authoritative, cache fallback), `GET /savings/custody/prepare?new_owner=…` (quotes the `TransferOwnership` EIP-712 payload), `POST /savings/custody/claim` (idempotent; relays the custody handover signed by the platform signer), `GET /savings/withdraw/prepare` (quotes the EIP-712 payload to sign), `POST /savings/withdraw` (relays the signed `withdrawWithSig`), `GET /savings/withdraw` (pending time-locks), `POST /savings/withdraw/{id}/cancel`, `GET /savings/recovery` (clone recovery state; chain-authoritative, cache fallback), `GET /savings/recovery/prepare?recovery_address=…` (quotes the `SetRecovery` payload to sign), `PUT /savings/recovery` (relays the signed `setRecoveryAddressBySig`) |
 | Beneficiaries | `GET/POST /beneficiaries`, `PATCH /beneficiaries/{id}`, `POST …/favorite`, `DELETE …/{id}`, `GET /beneficiaries/address/{address}` |
 | Bank accounts | `GET/POST /bank-accounts`, `POST /bank-accounts/{id}/default`, `DELETE …/{id}` |
 | Devices / security | `GET /devices`, `POST /devices/revoke-others`, `POST /devices/{id}/revoke`, `GET /security-events` |
@@ -799,7 +802,13 @@ contract GlobmintVaultClone {
 - `withdrawWithSig` is the self-custody withdrawal relay: the user's signature over
   `WithdrawRequest(to, amount, nonce, deadline)` moves USDC from *their* clone to the
   destination. `transferOwnershipBySig` lets an unlinked account's signer-placeholder
-  owner be claimed by the user ("sign to take custody").
+  owner be claimed by the user ("sign to take custody"): `GET /savings/custody` reports
+  the seat, `GET /savings/custody/prepare?new_owner=…` quotes the exact EIP-712
+  `TransferOwnership` payload for the connected wallet, and `POST /savings/custody/claim`
+  relays it (server-signed with the platform signer — the only key that can authorize a
+  pre-claim handover — then re-verified on-chain) to move the seat to `new_owner`. The
+  handover consumes a slot in the shared EIP-712 nonce, so signing clients re-quote after
+  a claim before attempting the withdrawal signature.
 - **Recovery address.** The clone's owner can designate a backup `recoveryAddress`
   (directly, or relayed via `setRecoveryAddressBySig`). Once the factory has armed a
   `recoveryDelay`, the recovery address (or the owner) can `beginRecovery();` the owner
@@ -1302,10 +1311,14 @@ same behaviour through the real HTTP endpoints.
   the Flutter client does not yet surface recovery status or a "designate recovery address"
   flow, and arming the delay is an operator factory action, not a user setting. Until the
   client wires it, recovery is usable via direct contract/API calls.
-- **Wallet signing is API-ready, client wiring partial.** The prepare endpoints return the
-  exact `eth_signTypedData_v4` payloads for withdrawal and recovery, but end-to-end
-  in-wallet signing (MetaMask/WalletConnect bridge) in the Flutter app is still the
-  remaining client work; today the app drives the transitional PIN flow.
+- **Wallet signing is in-wallet now; custody handover shipped.** Self-custody
+  withdrawal signing is wired end-to-end in the Flutter app: WalletConnect/MetaMask
+  connect, the review screen signs the exact `WithdrawRequest` payload (§2.3.1), and
+  custody handover is a first-class client flow — a "Savings Address Custody" card on
+  the Security Center page, a claim sheet that presents the `TransferOwnership` payload
+  and relays the server-signed claim, and a withdraw gate that takes custody (then
+  re-quotes for the bumped nonce) before ever attempting a signature. Remaining client
+  work: the in-app recovery UX (see next bullet).
 - **FX rates are seeded static values**, not streamed market data; the quote endpoint is
   the extension point for a price feed.
 - **Future work:** real price feeds, email/SMS notification delivery, a QR-code flow for
