@@ -201,6 +201,10 @@ class _VaultRecoveryPageState extends ConsumerState<VaultRecoveryPage> {
     );
 
     final first = await Future.any<Object?>([dialogFuture, connectWork]);
+    // The dialog route may not be installed yet when [connectWork] resolved
+    // on its very first microtask (e.g. an instant wallet rejection); wait a
+    // frame so the route has a scope before popping it.
+    if (mounted) await WidgetsBinding.instance.endOfFrame;
     if (mounted) Navigator.of(context).maybePop();
     if (first == false) {
       if (backend is WalletSessionEventsSource) {

@@ -76,13 +76,20 @@ class WalletConnectWalletBackend
 
   final StreamController<String> _pairingUris =
       StreamController<String>.broadcast();
+  String? _latestPairingUri;
   final StreamController<WalletConnectionEvent> _eventsCtrl =
       StreamController<WalletConnectionEvent>.broadcast();
 
   /// Fresh pairing URIs, one per new session. The web UI renders them as a QR
-  /// code; mobile deep-links into the wallet app. Never stored anywhere.
+  /// code; mobile deep-links into the wallet app. New subscribers immediately
+  /// receive the latest URI (if any) so a late-binding QR dialog never starts
+  /// blank.
   @override
-  Stream<String> get pairingUris => _pairingUris.stream;
+  Stream<String> get pairingUris async* {
+    final latest = _latestPairingUri;
+    if (latest != null) yield latest;
+    yield* _pairingUris.stream;
+  }
 
   /// Whether an approved session is currently live (re-entering the app skips
   /// the pairing modal and reuses it).
@@ -295,7 +302,8 @@ class WalletConnectWalletBackend
 
     final uri = connect.uri;
     if (uri != null && !_pairingUris.isClosed) {
-      _pairingUris.add(uri.toString());
+      _latestPairingUri = uri.toString();
+      _pairingUris.add(_latestPairingUri!);
     }
 
     try {
