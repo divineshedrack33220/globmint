@@ -2,27 +2,38 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/constants/app_constants.dart';
 import 'connectivity.dart';
+import 'session_store.dart';
 
 /// A thin, shared HTTP client for the GlobMint Go backend.
 ///
 /// Responsibilities:
 ///   - resolves the base URL (host vs. Android-emulator loopback),
-///   - attaches the bearer token from SharedPreferences,
+///   - attaches the bearer token from [SessionStore],
 ///   - attaches an Idempotency-Key header for money-movement calls,
 ///   - centralizes JSON encode/decode and error handling.
 ///
 /// Business service classes take an [ApiClient] and call [get]/[post]/[put].
 class ApiClient {
-  ApiClient({http.Client? httpClient, String? baseUrl, this.connectivity})
-    : _http = httpClient ?? http.Client(),
-      _baseUrl = baseUrl ?? _defaultBaseUrl();
+  ApiClient({
+    http.Client? httpClient,
+    String? baseUrl,
+    this.connectivity,
+    SessionStore? sessionStore,
+  }) : _http = httpClient ?? http.Client(),
+       _baseUrl = baseUrl ?? _defaultBaseUrl(),
+       _sessionStore = sessionStore ?? const SecureSessionStore();
 
   final http.Client _http;
   final String _baseUrl;
+  final SessionStore _sessionStore;
+
+  /// Invoked when any request returns HTTP 401 while a bearer token was
+  /// attached (i.e. the stored session is no longer valid). Wired up by the
+  /// provider layer to clear the session and route the user to login.
+  void Function()? onUnauthorized;
 
   /// Online/offline signal updated from transport outcomes (may be null in
   /// tests where connectivity reporting is irrelevant).
@@ -74,8 +85,7 @@ class ApiClient {
 
   Future<Map<String, String>> _headers({String? idempotencyKey}) async {
     final headers = <String, String>{'Content-Type': 'application/json'};
-    final prefs = await SharedPreferences.getInstance();
-    final token = prefs.getString(AppConstants.authTokenKey);
+    final token = await _sessionStore.readToken();
     if (token != null && token.isNotEmpty) {
       headers['Authorization'] = 'Bearer $token';
     }
@@ -180,6 +190,11 @@ class ApiClient {
   /// Decodes the body and throws [ApiException] on non-2xx responses, surfacing
   /// the backend's stable error message when present.
   Map<String, dynamic>? _decode(http.Response res) {
+    if (res.statusCode == 401) {
+      // The attached bearer token was rejected: the stored session is gone.
+      // Best-effort notify so the app clears it and routes to login.
+      onUnauthorized?.call();
+    }
     Map<String, dynamic>? data;
     if (res.body.isNotEmpty) {
       try {

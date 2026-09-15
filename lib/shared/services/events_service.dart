@@ -2,10 +2,10 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/constants/app_constants.dart';
 import 'connectivity.dart';
+import 'session_store.dart';
 
 /// Kind of data mutation pushed by the backend over the SSE feed.
 enum EventKind { account, vault, transactions, all }
@@ -41,12 +41,18 @@ class UserEvent {
 /// reconnects with exponential backoff (1..15s). Emits [UserEvent]s on the
 /// broadcast [stream].
 class EventsServer {
-  EventsServer({String? baseUrl, http.Client? httpClient, this.connectivity})
-    : _baseUrl = baseUrl ?? AppConstants.baseApiUrl(),
-      _http = httpClient ?? http.Client();
+  EventsServer({
+    String? baseUrl,
+    http.Client? httpClient,
+    this.connectivity,
+    SessionStore? sessionStore,
+  }) : _baseUrl = baseUrl ?? AppConstants.baseApiUrl(),
+       _http = httpClient ?? http.Client(),
+       _sessionStore = sessionStore ?? const SecureSessionStore();
 
   final String _baseUrl;
   final http.Client _http;
+  final SessionStore _sessionStore;
 
   /// Online/offline signal updated from the feed's connect/reconnect
   /// outcomes (may be null in tests).
@@ -74,8 +80,7 @@ class EventsServer {
   }
 
   Future<void> _open() async {
-    final prefs = await SharedPreferences.getInstance();
-    final token = prefs.getString(AppConstants.authTokenKey);
+    final token = await _sessionStore.readToken();
     if (token == null || token.isEmpty) {
       _events.addError(StateError('Not authenticated for SSE'));
       return;

@@ -27,7 +27,6 @@ abstract final class AppConstants {
 
   // ---- Backend API ----
   static const String apiV1Prefix = '/api/v1';
-  static const String authTokenKey = 'auth_token';
 
   // Base URL for the Go backend. Platform-aware: the Android emulator reaches
   // the host via 10.0.2.2; web/desktop use localhost. Override at runtime by

@@ -13,6 +13,7 @@ import '../shared/services/conversion_service.dart';
 import '../shared/services/events_service.dart';
 import '../shared/services/savings_client.dart';
 import '../shared/services/security_service.dart';
+import '../shared/services/session_store.dart';
 import '../shared/services/transaction_service.dart';
 import '../shared/services/transfer_service.dart';
 import '../shared/services/wallet_service.dart';
@@ -23,13 +24,57 @@ final connectivityServiceProvider = Provider<ConnectivityService>(
   (ref) => ConnectivityService(),
 );
 
-/// Shared [ApiClient] used by every backend-backed service.
+/// Secure persistence for the account session (Keychain/Keystore). The single
+/// place the bearer token lives on device; [ApiClient] and [AuthService] share
+/// it so there is never a second copy in plain preferences.
+final sessionStoreProvider = Provider<SessionStore>(
+  (ref) => const SecureSessionStore(),
+);
+
+/// Broadcasts "the server rejected our bearer token (401)" from [ApiClient]
+/// to whichever services own the session. Kept as its own provider so
+/// [apiClientProvider] and [authServiceProvider] never depend on each other
+/// (which would be a provider cycle).
+class UnauthorizedHandler {
+  void Function()? _handler;
+
+  void setHandler(void Function() handler) {
+    _handler = handler;
+  }
+
+  void notify() => _handler?.call();
+}
+
+final unauthorizedHandlerProvider = Provider<UnauthorizedHandler>(
+  (ref) => UnauthorizedHandler(),
+);
+
+/// Shared [ApiClient] used by every backend-backed service. Attaches the
+/// bearer token from [sessionStoreProvider]; when the backend rejects it
+/// (401) the [UnauthorizedHandler] is notified so the session can be cleared
+/// and the user routed back to login.
 final apiClientProvider = Provider<ApiClient>(
-  (ref) => ApiClient(connectivity: ref.watch(connectivityServiceProvider)),
+  (ref) {
+    final client = ApiClient(
+      connectivity: ref.watch(connectivityServiceProvider),
+      sessionStore: ref.watch(sessionStoreProvider),
+    );
+    client.onUnauthorized = ref.watch(unauthorizedHandlerProvider).notify;
+    return client;
+  },
 );
 
 final authServiceProvider = Provider<AuthService>(
-  (ref) => AuthService(ref.watch(apiClientProvider)),
+  (ref) {
+    final auth = AuthService(
+      ref.watch(apiClientProvider),
+      sessionStore: ref.watch(sessionStoreProvider),
+    );
+    ref.watch(unauthorizedHandlerProvider).setHandler(
+          () => auth.handleSessionExpired(),
+        );
+    return auth;
+  },
 );
 
 final balanceServiceProvider = Provider<BalanceService>(
@@ -70,6 +115,7 @@ final eventsServerProvider = Provider<EventsServer>((ref) {
   final server = EventsServer(
     baseUrl: ref.watch(apiClientProvider).baseUrl,
     connectivity: ref.watch(connectivityServiceProvider),
+    sessionStore: ref.watch(sessionStoreProvider),
   );
   server.connect();
   ref.onDispose(server.close);

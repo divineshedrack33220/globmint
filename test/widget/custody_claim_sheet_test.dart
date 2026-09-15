@@ -11,6 +11,7 @@ import 'package:globe_mint/core/theme/app_theme.dart';
 import 'package:globe_mint/features/savings/presentation/widgets/custody_claim_sheet.dart';
 import 'package:globe_mint/shared/services/api_client.dart';
 import 'package:globe_mint/shared/services/savings_client.dart';
+import 'package:globe_mint/shared/services/session_store.dart';
 import 'package:globe_mint/shared/services/wallet_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -123,6 +124,7 @@ void main() {
         apiClientProvider.overrideWithValue(ApiClient(
           baseUrl: 'http://x',
           httpClient: client(),
+          sessionStore: MemorySessionStore(),
         )),
       ],
     );
@@ -194,6 +196,7 @@ void main() {
               'message': 'your savings address is already owned by your wallet',
             },
           ),
+          sessionStore: MemorySessionStore(),
         )),
       ],
     );

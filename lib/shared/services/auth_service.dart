@@ -1,14 +1,19 @@
 import '../models/models.dart';
 import '../../core/constants/app_constants.dart';
 import 'api_client.dart';
+import 'session_store.dart';
 
-/// Real backend-backed auth service. It stores the returned session token in
-/// SharedPreferences (key [AppConstants.authTokenKey]) for use by the shared
-/// [ApiClient] on subsequent authenticated calls.
+/// Real backend-backed auth service. A successful sign-in stores the bearer
+/// token in secure storage (Keychain/Keystore) via [SessionStore] so the app
+/// can revalidate the session on the next cold start and offer a biometric
+/// "fast reopen" — the token is only ever persisted there, never in logs or
+/// plain preferences.
 class AuthService {
-  AuthService(this._api);
+  AuthService(this._api, {SessionStore? sessionStore})
+    : _sessionStore = sessionStore ?? const SecureSessionStore();
 
   final ApiClient _api;
+  final SessionStore _sessionStore;
 
   User? _currentUser;
   bool _isAuthenticated = false;
@@ -32,6 +37,7 @@ class AuthService {
     final user = _userFromApi(data['user'] as Map<String, dynamic>? ?? {});
     _currentUser = user;
     _isAuthenticated = true;
+    await _rememberEmail(user.email);
     return LoginResult(user: user);
   }
 
@@ -46,11 +52,14 @@ class AuthService {
     final user = _userFromApi(data['user'] as Map<String, dynamic>? ?? {});
     _currentUser = user;
     _isAuthenticated = true;
+    await _rememberEmail(user.email);
     return user;
   }
 
-  /// Changes the account password after verifying the current one. All other
-  /// device sessions are revoked by the backend; this session stays valid.
+  /// Changes the account password after verifying the current one. As a
+  /// precaution the stored session token is deleted afterwards (see
+  /// [clearSession]): even though the backend keeps this session row valid,
+  /// the client requires a fresh password to remain unlocked.
   Future<void> changePassword({
     required String currentPassword,
     required String newPassword,
@@ -59,6 +68,7 @@ class AuthService {
       '${AppConstants.apiV1Prefix}/auth/password',
       body: {'current_password': currentPassword, 'new_password': newPassword},
     );
+    await clearSession();
   }
 
   /// Provisions a new TOTP secret (secret + otpauth URI). 2FA only activates
@@ -119,11 +129,46 @@ class AuthService {
     } catch (_) {
       // Best-effort; always clear local session regardless.
     }
+    await clearSession();
+  }
+
+  /// Restores a stored session on cold start: reads the bearer token from
+  /// secure storage and validates it against `GET /users/me`. Returns the user
+  /// on success; returns null when there is no token or when the token has
+  /// been rejected (401 clears the stored token and [isAuthenticated] is
+  /// false). Non-401 failures (network, 5xx) rethrow so the caller can decide
+  /// — a session whose validity cannot be confirmed is never trusted.
+  Future<User?> currentSession() async {
+    final token = await _sessionStore.readToken();
+    if (token == null || token.isEmpty) return null;
+    try {
+      final user = await me();
+      if (user != null) await _rememberEmail(user.email);
+      return user;
+    } on ApiException catch (e) {
+      if (e.statusCode == 401) {
+        await clearSession();
+        return null;
+      }
+      rethrow;
+    }
+  }
+
+  /// Drops the session from memory and secure storage. Safe to call at any
+  /// point; used by logout, password change, and mid-session 401 handling.
+  Future<void> clearSession() async {
     _currentUser = null;
     _isAuthenticated = false;
-    final prefs = await AppConstants.prefs();
-    await prefs.remove(AppConstants.authTokenKey);
+    await _sessionStore.clearToken();
   }
+
+  /// Clears the session after the backend rejected the bearer token on a
+  /// regular call (see [ApiClient.onUnauthorized]).
+  Future<void> handleSessionExpired() => clearSession();
+
+  /// The account email remembered at the last successful sign-in, used to
+  /// pre-fill the login form from the unlock screen. Not a secret.
+  Future<String?> rememberedEmail() => _sessionStore.readEmail();
 
   Future<User?> me() async {
     final data = await _api.get('${AppConstants.apiV1Prefix}/users/me');
@@ -161,6 +206,7 @@ class AuthService {
       final user = _userFromApi(data['user'] as Map<String, dynamic>? ?? {});
       _currentUser = user;
       _isAuthenticated = true;
+      await _rememberEmail(user.email);
       return OtpVerifyResult(
         verified: data['verified'] == true,
         emailVerified: data['email_verified'] == true,
@@ -201,8 +247,12 @@ class AuthService {
 
   Future<void> _storeToken(String token) async {
     if (token.isEmpty) return;
-    final prefs = await AppConstants.prefs();
-    await prefs.setString(AppConstants.authTokenKey, token);
+    await _sessionStore.writeToken(token);
+  }
+
+  Future<void> _rememberEmail(String email) async {
+    if (email.isEmpty) return;
+    await _sessionStore.writeEmail(email);
   }
 
   /// Parses a unix-seconds value (as sent by the backend) into a local time,
