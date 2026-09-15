@@ -9,7 +9,11 @@ import '../../../../core/widgets/app_text_field.dart';
 import '../../../../shared/services/api_client.dart';
 
 class LoginPage extends ConsumerStatefulWidget {
-  const LoginPage({super.key});
+  const LoginPage({super.key, this.initialEmail});
+
+  /// Pre-fills the email field, e.g. when the user chose "use password
+  /// instead" on the app-lock screen (helpers them skip re-typing it).
+  final String? initialEmail;
 
   @override
   ConsumerState<LoginPage> createState() => _LoginPageState();
@@ -17,12 +21,18 @@ class LoginPage extends ConsumerStatefulWidget {
 
 class _LoginPageState extends ConsumerState<LoginPage> {
   final _formKey = GlobalKey<FormState>();
-  final _emailController = TextEditingController();
+  late final TextEditingController _emailController;
   final _passwordController = TextEditingController();
   final _codeController = TextEditingController();
   bool _isLoading = false;
   bool _needsTwoFactor = false;
   String _challengeToken = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _emailController = TextEditingController(text: widget.initialEmail ?? '');
+  }
 
   @override
   void dispose() {

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/theme/app_theme.dart';
+import 'app_lock_gate.dart';
 import 'router.dart';
 
 class GlobeMintApp extends StatelessWidget {
@@ -14,6 +15,7 @@ class GlobeMintApp extends StatelessWidget {
         debugShowCheckedModeBanner: false,
         theme: AppTheme.dark(),
         routerConfig: appRouter,
+        builder: (context, child) => AppLockGate(child: child ?? const SizedBox.shrink()),
       ),
     );
   }

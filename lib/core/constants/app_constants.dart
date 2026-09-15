@@ -1,7 +1,5 @@
 // Core app-wide constants and shared backend configuration.
 
-import 'package:shared_preferences/shared_preferences.dart';
-
 abstract final class AppConstants {
   static const String appName = 'GlobMint';
   static const String appTagline = 'Your digital savings vault';
@@ -36,9 +34,9 @@ abstract final class AppConstants {
     defaultValue: '',
   );
 
-  /// SharedPreferences accessor (kept here so services can persist the auth
-  /// token without importing the package in many places).
-  static Future<SharedPreferences> prefs() => SharedPreferences.getInstance();
+  /// How long the app may stay backgrounded before the app-lock gate
+  /// re-arms. Configurable so desktop/preview builds can relax it.
+  static const Duration appLockBackgroundThreshold = Duration(seconds: 30);
 
   /// Resolves the effective base URL using the provided platform loopback.
   /// When [overridden] is non-empty it wins; otherwise emulator vs. host.

@@ -89,7 +89,15 @@ final GoRouter appRouter = GoRouter(
     ),
     GoRoute(
       path: '/login',
-      pageBuilder: (context, state) => _buildPageWithTransition(context, state, const LoginPage(), isAuthRoute: true),
+      pageBuilder: (context, state) {
+        final extra = state.extra is Map ? (state.extra as Map) : null;
+        return _buildPageWithTransition(
+          context,
+          state,
+          LoginPage(initialEmail: extra?['email'] as String?),
+          isAuthRoute: true,
+        );
+      },
     ),
     GoRoute(
       path: '/forgot-password',
