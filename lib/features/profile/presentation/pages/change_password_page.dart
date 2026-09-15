@@ -49,6 +49,10 @@ class _ChangePasswordPageState extends ConsumerState<ChangePasswordPage> {
         subtitle: 'Your password has been updated successfully.',
         onPressed: () => context.pop(),
       );
+      if (!mounted) return;
+      // changePassword() cleared the on-device session (§10.8): force the user
+      // to sign in again rather than leaving them on guarded pages.
+      context.go('/login');
     } on ApiException catch (e) {
       if (!mounted) return;
       setState(() => _loading = false);

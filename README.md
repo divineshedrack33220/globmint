@@ -1010,6 +1010,13 @@ live in `.env.example`; each network uses its own separate vault deployment, so 
 - **Models**: `freezed` + `json_serializable` for typed, generated equality/serialization.
 - **HTTP**: `ApiClient` resolves the API origin (localhost for dev), adds the bearer token,
   and surfaces typed `ApiException`s (message + code).
+- **Local session persistence + app lock**: the bearer token lives in the platform secure
+  storage (`flutter_secure_storage`, keys `globmint.session_token` / `globmint.session_email`)
+  behind a `SessionStore` abstraction, so `ApiClient`, `EventsServer`, and `AuthService` all
+  read one source of truth instead of a SharedPreferences copy. A 401 mid-session is
+  broadcast through a multicast `UnauthorizedHandler` (clears the token and routes the gate
+  to `/login`) without the two providers depending on each other. Cold-start "fast reopen"
+  is described in §10.8.
 - **Wallet signing backends**: `WalletService` publishes interchangeable wallet backends through
   Riverpod (`walletServiceProvider`). Two ship by default — the injected browser extension
   (`InjectedWalletBackend`, Web-only) and WalletConnect v2 via `reown_sign` (`WalletConnectWalletBackend`,
@@ -1040,7 +1047,7 @@ flowchart LR
 | pay | transfers, send-to-beneficiary, OTC/withdraw-to-address |
 | savings | add money (per-user clone deposit address + **privacy badge** "Privacy-protected balance" when `GLOBMINT_PRIVACY_MODE=true` + watch-only note + risk disclosure; "deposits unavailable" empty-state without a vault), withdraw + review (fee preview: amount, 0.2% fee, total charged, USDC received), **vault recovery** (designate a recovery address signed by the owner's Web3 wallet — WalletConnect QR pairing dialog or injected extension — with recovery delay read-only from fleet policy) |
 | activity | full transaction list with status/type badges and destination rendering |
-| profile | security center (**2FA enable/disable**, biometric, alerts), change PIN / password, beneficiaries, FAQ + Privacy Policy + Terms of Service pages |
+| profile | security center (**2FA enable/disable**, biometrics, alerts, **app lock with "Lock app now"**), change PIN / password, beneficiaries, FAQ + Privacy Policy + Terms of Service pages |
 | legal | sectioned Privacy/Terms reader + expandable FAQ (`lib/features/legal`), served on public `/legal/*` routes |
 
 ### 10.4 Routing table (`lib/app/router.dart`)
@@ -1084,6 +1091,37 @@ in anyone's personal display. Review screens show only their own transaction
 figures (amount, fee, total, received), and activity shows only per-transaction
 amounts. Rationale: a personal balance must respond to personal actions; pool
 figures cannot, so they are never merged into what the user sees as theirs.
+
+### 10.8 App lock — biometric "fast reopen"
+
+The app treats the on-device token as something to guard, not just store. A
+`SessionStore` abstraction (`SecureSessionStore` on device, `MemorySessionStore` in tests)
+keeps the token and the remembered email in platform secure storage. The **app-lock gate**
+then decides what a cold start shows:
+
+- **`AppLockNotifier`** (Riverpod `appLockProvider`) walks `starting → locked → unlocking →
+  unlocked`. With a stored token it re-validates against `GET /users/me` before revealing
+  anything; a 401 clears the token and routes to `/login`, while a network/5xx failure
+  refuses to trust the session and locks instead. No token → the app opens normally on the
+  welcome/login landing.
+- **`AppLockGate`** (`lib/app/app_lock_gate.dart`) is injected via `MaterialApp.router
+  builder:` and stacks the `UnlockScreen` **over** the navigator while locked — the whole
+  widget tree stays mounted (no navigation state loss), but it is covered and untouchable.
+  On cold start with a working session, a successful unlock lands on `/home`.
+- **Unlock options**: biometrics (`local_auth`, with the OS device-PIN/passcode fallback so
+  a failing sensor never locks someone out), or "Use password instead", which routes to
+  `/login` with the remembered email pre-filled. Devices without biometrics — including the
+  web build, where there is no native prompt — show only the password path.
+- **Friction guards**: 3 consecutive failed biometric attempts hide the biometric button
+  (password only) and a hint tells the user why. The token itself is never rendered or
+  logged; the unlock screen carries Semantics labels for screen readers.
+- **Re-lock**: returning from background after more than 30s (a configurable
+  `AppConstants.appLockBackgroundThreshold`) covers the app again and re-arms the prompt;
+  the profile page also exposes a manual "Lock app now" tile.
+- **Scope**: the gate is a *viewing* gate. Money movement is untouched — transaction PIN,
+  per-user limits, the EIP-712 wallet signature, and the withdrawal time-lock still govern
+  withdrawals exactly as described in §2.3.1 and §9.3, and are independently tested.
+  No API surface is added by the feature (session validation reuses `GET /users/me`).
 
 ---
 
@@ -1333,6 +1371,13 @@ same behaviour through the real HTTP endpoints.
   presents the `TransferOwnership` payload and relays the server-signed claim,
   and a withdraw gate that takes custody (then re-quotes for the bumped nonce)
   before ever attempting a signature.
+- **App lock is encrypted-at-rest, viewing-only.** The session token and remembered
+  email ride in platform keychain/Keystore (flutter_secure_storage), the gate re-validates
+  on cold start, fails 3 times before forcing the password path, and re-covers the app
+  after 30s of backgrounding or on demand (§10.8). It guards *views*, not *movement* —
+  PIN, limits, wallet signature, and the withdrawal time-lock are untouched. Following up:
+  the biometric toggle in the Security Center is a local preference (authorization is
+  checked at the OS gate), and the password-change page should next navigate to `/login`.
 - **FX rates are seeded static values**, not streamed market data; the quote endpoint is
   the extension point for a price feed.
 - **Future work:** real price feeds, email/SMS notification delivery, a QR-code flow for
