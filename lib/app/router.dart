@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../shared/models/beneficiary.dart';
 import '../../shared/widgets/app_scaffold.dart';
@@ -37,8 +38,49 @@ import '../../features/legal/data/legal_documents.dart';
 import '../../features/legal/presentation/pages/legal_document_page.dart';
 import '../../features/legal/presentation/pages/faq_page.dart';
 import '../../features/notifications/presentation/pages/notifications_page.dart';
+import 'providers.dart';
 
 final GlobalKey<NavigatorState> _rootNavigatorKey = GlobalKey<NavigatorState>();
+
+/// Routes that require a validated session. The app-lock gate covers them
+/// visually, but on the web the browser tab can restore a guarded URL on
+/// reload — without a redirect the guarded page would mount *underneath* the
+/// lock overlay and fire unauthenticated requests (a spurious 401) while the
+/// stored session is being validated. This redirect refuses to mount them
+/// until the session is confirmed, matching what the README has always
+/// documented as "go_router redirects unauthenticated visits".
+const Set<String> _protectedRoots = {
+  '/home',
+  '/savings',
+  '/pay',
+  '/activity',
+  '/profile',
+};
+
+bool _isProtectedRoute(String path) => _protectedRoots.any(
+      (root) => path == root || path.startsWith('$root/'),
+    );
+
+/// Pure redirect decision for the app lock. Kept as a standalone function so
+/// the whole matrix can be unit tested without booting a real app/router.
+///
+///   - A route needing a fresh login ([AppLockState.needsLogin]) or the user
+///     being unauthenticated in this run → `/login`.
+///   - The session not yet validated / app still locked (`starting`/`locked`)
+///     → `/welcome` (never `/login`, which would flash for a session that
+///     merely awaits biometric confirmation).
+///   - Everything else (unlocked with a live session) → null (allowed).
+String? appLockRedirect({
+  required AppLockState lock,
+  required bool isAuthenticated,
+  required String path,
+}) {
+  if (!_isProtectedRoute(path)) return null;
+  if (lock.needsLogin) return '/login';
+  if (lock.status != AppLockStatus.unlocked) return '/welcome';
+  if (!isAuthenticated) return '/login';
+  return null;
+}
 
 /// Builds a page with custom transitions based on route type
 Page<dynamic> _buildPageWithTransition(
@@ -82,6 +124,17 @@ transitionsBuilder: (context, animation, secondaryAnimation, child) {
 final GoRouter appRouter = GoRouter(
   navigatorKey: _rootNavigatorKey,
   initialLocation: '/welcome',
+  redirect: (context, state) {
+    // The navigator context always sits beneath the app-wide ProviderScope,
+    // so we can reach the providers the lock gate is driven by. Keeping the
+    // decision itself pure (see [appLockRedirect]) keeps this testable.
+    final container = ProviderScope.containerOf(context, listen: false);
+    return appLockRedirect(
+      lock: container.read(appLockProvider),
+      isAuthenticated: container.read(authServiceProvider).isAuthenticated,
+      path: state.matchedLocation,
+    );
+  },
   routes: [
     GoRoute(
       path: '/welcome',
