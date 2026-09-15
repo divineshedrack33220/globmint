@@ -1010,6 +1010,16 @@ live in `.env.example`; each network uses its own separate vault deployment, so 
 - **Models**: `freezed` + `json_serializable` for typed, generated equality/serialization.
 - **HTTP**: `ApiClient` resolves the API origin (localhost for dev), adds the bearer token,
   and surfaces typed `ApiException`s (message + code).
+- **Wallet signing backends**: `WalletService` publishes interchangeable wallet backends through
+  Riverpod (`walletServiceProvider`). Two ship by default — the injected browser extension
+  (`InjectedWalletBackend`, Web-only) and WalletConnect v2 via `reown_sign` (`WalletConnectWalletBackend`,
+  dapp/relay role with QR pairing + deep link). Backends expose `connect`, `signTypedDataV4`,
+  `requestAccounts`, `switchChain`, and a `WalletSessionEventsSource` stream (session expiry,
+  account/chain changes) that the service relays into typed `WalletConnectionEvent`s. At runtime
+  the app auto-selects a working backend (or shows a chooser when several are available) and pins
+  the one that connects for the session. `WALLETCONNECT_PROJECT_ID` is passed at build time via
+  `--dart-define`; without it the WalletConnect backend surfaces a friendly "missing project ID"
+  error instead of a dead QR.
 
 ### 10.2 Data flow
 
@@ -1028,7 +1038,7 @@ flowchart LR
 | auth | welcome, login (Password → 2FA step), register with Terms/Privacy consent links, PIN creation, verification |
 | home | dashboard, **one balance only: your own money** (personal ledger total + USDT equivalent), **currency selector** (NGN/USD/USDT), live rate line, quick actions, recent activity |
 | pay | transfers, send-to-beneficiary, OTC/withdraw-to-address |
-| savings | add money (per-user clone deposit address + **privacy badge** "Privacy-protected balance" when `GLOBMINT_PRIVACY_MODE=true` + watch-only note + risk disclosure; "deposits unavailable" empty-state without a vault), withdraw + review (fee preview: amount, 0.2% fee, total charged, USDC received) |
+| savings | add money (per-user clone deposit address + **privacy badge** "Privacy-protected balance" when `GLOBMINT_PRIVACY_MODE=true` + watch-only note + risk disclosure; "deposits unavailable" empty-state without a vault), withdraw + review (fee preview: amount, 0.2% fee, total charged, USDC received), **vault recovery** (designate a recovery address signed by the owner's Web3 wallet — WalletConnect QR pairing dialog or injected extension — with recovery delay read-only from fleet policy) |
 | activity | full transaction list with status/type badges and destination rendering |
 | profile | security center (**2FA enable/disable**, biometric, alerts), change PIN / password, beneficiaries, FAQ + Privacy Policy + Terms of Service pages |
 | legal | sectioned Privacy/Terms reader + expandable FAQ (`lib/features/legal`), served on public `/legal/*` routes |
@@ -1315,19 +1325,21 @@ same behaviour through the real HTTP endpoints.
   choose the recovery address but not how long recovery waits.
 - **Wallet signing is in-wallet now; custody handover shipped.** Self-custody
   withdrawal signing is wired end-to-end in the Flutter app: WalletConnect/MetaMask
-  connect, the review screen signs the exact `WithdrawRequest` payload (§2.3.1), and
-  custody handover is a first-class client flow — a "Savings Address Custody" card on
-  the Security Center page, a claim sheet that presents the `TransferOwnership` payload
-  and relays the server-signed claim, and a withdraw gate that takes custody (then
-  re-quotes for the bumped nonce) before ever attempting a signature.
+  connect (injected extension + WalletConnect v2 via `reown_sign`), the review
+  screen signs the exact `WithdrawRequest` payload (§2.3.1), and vault recovery
+  designation is signed by the owner wallet over QR pairing too — no user key
+  ever leaves the wallet. Custody handover is a first-class client flow — a
+  "Savings Address Custody" card on the Security Center page, a claim sheet that
+  presents the `TransferOwnership` payload and relays the server-signed claim,
+  and a withdraw gate that takes custody (then re-quotes for the bumped nonce)
+  before ever attempting a signature.
 - **FX rates are seeded static values**, not streamed market data; the quote endpoint is
   the extension point for a price feed.
 - **Future work:** real price feeds, email/SMS notification delivery, a QR-code flow for
-  the TOTP secret, wallet-deep-link deposit flow (WalletConnect/MetaMask), recovery
-  designation through the WalletConnect bridge (the recovery page currently signs via the
-  browser-extension wallet), and multi-chain UX once the L2 groundwork (§9.4) is exercised
-  on a testnet. The app surfaces the Circle USDC risk disclosure and watch-only clarity
-  before any real money moves.
+  the TOTP secret, wallet-deep-link **deposit** flow (WalletConnect/MetaMask — withdrawals
+  and recovery designation already sign in-wallet), and multi-chain UX once the L2
+  groundwork (§9.4) is exercised on a testnet. The app surfaces the Circle USDC risk
+  disclosure and watch-only clarity before any real money moves.
 - **Privacy withdrawal linkage is accepted for v1.** The salt proof proves
   commitment ownership without a ZK circuit, but the withdrawal transaction
   ultimately pays the user's own address, so an on-chain observer can correlate
