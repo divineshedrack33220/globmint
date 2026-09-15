@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'api_client.dart';
 import 'ethereum_provider.dart';
+import 'wallet_connect_backend.dart';
 
 /// Lifecycle of a connected wallet.
 enum WalletConnectionStatus {
@@ -142,6 +143,33 @@ class WalletSignatureException implements Exception {
   String toString() => message;
 }
 
+/// A backend-side connection change the [WalletService] relays into its state
+/// stream — the wallet switched account/chain remotely, or the WalletConnect
+/// session expired/closed without the app asking for it.
+enum WalletConnectionEventType {
+  sessionExpired,
+  accountChanged,
+  chainChanged,
+}
+
+/// Carries a backend notification into the [WalletService] state machine.
+class WalletConnectionEvent {
+  const WalletConnectionEvent({required this.type, this.address, this.chainId});
+
+  final WalletConnectionEventType type;
+  final String? address;
+  final int? chainId;
+}
+
+/// Optional capability a [WalletBackend] may expose: a stream of
+/// externally-driven connection changes and an explicit session teardown.
+/// The WalletConnect backend implements it; the injected browser wallet is
+/// bridged synchronously per call so it never needs it.
+abstract interface class WalletSessionEventsSource {
+  Stream<WalletConnectionEvent> get events;
+  Future<void> disconnectSession();
+}
+
 /// A pluggable signing backend. The app ships an injected-provider backend
 /// (MetaMask and other EIP-1193 wallets on web). WalletConnect v2 is a second
 /// backend that reports unavailable until the `reown_walletkit` package is
@@ -203,44 +231,18 @@ class InjectedWalletBackend implements WalletBackend {
       EthereumProvider.instance.signTypedDataV4Raw(from, typedDataJson);
 }
 
-/// The WalletConnect v2 seam. It deliberately reports unavailable so [WalletService]
-/// falls back to the injected backend; when `reown_walletkit` is wired in, its
-/// [isAvailable] flips on and every method delegates to the session. The UI and
-/// the rest of the withdrawal/recovery flows never change.
-class WalletConnectWalletBackend implements WalletBackend {
-  const WalletConnectWalletBackend();
-
-  @override
-  String get name => 'WalletConnect';
-
-  @override
-  bool isAvailable() => false;
-
-  @override
-  Future<List<String>> requestAccounts() => throw const WalletUnavailableException(
-      'WalletConnect v2 is not enabled in this build yet.');
-
-  @override
-  Future<List<String>> accounts() => throw const WalletUnavailableException(
-      'WalletConnect v2 is not enabled in this build yet.');
-
-  @override
-  Future<int> chainId() =>
-      throw const WalletUnavailableException('WalletConnect v2 is not enabled in this build yet.');
-
-  @override
-  Future<void> switchChain(int chainId) => throw const WalletUnavailableException(
-      'WalletConnect v2 is not enabled in this build yet.');
-
-  @override
-  Future<String> signTypedDataV4(String from, String typedDataJson) =>
-      throw const WalletUnavailableException(
-          'WalletConnect v2 is not enabled in this build yet.');
-}
+/// The WalletConnect v2 backend lives in `wallet_connect_backend.dart`. It
+/// implements the dapp role of the protocol (pairing URI → QR / deep link,
+/// then `eth_signTypedData_v4` over the approved session) and additionally
+/// implements [WalletSessionEventsSource] so wallet-driven session expiry and
+/// account/chain changes flow into [WalletService.stateStream]. The UI and the
+/// withdrawal/recovery flows only ever see [WalletBackend].
 
 /// Backend selection order: injected provider first, WalletConnect next.
-const defaultWalletBackends = <WalletBackend>[
-  InjectedWalletBackend(),
+/// Not const: the WalletConnect backend holds stream controllers/event wiring
+/// that is initialized per app run.
+final defaultWalletBackends = <WalletBackend>[
+  const InjectedWalletBackend(),
   WalletConnectWalletBackend(),
 ];
 
@@ -264,11 +266,25 @@ class WalletService {
       StreamController<WalletConnectionState>.broadcast(sync: true);
   WalletConnectionState _state = WalletConnectionState.disconnected;
 
+  /// The backend a successful [connect] pinned to. Kept so a live WalletConnect
+  /// session (or connected browser wallet) survives re-entry and is never
+  /// silently replaced by another backend.
+  WalletBackend? _activeBackend;
+  StreamSubscription<WalletConnectionEvent>? _backendEventsSub;
+
   /// Broadcast stream of connection state changes.
   Stream<WalletConnectionState> get stateStream => _stateCtrl.stream;
 
   /// The latest known connection state.
   WalletConnectionState get current => _state;
+
+  /// The backend current state belongs to, or null when disconnected.
+  WalletBackend? get activeBackend => _activeBackend;
+
+  /// Every backend usable on this platform/build. Drives the UI chooser (e.g.
+  /// "MetaMask or WalletConnect" on a browser with an injected wallet).
+  List<WalletBackend> get availableBackends =>
+      _backends.where((b) => b.isAvailable()).toList();
 
   WalletBackend? get _backend {
     for (final b in _backends) {
@@ -276,6 +292,21 @@ class WalletService {
     }
     return null;
   }
+
+  /// The backend a connect should use unless the caller pins one: the
+  /// already-connected backend while it is still available, else the injected
+  /// browser wallet on web, else the WalletConnect backend.
+  WalletBackend? get defaultBackend {
+    final active = _activeBackend;
+    if (active != null && active.isAvailable()) return active;
+    for (final b in _backends) {
+      if (b is InjectedWalletBackend && b.isAvailable()) return b;
+    }
+    return _backend;
+  }
+
+  /// The backend current account/chain/sign operations operate on.
+  WalletBackend? get _operationalBackend => _activeBackend ?? _backend;
 
   /// True when at least one signing backend is available on this build.
   bool get hasWallet => _backend != null;
@@ -285,12 +316,75 @@ class WalletService {
     if (!_stateCtrl.isClosed) _stateCtrl.add(next);
   }
 
-  /// Connects a wallet. When [expectedChainId] is supplied and the wallet is on
-  /// another network, the state becomes [WalletConnectionStatus.wrongChain] and
-  /// [WalletWrongChainException] is thrown so the UI can offer to switch.
-  Future<WalletConnectionState> connect({int? expectedChainId}) async {
-    final backend = _backend;
-    if (backend == null) {
+  void _subscribeBackendEvents(WalletBackend backend) {
+    if (backend is! WalletSessionEventsSource) return;
+    if (_backendEventsSub != null) return;
+    _backendEventsSub =
+        (backend as WalletSessionEventsSource).events.listen(_onBackendEvent);
+  }
+
+  /// Relays wallet-driven changes (session expiry, account/chain switches)
+  /// into the state stream so `walletProvider` and the UI react without a
+  /// user action.
+  void _onBackendEvent(WalletConnectionEvent event) {
+    _emit(switch (event.type) {
+      WalletConnectionEventType.sessionExpired => WalletConnectionState(
+        status: WalletConnectionStatus.disconnected,
+        expectedChainId: _state.expectedChainId,
+      ),
+      WalletConnectionEventType.accountChanged =>
+        _accountChangedState(event),
+      WalletConnectionEventType.chainChanged =>
+        _chainChangedState(event),
+    });
+  }
+
+  WalletConnectionState _accountChangedState(WalletConnectionEvent event) {
+    final address = event.address;
+    if (address == null || address.isEmpty) {
+      return WalletConnectionState(
+        status: WalletConnectionStatus.disconnected,
+        expectedChainId: _state.expectedChainId,
+      );
+    }
+    final chain = event.chainId ?? _state.chainId ?? 0;
+    final expected = _state.expectedChainId ?? 0;
+    return WalletConnectionState(
+      status: (expected != 0 && chain != 0 && chain != expected)
+          ? WalletConnectionStatus.wrongChain
+          : WalletConnectionStatus.connected,
+      address: address,
+      chainId: chain,
+      expectedChainId: expected == 0 ? null : expected,
+    );
+  }
+
+  WalletConnectionState _chainChangedState(WalletConnectionEvent event) {
+    final chain = event.chainId ?? 0;
+    final expected = _state.expectedChainId ?? 0;
+    return WalletConnectionState(
+      status: (expected != 0 && chain != 0 && chain != expected)
+          ? WalletConnectionStatus.wrongChain
+          : WalletConnectionStatus.connected,
+      address: _state.address,
+      chainId: chain,
+      expectedChainId: expected == 0 ? null : expected,
+    );
+  }
+
+  /// Connects a wallet, optionally pinned to [expectedChainId]. When
+  /// [backend] is given (e.g. chosen from [availableBackends]) that backend is
+  /// used; otherwise [defaultBackend] picks the already-connected one, else
+  /// the injected browser wallet on web, else WalletConnect. When the wallet
+  /// is on a different network the state becomes
+  /// [WalletConnectionStatus.wrongChain] and [WalletWrongChainException] is
+  /// thrown so the UI can offer to switch.
+  Future<WalletConnectionState> connect({
+    int? expectedChainId,
+    WalletBackend? backend,
+  }) async {
+    final effective = backend ?? defaultBackend;
+    if (effective == null) {
       _emit(WalletConnectionState.disconnected);
       throw const WalletUnavailableException(
           'No wallet is available here. Use a browser with MetaMask installed.');
@@ -303,11 +397,18 @@ class WalletService {
 
     final List<String> accounts;
     try {
-      accounts = await backend.requestAccounts();
+      accounts = await effective.requestAccounts();
     } catch (e) {
       _emit(WalletConnectionState.disconnected);
+      if (e is WalletUnavailableException ||
+          e is WalletConnectionException ||
+          e is WalletSignatureException ||
+          e is WalletWrongChainException ||
+          e is ApiException) {
+        rethrow;
+      }
       throw WalletConnectionException(
-        'You cancelled the connection request (${backend.name}).',
+        'You cancelled the connection request (${effective.name}).',
         code: 'USER_REJECTED',
       );
     }
@@ -320,7 +421,7 @@ class WalletService {
 
     int chain = 0;
     try {
-      chain = await backend.chainId();
+      chain = await effective.chainId();
     } catch (_) {
       // Chain unknown; treat as 0 so the wrong-chain guard only fires when
       // the wallet explicitly reports a different chain.
@@ -342,6 +443,8 @@ class WalletService {
       );
     }
 
+    _activeBackend = effective;
+    _subscribeBackendEvents(effective);
     _emit(WalletConnectionState(
       status: WalletConnectionStatus.connected,
       address: accounts.first,
@@ -353,13 +456,23 @@ class WalletService {
 
   /// Asks the connected wallet to switch to [expectedChainId]. On success the
   /// state becomes connected; otherwise it stays/becomes wrongChain and
-  /// [WalletWrongChainException] is thrown.
+  /// [WalletWrongChainException] is thrown. [WalletConnectionException]s with
+  /// a stable code (e.g. `UNSUPPORTED_CHAIN`/`SESSION_EXPIRED`) pass through
+  /// so callers can show the precise recovery copy.
   Future<WalletConnectionState> ensureChain(int expectedChainId) async {
-    final backend = _backend;
+    final backend = _operationalBackend;
     if (backend == null) throw const WalletUnavailableException('No wallet available.');
     if (_state.chainId == expectedChainId) return _state;
     try {
       await backend.switchChain(expectedChainId);
+    } on WalletUnavailableException {
+      rethrow;
+    } on WalletConnectionException {
+      rethrow;
+    } on WalletWrongChainException {
+      rethrow;
+    } on ApiException {
+      rethrow;
     } catch (_) {
       throw WalletWrongChainException(
         expectedChainId: expectedChainId,
@@ -390,7 +503,7 @@ class WalletService {
 
   /// The first authorized account, or null when none.
   Future<String?> currentAddress() async {
-    final backend = _backend;
+    final backend = _operationalBackend;
     if (backend == null) return null;
     try {
       final accounts = await backend.accounts();
@@ -400,9 +513,19 @@ class WalletService {
     }
   }
 
-  /// Clears the connection. Any in-flight signature is abandoned by the
-  /// mid-flight guard in [signTypedData].
+  /// Clears the connection and tear down the backend session (a live
+  /// WalletConnect session is explicitly closed). Any in-flight signature is
+  /// abandoned by the mid-flight guard in [signTypedData].
   Future<void> disconnect() async {
+    final backend = _activeBackend;
+    if (backend is WalletSessionEventsSource) {
+      try {
+        await (backend as WalletSessionEventsSource).disconnectSession();
+      } catch (_) {
+        // Local teardown failures are non-fatal; state clears regardless.
+      }
+    }
+    _activeBackend = null;
     _emit(WalletConnectionState.disconnected);
   }
 
@@ -411,13 +534,16 @@ class WalletService {
   /// offered to the wallet; a malformed payload throws a typed [ApiException]
   /// (code `INVALID_TYPED_DATA`) without touching the wallet.
   ///
-  /// Throws [WalletSignatureException] when the user rejects, [WalletWrongChainException]
-  /// when the active chain no longer matches the expected one, and
-  /// [WalletConnectionException] when the wallet disconnected mid-flight.
+  /// Throws [WalletSignatureException] when the user rejects (code
+  /// `USER_REJECTED`), [WalletWrongChainException] when the active chain no
+  /// longer matches the expected one, [WalletConnectionException] (code
+  /// `SESSION_EXPIRED`) when the wallet disconnected mid-flight, and
+  /// [ApiException] (code `WALLET_NOT_AVAILABLE`) when no WalletConnect project
+  /// id was compiled in.
   Future<String> signTypedData(Map<String, dynamic> typedData) async {
     _validateTypedData(typedData);
 
-    final backend = _backend;
+    final backend = _operationalBackend;
     if (backend == null) {
       throw const WalletUnavailableException(
           'No wallet is available to sign. Use a browser with MetaMask installed.');
@@ -448,6 +574,14 @@ class WalletService {
     try {
       signature = await backend.signTypedDataV4(from, jsonEncode(typedData));
     } on WalletWrongChainException {
+      rethrow;
+    } on WalletSignatureException {
+      rethrow;
+    } on WalletConnectionException {
+      rethrow;
+    } on WalletUnavailableException {
+      rethrow;
+    } on ApiException {
       rethrow;
     } catch (e) {
       throw WalletSignatureException(

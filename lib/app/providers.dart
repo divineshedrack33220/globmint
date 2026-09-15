@@ -162,8 +162,10 @@ final transactionRepoProvider = Provider<TransactionService>(
   (ref) => ref.watch(transactionServiceProvider),
 );
 
-/// The signing backend used for EIP-712 withdrawals and recovery changes.
-/// Long-lived: pages connect/sign through it and watch [walletProvider].
+/// The signing backends used for EIP-712 withdrawals and recovery changes:
+/// the injected browser wallet (MetaMask et al.) on web plus the WalletConnect
+/// v2 dapp backend. Long-lived: pages connect/sign through it and watch
+/// [walletProvider].
 final walletServiceProvider = Provider<WalletService>(
   (ref) => WalletService(),
 );
@@ -176,7 +178,10 @@ final walletProvider = StateNotifierProvider<WalletNotifier, WalletState>(
 );
 
 /// Imperative interface over [WalletService], keeping UI state (signing flag,
-/// last error, availability) in sync with the service's stream.
+/// last error, availability) in sync with the service's stream. Backend
+/// selection happens here via [WalletService.defaultBackend]/[availableBackends]:
+/// an already-connected backend is kept, a browser with an injected wallet
+/// defaults to it, and everything else falls back to WalletConnect.
 class WalletNotifier extends StateNotifier<WalletState> {
   WalletNotifier(this._service) : super(WalletState.initial().copyWith(
             hasWallet: _service.hasWallet,
@@ -195,13 +200,21 @@ class WalletNotifier extends StateNotifier<WalletState> {
   final WalletService _service;
   late final StreamSubscription<WalletConnectionState> _sub;
 
-  /// Connects a wallet, optionally pinned to [expectedChainId]. On a wrong
-  /// chain the state becomes [WalletConnectionStatus.wrongChain] and the typed
-  /// exception propagates so the caller can offer to switch.
-  Future<void> connect({int? expectedChainId}) async {
+  /// Every backend usable on this platform/build (drives the chooser when both
+  /// a browser wallet and WalletConnect are available).
+  List<WalletBackend> get availableBackends => _service.availableBackends;
+
+  /// The backend the current connection belongs to, or null.
+  WalletBackend? get activeBackend => _service.activeBackend;
+
+  /// Connects a wallet, optionally pinned to [expectedChainId] and via a
+  /// specific [backend] (from [availableBackends]). On a wrong chain the state
+  /// becomes [WalletConnectionStatus.wrongChain] and the typed exception
+  /// propagates so the caller can offer to switch.
+  Future<void> connect({int? expectedChainId, WalletBackend? backend}) async {
     state = state.copyWith(error: null);
     try {
-      await _service.connect(expectedChainId: expectedChainId);
+      await _service.connect(expectedChainId: expectedChainId, backend: backend);
     } on WalletUnavailableException catch (e) {
       state = state.copyWith(error: e.message);
       rethrow;
@@ -210,6 +223,9 @@ class WalletNotifier extends StateNotifier<WalletState> {
       rethrow;
     } on WalletWrongChainException catch (e) {
       state = state.copyWith(error: e.toString());
+      rethrow;
+    } on ApiException catch (e) {
+      state = state.copyWith(error: e.message);
       rethrow;
     }
   }
