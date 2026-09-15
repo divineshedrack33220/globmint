@@ -31,7 +31,7 @@ import 'wallet_service.dart';
 /// client (`ReownSignClient`), which is what this backend wraps. `reown_sign`
 /// also carries `reown_walletkit` transitively.
 class WalletConnectWalletBackend
-    implements WalletBackend, WalletSessionEventsSource {
+    implements WalletBackend, WalletSessionEventsSource, WalletPairingProvider {
   WalletConnectWalletBackend();
 
   /// Injected at build time only, via
@@ -81,6 +81,7 @@ class WalletConnectWalletBackend
 
   /// Fresh pairing URIs, one per new session. The web UI renders them as a QR
   /// code; mobile deep-links into the wallet app. Never stored anywhere.
+  @override
   Stream<String> get pairingUris => _pairingUris.stream;
 
   /// Whether an approved session is currently live (re-entering the app skips
@@ -445,6 +446,7 @@ class WalletConnectWalletBackend
 
   /// Opens the wallet app to the pairing URI (mobile). Returns false when no
   /// URI is available yet or launching failed.
+  @override
   Future<bool> launchPairingUri() async {
     final latest = await _pairingUris.stream.first;
     return launchUrl(

@@ -204,6 +204,11 @@ class WalletNotifier extends StateNotifier<WalletState> {
   /// a browser wallet and WalletConnect are available).
   List<WalletBackend> get availableBackends => _service.availableBackends;
 
+  /// The backend a connect would use when none is pinned: the connected
+  /// backend while it stays available, else the browser wallet on web, else
+  /// WalletConnect.
+  WalletBackend? get defaultBackend => _service.defaultBackend;
+
   /// The backend the current connection belongs to, or null.
   WalletBackend? get activeBackend => _service.activeBackend;
 

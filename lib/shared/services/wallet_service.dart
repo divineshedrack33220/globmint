@@ -170,6 +170,19 @@ abstract interface class WalletSessionEventsSource {
   Future<void> disconnectSession();
 }
 
+/// Optional capability of a backend that needs in-band user pairing — the UI
+/// renders fresh URIs as a QR code / wallet-app deep link while the user
+/// approves the session in their wallet. Only the WalletConnect backend
+/// implements it today.
+abstract interface class WalletPairingProvider {
+  /// Fresh pairing URIs, one per new pending session. Emitted while
+  /// [WalletBackend.requestAccounts] waits for the wallet-side approval.
+  Stream<String> get pairingUris;
+
+  /// Deep-links the current pairing URI into the companion wallet app.
+  Future<bool> launchPairingUri();
+}
+
 /// A pluggable signing backend. The app ships an injected-provider backend
 /// (MetaMask and other EIP-1193 wallets on web). WalletConnect v2 is a second
 /// backend that reports unavailable until the `reown_walletkit` package is

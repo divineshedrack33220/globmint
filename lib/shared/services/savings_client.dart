@@ -389,6 +389,7 @@ class SavingsClient {
         'deadline': signature.deadline,
         'nonce': signature.nonce,
       },
+      idempotent: true,
     );
     if (data == null) throw ApiException(0, 'Empty response from server');
     return RecoverySignatureResult(

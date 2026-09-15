@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../app/providers.dart';
@@ -9,6 +11,8 @@ import '../../../../core/widgets/success_dialog.dart';
 import '../../../../shared/services/api_client.dart';
 import '../../../../shared/services/ethereum_provider.dart';
 import '../../../../shared/services/savings_client.dart';
+import '../../../../shared/services/wallet_service.dart';
+import '../widgets/wallet_connect_pairing_dialog.dart';
 
 /// Vault recovery & security settings: shows the clone's designated recovery
 /// address, delay, and any in-flight recovery window, and lets the user
@@ -49,32 +53,322 @@ class _VaultRecoveryPageState extends ConsumerState<VaultRecoveryPage> {
     final client = ref.read(savingsClientProvider);
     setState(() => _isSubmitting = true);
     try {
-      final quote = await client.prepareRecovery(raw);
+      for (var attempt = 0; attempt < 3; attempt++) {
+        final quote = await client.prepareRecovery(raw);
+        final signature = await _authorizeAndSign(quote);
+        if (signature == null) return;
 
-      if (!EthereumProvider.available ||
-          !await EthereumProvider.instance.isConnectedOwner(quote.cloneOwner)) {
-        _toast('Connect the wallet that owns your savings address '
-            '(${quote.cloneOwner.isEmpty ? 'no owner' : _shorten(quote.cloneOwner)}) '
-            'to authorize recovery.');
+        final RecoverySignatureResult result;
+        try {
+          result = await client.setRecoveryAddress(
+            recoveryAddress: raw,
+            signature: signature,
+          );
+        } on ApiException catch (e) {
+          if (e.message.toLowerCase().contains('signature_expired')) {
+            // The deadline lapsed (or the clone nonce changed): pull a fresh
+            // quote and reauthorize instead of failing the whole flow.
+            _toast('That signature expired — please reauthorize.');
+            continue;
+          }
+          if (mounted) _toast(_friendly(e.message));
+          return;
+        }
+
+        if (!mounted) return;
+        ref.invalidate(vaultRecoveryProvider);
+        await _showSuccess(raw, result.txHash);
+        if (mounted) _controller.clear();
         return;
       }
-      final signer = (await EthereumProvider.instance.accounts()).first;
-      final sig = await EthereumProvider.instance.signRecovery(quote, signer);
-      final result = await client.setRecoveryAddress(
-        recoveryAddress: raw,
-        signature: sig,
-      );
-
-      if (!mounted) return;
-      ref.invalidate(vaultRecoveryProvider);
-      await _showSuccess(raw, result.txHash);
-      if (mounted) _controller.clear();
+      if (mounted) _toast('Still not set — please try again in a moment.');
     } on ApiException catch (e) {
       if (mounted) _toast(_friendly(e.message));
     } catch (e) {
       if (mounted) _toast('Could not designate recovery address: $e');
     } finally {
       if (mounted) setState(() => _isSubmitting = false);
+    }
+  }
+
+  /// Connects the owner wallet for [quote] — choosing the backend when several
+  /// are available and showing the WalletConnect QR/deep-link flow when that
+  /// backend needs pairing — verifies the owner seat, then signs the EIP-712
+  /// quote. Returns the client-shaped signature, or null when the user
+  /// cancelled or the flow failed (a message is displayed).
+  Future<RecoverySignature?> _authorizeAndSign(RecoveryQuote quote) async {
+    final expected = quote.domain.chainId;
+    final notifier = ref.read(walletProvider.notifier);
+    if (!ref.read(walletProvider).hasWallet) {
+      _toast('No wallet is available here. Use a browser with MetaMask '
+          'installed, or the WalletConnect flow on your phone.');
+      return null;
+    }
+
+    final owner = quote.cloneOwner.toLowerCase();
+
+    // Already signed in as the owner on the expected chain: skip connect.
+    final wallet = ref.read(walletProvider);
+    if (wallet.isConnected &&
+        wallet.address != null &&
+        (owner.isEmpty || wallet.address!.toLowerCase() == owner) &&
+        (expected == 0 ||
+            wallet.chainId == null ||
+            wallet.chainId == 0 ||
+            wallet.chainId == expected)) {
+      return _sign(quote);
+    }
+
+    WalletBackend? backend;
+    final available = notifier.availableBackends;
+    if (available.length > 1) {
+      backend = await _chooseBackend(available);
+      if (backend == null) return null;
+    }
+    backend = backend ?? notifier.defaultBackend;
+
+    final bool connected;
+    if (backend is WalletPairingProvider) {
+      connected =
+          await _connectWithPairing(backend as WalletPairingProvider, expected);
+    } else {
+      connected = await _connectPlain(backend, expected);
+    }
+    if (!connected) return null;
+
+    final after = ref.read(walletProvider);
+    if (!after.isConnected || after.address == null) return null;
+    if (owner.isNotEmpty && after.address!.toLowerCase() != owner) {
+      _toast('Connect the wallet that owns your savings address '
+          '(${_shorten(quote.cloneOwner)}) to authorize recovery.');
+      return null;
+    }
+    return _sign(quote);
+  }
+
+  /// Plain connect (injected browser wallet or a backend with no pairing UI),
+  /// with wrong-chain switching offered when needed. Returns whether a wallet
+  /// is connected afterwards.
+  Future<bool> _connectPlain(WalletBackend? backend, int expected) async {
+    try {
+      await ref
+          .read(walletProvider.notifier)
+          .connect(expectedChainId: expected, backend: backend);
+    } on WalletConnectionException catch (e) {
+      _toast(e.code == 'USER_REJECTED'
+          ? 'You cancelled the connection request.'
+          : e.message);
+      return false;
+    } on WalletWrongChainException {
+      if (!await _offerChainSwitch(expected)) return false;
+    } on WalletUnavailableException catch (e) {
+      _toast(e.message);
+      return false;
+    } on ApiException catch (e) {
+      _toast(e.message);
+      return false;
+    }
+    return ref.read(walletProvider).isConnected;
+  }
+
+  /// Connects a backend that pairs in-band (WalletConnect): the QR / deep-link
+  /// dialog runs while the connect call waits for the wallet-side approval.
+  /// Cancelling the dialog abandons the pending pairing session. Returns
+  /// whether a wallet is connected afterwards.
+  Future<bool> _connectWithPairing(
+      WalletPairingProvider backend, int expected) async {
+    final connectWork = () async {
+      try {
+        await ref
+            .read(walletProvider.notifier)
+            .connect(expectedChainId: expected, backend: backend as WalletBackend);
+        return null;
+      } on WalletWrongChainException catch (e) {
+        return e;
+      } on WalletConnectionException catch (e) {
+        return e;
+      } on WalletUnavailableException catch (e) {
+        return e;
+      } on ApiException catch (e) {
+        return e;
+      }
+    }();
+
+    final dialogFuture = WalletConnectPairingDialog.show(
+      context,
+      pairingUris: backend.pairingUris,
+      onOpenWallet: backend.launchPairingUri,
+    );
+
+    final first = await Future.any<Object?>([dialogFuture, connectWork]);
+    if (mounted) Navigator.of(context).maybePop();
+    if (first == false) {
+      if (backend is WalletSessionEventsSource) {
+        unawaited(
+            (backend as WalletSessionEventsSource).disconnectSession());
+      }
+      return false;
+    }
+    if (first is WalletWrongChainException) {
+      return _offerChainSwitch(expected);
+    }
+    if (first is WalletConnectionException) {
+      _toast(first.code == 'USER_REJECTED'
+          ? 'You cancelled the connection request.'
+          : first.message);
+      return false;
+    }
+    if (first is WalletUnavailableException) {
+      _toast(first.message);
+      return false;
+    }
+    if (first is ApiException) {
+      _toast(first.message);
+      return false;
+    }
+    if (first != null) {
+      _toast('Could not connect the wallet: $first');
+      return false;
+    }
+    return ref.read(walletProvider).isConnected;
+  }
+
+  /// Lets the user pick between [backends] (e.g. injected wallet vs
+  /// WalletConnect). Returns null when dismissed without choosing.
+  Future<WalletBackend?> _chooseBackend(List<WalletBackend> backends) async {
+    return showModalBottomSheet<WalletBackend>(
+      context: context,
+      backgroundColor: AppColors.surfaceElevated,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+              child: Text(
+                'Connect a wallet',
+                style: Theme.of(ctx).textTheme.titleMedium,
+              ),
+            ),
+            ...backends.map((b) => ListTile(
+                  leading: Icon(
+                    b.name == 'WalletConnect'
+                        ? Icons.qr_code_scanner_rounded
+                        : Icons.account_balance_wallet_outlined,
+                    color: AppColors.primary,
+                  ),
+                  title: Text(b.name),
+                  subtitle: Text(b.name == 'WalletConnect'
+                      ? 'Sign from your wallet app on another device'
+                      : 'Sign with the wallet in this browser'),
+                  onTap: () => Navigator.of(ctx).pop(b),
+                )),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Asks the wallet to switch to [expected]; returns true when it is then on
+  /// the right chain.
+  Future<bool> _offerChainSwitch(int expected) async {
+    if (expected == 0) return false;
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Switch network?'),
+        content: Text(
+          'Your wallet is on a different network. Switch it to chain '
+          '$expected so recovery can be signed?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Not now'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Switch'),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true || !mounted) return false;
+    try {
+      await ref.read(walletProvider.notifier).ensureChain(expected);
+      return ref.read(walletProvider).isConnected;
+    } on WalletConnectionException catch (e) {
+      _toast(e.message);
+      return false;
+    } on WalletWrongChainException catch (e) {
+      _toast('Could not switch networks: ${e.toString()}');
+      return false;
+    } on WalletUnavailableException catch (e) {
+      _toast(e.message);
+      return false;
+    } on ApiException catch (e) {
+      _toast(e.message);
+      return false;
+    }
+  }
+
+  /// Signs the recovery quote over [EthereumProvider]'s exact EIP-712 payload
+  /// for it. Handles wallet-side rejection, expired sessions (offered a
+  /// reconnect that re-runs [._authorizeAndSign]), and wrong-chain switches.
+  Future<RecoverySignature?> _sign(RecoveryQuote quote) async {
+    final typedData = EthereumProvider.instance.typedDataV4ForRecovery(quote);
+    try {
+      final signature =
+          await ref.read(walletProvider.notifier).signTypedData(typedData);
+      return RecoverySignature(
+        signature: signature,
+        deadline: quote.message.deadline,
+        nonce: quote.message.nonce,
+      );
+    } on WalletSignatureException {
+      _toast('You cancelled the signing request in your wallet.');
+      return null;
+    } on WalletConnectionException catch (e) {
+      if (e.code == 'SESSION_EXPIRED') {
+        if (!mounted) return null;
+        final reconnect = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Session expired'),
+            content: const Text(
+                'Your wallet session ended while signing. Reconnect to retry?'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Not now'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('Reconnect'),
+              ),
+            ],
+          ),
+        );
+        if (reconnect == true && mounted) return _authorizeAndSign(quote);
+        return null;
+      }
+      _toast(e.message);
+      return null;
+    } on WalletWrongChainException {
+      if (await _offerChainSwitch(quote.domain.chainId)) {
+        return _authorizeAndSign(quote);
+      }
+      return null;
+    } on WalletUnavailableException catch (e) {
+      _toast(e.message);
+      return null;
+    } on ApiException catch (e) {
+      _toast(_friendly(e.message));
+      return null;
     }
   }
 
@@ -131,6 +425,7 @@ class _VaultRecoveryPageState extends ConsumerState<VaultRecoveryPage> {
   Widget build(BuildContext context) {
     final statusAsync = ref.watch(vaultRecoveryProvider);
     final status = statusAsync.valueOrNull;
+    final wallet = ref.watch(walletProvider);
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -194,11 +489,13 @@ class _VaultRecoveryPageState extends ConsumerState<VaultRecoveryPage> {
                 keyboardType: TextInputType.text,
                 textInputAction: TextInputAction.done,
               ),
-              if (!EthereumProvider.available) ...[
+              if (!wallet.hasWallet) ...[
                 const SizedBox(height: 12),
                 _warningCard(
-                  'No wallet detected in this browser. Connect your wallet '
-                  '(e.g. MetaMask) to sign the recovery designation.',
+                  'No wallet is available in this browser. Connect via a '
+                  'browser wallet extension (e.g. MetaMask) or use the '
+                  'WalletConnect flow on your phone to sign the recovery '
+                  'designation.',
                 ),
               ],
               const SizedBox(height: 24),
