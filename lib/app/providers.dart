@@ -107,11 +107,17 @@ class AppLockState {
     this.biometricsAvailable = false,
     this.failedAttempts = 0,
     this.needsLogin = false,
+    this.sessionExists = false,
   });
 
   final AppLockStatus status;
   final bool biometricsAvailable;
   final int failedAttempts;
+
+  /// True when a stored (and possibly still valid) session was present at
+  /// startup. Lets the gate distinguish "opened with no session" (stay on
+  /// the landing page) from "unlocked a session" (land on /home).
+  final bool sessionExists;
 
   /// True when the gate should navigate to `/login` instead of unlocking the
   /// app (the session was invalid, or the user chose "Use password instead").
@@ -126,12 +132,14 @@ class AppLockState {
     bool? biometricsAvailable,
     int? failedAttempts,
     bool? needsLogin,
+    bool? sessionExists,
   }) =>
       AppLockState(
         status: status ?? this.status,
         biometricsAvailable: biometricsAvailable ?? this.biometricsAvailable,
         failedAttempts: failedAttempts ?? this.failedAttempts,
         needsLogin: needsLogin ?? this.needsLogin,
+        sessionExists: sessionExists ?? this.sessionExists,
       );
 }
 
@@ -191,8 +199,13 @@ class AppLockNotifier extends StateNotifier<AppLockState> {
     }
 
     // A (possibly invalid) token is present. Require confirmation before
-    // showing any data.
-    state = AppLockState(status: AppLockStatus.locked, biometricsAvailable: biometrics);
+    // showing any data. sessionExists is only useful as a gate flag once the
+    // user actually unlocks, so it stays true regardless of validation result.
+    state = AppLockState(
+      status: AppLockStatus.locked,
+      biometricsAvailable: biometrics,
+      sessionExists: true,
+    );
     _maybeAutoPrompt(biometrics);
   }
 
@@ -256,6 +269,7 @@ class AppLockNotifier extends StateNotifier<AppLockState> {
     state = AppLockState(
       status: AppLockStatus.locked,
       biometricsAvailable: state.biometricsAvailable,
+      sessionExists: true,
     );
     _autoPromptDone = false; // allow auto-prompt on next re-lock
     _maybeAutoPrompt(state.biometricsAvailable);
