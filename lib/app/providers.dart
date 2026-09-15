@@ -1,9 +1,11 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../shared/models/models.dart';
 import '../shared/services/api_client.dart';
+import '../shared/services/app_lock_service.dart';
 import '../shared/services/auth_service.dart';
 import '../shared/services/balance_service.dart';
 import '../shared/services/bank_account_service.dart';
@@ -36,13 +38,17 @@ final sessionStoreProvider = Provider<SessionStore>(
 /// [apiClientProvider] and [authServiceProvider] never depend on each other
 /// (which would be a provider cycle).
 class UnauthorizedHandler {
-  void Function()? _handler;
+  final List<void Function()> _handlers = [];
 
-  void setHandler(void Function() handler) {
-    _handler = handler;
+  void add(void Function() handler) => _handlers.add(handler);
+
+  void remove(void Function() handler) => _handlers.remove(handler);
+
+  void notify() {
+    for (final handler in List.of(_handlers)) {
+      handler();
+    }
   }
-
-  void notify() => _handler?.call();
 }
 
 final unauthorizedHandlerProvider = Provider<UnauthorizedHandler>(
@@ -70,12 +76,201 @@ final authServiceProvider = Provider<AuthService>(
       ref.watch(apiClientProvider),
       sessionStore: ref.watch(sessionStoreProvider),
     );
-    ref.watch(unauthorizedHandlerProvider).setHandler(
+    ref.watch(unauthorizedHandlerProvider).add(
           () => auth.handleSessionExpired(),
         );
     return auth;
   },
 );
+
+/// Biometric/device-PIN helper; abstracted so the unlock flow can be unit
+/// tested without a real [LocalAuthentication] plugin.
+final appLockServiceProvider = Provider<AppLockService>(
+  (ref) => AppLockService(),
+);
+
+/// Notifier driving the app-lock gate: starting → locked → unlocking →
+/// unlocked, with an extra [AppLockState.needsLogin] flag for the gate to
+/// route to `/login` when the session was missing or expired.
+final appLockProvider = StateNotifierProvider<AppLockNotifier, AppLockState>(
+  (ref) => AppLockNotifier(
+    service: ref.watch(appLockServiceProvider),
+    auth: ref.watch(authServiceProvider),
+    store: ref.watch(sessionStoreProvider),
+  ),
+);
+
+/// State of the biometric / password lock gate.
+class AppLockState {
+  const AppLockState({
+    this.status = AppLockStatus.starting,
+    this.biometricsAvailable = false,
+    this.failedAttempts = 0,
+    this.needsLogin = false,
+  });
+
+  final AppLockStatus status;
+  final bool biometricsAvailable;
+  final int failedAttempts;
+
+  /// True when the gate should navigate to `/login` instead of unlocking the
+  /// app (the session was invalid, or the user chose "Use password instead").
+  final bool needsLogin;
+
+  /// Whether the biometric button must be hidden — either the device has no
+  /// biometrics or 3 consecutive failures forced a password fallback.
+  bool get passwordFallbackRequired => !biometricsAvailable || failedAttempts >= 3;
+
+  AppLockState copyWith({
+    AppLockStatus? status,
+    bool? biometricsAvailable,
+    int? failedAttempts,
+    bool? needsLogin,
+  }) =>
+      AppLockState(
+        status: status ?? this.status,
+        biometricsAvailable: biometricsAvailable ?? this.biometricsAvailable,
+        failedAttempts: failedAttempts ?? this.failedAttempts,
+        needsLogin: needsLogin ?? this.needsLogin,
+      );
+}
+
+enum AppLockStatus { starting, locked, unlocking, unlocked }
+
+/// State machine backing [appLockProvider].
+class AppLockNotifier extends StateNotifier<AppLockState> {
+  AppLockNotifier({
+    required this._service,
+    required this._auth,
+    required this._store,
+  }) : super(const AppLockState()) {
+    _initialize();
+  }
+
+  final AppLockService _service;
+  final AuthService _auth;
+  final SessionStore _store;
+
+  bool _autoPromptDone = false;
+
+  /// Reads the stored token, validates it against the backend, checks
+  /// biometric capability, and transitions to the initial gate state.
+  Future<void> _initialize() async {
+    final token = await _store.readToken();
+    var biometrics = false;
+    try {
+      biometrics = await _service.isBiometricAvailable();
+    } catch (_) {
+      biometrics = false;
+    }
+
+    if (token == null || token.isEmpty) {
+      // Nothing to gate: app starts normally (welcome / login).
+      state = const AppLockState(status: AppLockStatus.unlocked);
+      return;
+    }
+
+    // A token exists: validate it before unlocking anything.
+    try {
+      final user = await _auth.currentSession();
+      if (user == null) {
+        // Token was 401'd (currentSession clears it) or otherwise empty.
+        state = AppLockState(
+          status: AppLockStatus.unlocked,
+          biometricsAvailable: biometrics,
+          needsLogin: true,
+        );
+        return;
+      }
+    } on ApiException catch (e) {
+      // Non-401 failure: network down, 5xx, etc. Do NOT trust the session
+      // without confirmation — require biometric / password.
+      debugPrint('AppLock: session validation failed (${e.statusCode}): ${e.message}');
+    } catch (e) {
+      debugPrint('AppLock: unexpected session validation error: $e');
+    }
+
+    // A (possibly invalid) token is present. Require confirmation before
+    // showing any data.
+    state = AppLockState(status: AppLockStatus.locked, biometricsAvailable: biometrics);
+    _maybeAutoPrompt(biometrics);
+  }
+
+  /// On cold start, automatically show the biometric prompt when the device
+  /// supports it — this is the "fast reopen" the user expects.
+  Future<void> _maybeAutoPrompt(bool biometrics) async {
+    if (!biometrics || _autoPromptDone) return;
+    _autoPromptDone = true;
+    // Brief yield so the initial frame (lock screen) renders before the
+    // system dialog overlays it.
+    await Future<void>.delayed(Duration.zero);
+    await unlockWithBiometric();
+  }
+
+  /// Prompts the OS for biometrics (or device-PIN fallback). Succeeding
+  /// transitions the gate to [AppLockStatus.unlocked]; failing increments
+  /// the counter and after 3 attempts disables the biometric button.
+  Future<void> unlockWithBiometric() async {
+    if (state.status == AppLockStatus.unlocking ||
+        state.status == AppLockStatus.unlocked) {
+      return;
+    }
+    state = state.copyWith(status: AppLockStatus.unlocking);
+    final ok = await _service.authenticate(
+      reason: 'Unlock GlobMint to view your balance',
+    );
+    // Guard: the state may have changed (relock, expiry) while the prompt
+    // was on-screen.
+    if (state.status != AppLockStatus.unlocking) return;
+    if (ok) {
+      state = state.copyWith(status: AppLockStatus.unlocked);
+    } else {
+      final attempts = state.failedAttempts + 1;
+      state = state.copyWith(
+        status: AppLockStatus.locked,
+        failedAttempts: attempts,
+        // After 3 consecutive failures, hide the biometric button.
+        biometricsAvailable: attempts >= 3 ? false : state.biometricsAvailable,
+      );
+    }
+  }
+
+  /// The user tapped "Use password instead". The gate should unlock so the
+  /// login page can be shown, and route the user there.
+  void signalPasswordFallback() {
+    state = state.copyWith(
+      status: AppLockStatus.unlocked,
+      needsLogin: true,
+    );
+  }
+
+  /// Clears the `needsLogin` flag once the gate has navigated to `/login`.
+  void clearNeedsLogin() {
+    if (state.needsLogin) state = state.copyWith(needsLogin: false);
+  }
+
+  /// Called from the gate to cover the app again when backgrounded. Re-arms
+  /// the auto-prompt so the next `unlockWithBiometric` isn't required to be
+  /// triggered manually (the prompt reappears on the next resume).
+  void relock() {
+    state = AppLockState(
+      status: AppLockStatus.locked,
+      biometricsAvailable: state.biometricsAvailable,
+    );
+    _autoPromptDone = false; // allow auto-prompt on next re-lock
+    _maybeAutoPrompt(state.biometricsAvailable);
+  }
+
+  /// Called by [UnauthorizedHandler] when the backend rejects the bearer
+  /// token mid-session (401): unlock so the gate can route to `/login`.
+  void expireToLogin() {
+    state = AppLockState(
+      status: AppLockStatus.unlocked,
+      biometricsAvailable: state.biometricsAvailable,
+      needsLogin: true,
+    );
+  }
+}
 
 final balanceServiceProvider = Provider<BalanceService>(
   (ref) => BalanceService(ref.watch(apiClientProvider)),
