@@ -91,6 +91,16 @@ class ProfilePage extends ConsumerWidget {
                     onTap: () => context.push('/profile/security-center'),
                   ),
                   _SettingsTile(
+                    icon: Icons.fingerprint,
+                    title: 'Lock app now',
+                    onTap: () {
+                      ref.read(appLockProvider.notifier).relock();
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('GlobMint is now locked')),
+                      );
+                    },
+                  ),
+                  _SettingsTile(
                     icon: Icons.phone_android,
                     title: 'Devices',
                     onTap: () => context.push('/profile/devices'),
