@@ -167,7 +167,21 @@ class _AppLockGateState extends ConsumerState<AppLockGate>
       fit: StackFit.expand,
       children: [
         widget.child,
-        if (state.status != AppLockStatus.unlocked) const UnlockScreen(),
+        if (state.status != AppLockStatus.unlocked)
+          // The lock screen lives outside the main navigator (it is stacked
+          // above it), so it has no Overlay of its own. Its PIN pad uses
+          // TextFields, which require an Overlay ancestor — host the screen
+          // in its own Navigator to provide one. It is a single page that is
+          // never popped, so the lock can never be dismissed.
+          Navigator(
+            onDidRemovePage: (_) {},
+            pages: [
+              const MaterialPage<void>(
+                key: ValueKey('app-lock-screen'),
+                child: UnlockScreen(),
+              ),
+            ],
+          ),
       ],
     );
   }

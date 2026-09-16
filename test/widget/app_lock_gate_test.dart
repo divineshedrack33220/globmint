@@ -7,6 +7,7 @@ import 'package:globe_mint/app/app_lock_gate.dart';
 import 'package:globe_mint/app/providers.dart';
 import 'package:globe_mint/core/theme/app_theme.dart';
 import 'package:globe_mint/core/widgets/app_button.dart';
+import 'package:globe_mint/core/widgets/pin_input.dart';
 import 'package:globe_mint/features/auth/presentation/pages/login_page.dart';
 import 'package:globe_mint/features/auth/presentation/widgets/unlock_screen.dart';
 import 'package:globe_mint/shared/models/user.dart';
@@ -33,13 +34,18 @@ class _FakeAppLockService extends AppLockService {
 }
 
 class _FakeAuthService extends AuthService {
-  _FakeAuthService({this.user, required MemorySessionStore store})
-      : super(
+  _FakeAuthService({
+    this.user,
+    required MemorySessionStore store,
+    this.pinError,
+  }) : super(
           ApiClient(baseUrl: 'http://x'),
           sessionStore: store,
         );
 
   User? user;
+  ApiException? pinError;
+  int pinChecks = 0;
 
   @override
   Future<User?> currentSession() async {
@@ -49,6 +55,12 @@ class _FakeAuthService extends AuthService {
       await clearSession();
     }
     return user;
+  }
+
+  @override
+  Future<void> verifyPin(String pin) async {
+    pinChecks++;
+    if (pinError != null) throw pinError!;
   }
 }
 
@@ -69,10 +81,12 @@ Future<ProviderContainer> _pumpGate(
   required AppLockService service,
   User? user,
   Duration backgroundThreshold = const Duration(minutes: 5),
+  _FakeAuthService? authService,
 }) async {
+  final auth = authService ?? _FakeAuthService(user: user, store: store);
   final notifier = AppLockNotifier(
     service: service,
-    auth: _FakeAuthService(user: user, store: store),
+    auth: auth,
     store: store,
   );
   final container = ProviderContainer(
@@ -138,8 +152,8 @@ void main() {
     expect(find.text('HOME'), findsOneWidget);
   });
 
-  testWidgets('cold start without biometrics shows password fallback only',
-      (tester) async {
+  testWidgets('cold start without biometrics shows the PIN pad with a '
+      'password escape', (tester) async {
     final store = MemorySessionStore();
     await store.writeToken('tok');
     final service = _FakeAppLockService(biometrics: false);
@@ -150,10 +164,95 @@ void main() {
     expect(find.byType(UnlockScreen), findsOneWidget);
     // No biometric button when the device has none.
     expect(find.byIcon(Icons.fingerprint), findsNothing);
-    // The password fallback is the only action.
-    expect(find.widgetWithText(AppButton, 'Use password'), findsOneWidget);
-    // Accessible label is present for screen readers.
-    expect(find.bySemanticsLabel('Use password'), findsWidgets);
+    // The 6-digit transaction PIN pad is the primary unlock.
+    expect(find.byType(PinInput), findsOneWidget);
+    expect(find.bySemanticsLabel('Enter your 6-digit PIN'), findsWidgets);
+    // The password escape is still available as a screen-reader-accessible
+    // secondary action.
+    expect(find.widgetWithText(AppButton, 'Use password instead'),
+        findsOneWidget);
+    expect(find.bySemanticsLabel('Use password instead'), findsWidgets);
+  });
+
+  testWidgets('correct 6-digit PIN unlocks straight to /home without a login',
+      (tester) async {
+    final store = MemorySessionStore();
+    await store.writeToken('tok');
+    final service = _FakeAppLockService(biometrics: false);
+
+    await _pumpGate(tester, store: store, service: service, user: _user());
+    await tester.pumpAndSettle();
+    expect(find.byType(UnlockScreen), findsOneWidget);
+
+    for (var i = 0; i < 6; i++) {
+      await tester.enterText(find.byType(TextField).at(i), '1');
+    }
+    await tester.pumpAndSettle();
+
+    expect(find.byType(UnlockScreen), findsNothing);
+    expect(find.text('HOME'), findsOneWidget);
+    expect(find.text('Welcome back'), findsNothing);
+  });
+
+  testWidgets('wrong PIN shows an error and password still escorts to /login',
+      (tester) async {
+    final store = MemorySessionStore();
+    await store.writeToken('tok');
+    await store.writeEmail('ada@example.com');
+    final service = _FakeAppLockService(biometrics: false);
+    final auth = _FakeAuthService(
+      user: _user(),
+      store: store,
+      pinError: ApiException(
+        400,
+        'Invalid PIN. Please try again.',
+        code: 'INVALID_PIN',
+      ),
+    );
+
+    await _pumpGate(tester, store: store, service: service, authService: auth);
+    await tester.pumpAndSettle();
+
+    for (var i = 0; i < 6; i++) {
+      await tester.enterText(find.byType(TextField).at(i), '0');
+    }
+    await tester.pumpAndSettle();
+
+    expect(find.byType(UnlockScreen), findsOneWidget);
+    expect(find.text('Invalid PIN. Please try again.'), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(AppButton, 'Use password instead'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(UnlockScreen), findsNothing);
+    expect(find.text('Welcome back'), findsOneWidget);
+    expect(find.text('ada@example.com'), findsOneWidget);
+  });
+
+  testWidgets('"Use PIN" swaps in the pad on a biometric device and back',
+      (tester) async {
+    final store = MemorySessionStore();
+    await store.writeToken('tok');
+    final service = _FakeAppLockService(biometrics: true, result: false);
+
+    await _pumpGate(tester, store: store, service: service, user: _user());
+    await tester.pumpAndSettle();
+
+    // The auto-prompt failed once so the biometric button is still offered.
+    expect(find.widgetWithText(AppButton, 'Unlock with biometrics'),
+        findsOneWidget);
+
+    await tester.tap(find.widgetWithText(AppButton, 'Use PIN'));
+    await tester.pumpAndSettle();
+    expect(find.byType(PinInput), findsOneWidget);
+
+    await tester.tap(
+      find.widgetWithText(AppButton, 'Use Face ID or fingerprint'),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(PinInput), findsNothing);
+    expect(find.widgetWithText(AppButton, 'Unlock with biometrics'),
+        findsOneWidget);
   });
 
   testWidgets('password fallback routes to /login with the remembered email',
@@ -166,7 +265,7 @@ void main() {
     await _pumpGate(tester, store: store, service: service, user: _user());
     await tester.pumpAndSettle();
 
-    await tester.tap(find.widgetWithText(AppButton, 'Use password'));
+    await tester.tap(find.widgetWithText(AppButton, 'Use password instead'));
     await tester.pumpAndSettle();
 
     expect(find.byType(UnlockScreen), findsNothing);
@@ -190,7 +289,7 @@ void main() {
     expect(await store.readToken(), isNull);
   });
 
-  testWidgets('three failed biometric attempts force the password fallback',
+  testWidgets('three failed biometric attempts force the PIN pad',
       (tester) async {
     final store = MemorySessionStore();
     await store.writeToken('tok');
@@ -212,7 +311,10 @@ void main() {
     expect(service.authenticateCalls, 3);
     expect(find.text('Unlock with biometrics'), findsNothing);
     expect(find.textContaining('Too many failed attempts'), findsOneWidget);
-    expect(find.widgetWithText(AppButton, 'Use password'), findsOneWidget);
+    // Biometric lockout lands the user on the transaction-PIN pad.
+    expect(find.byType(PinInput), findsOneWidget);
+    expect(find.widgetWithText(AppButton, 'Use password instead'),
+        findsOneWidget);
   });
 
   testWidgets('resume after backgrounding beyond threshold re-locks',

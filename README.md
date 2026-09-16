@@ -1015,7 +1015,9 @@ live in `.env.example`; each network uses its own separate vault deployment, so 
   behind a `SessionStore` abstraction, so `ApiClient`, `EventsServer`, and `AuthService` all
   read one source of truth instead of a SharedPreferences copy. A 401 mid-session is
   broadcast through a multicast `UnauthorizedHandler` (clears the token and routes the gate
-  to `/login`) without the two providers depending on each other. Cold-start "fast reopen"
+  to `/login`) without the two providers depending on each other. Unlock is biometric, a
+  6-digit transaction PIN (verified against the session, never a re-login), or the password
+  → `/login` path whose remembered email is pre-filled. Cold-start "fast reopen"
   is described in §10.8.
 - **Wallet signing backends**: `WalletService` publishes interchangeable wallet backends through
   Riverpod (`walletServiceProvider`). Two ship by default — the injected browser extension
@@ -1109,12 +1111,17 @@ then decides what a cold start shows:
   widget tree stays mounted (no navigation state loss), but it is covered and untouchable.
   On cold start with a working session, a successful unlock lands on `/home`.
 - **Unlock options**: biometrics (`local_auth`, with the OS device-PIN/passcode fallback so
-  a failing sensor never locks someone out), or "Use password instead", which routes to
-  `/login` with the remembered email pre-filled. Devices without biometrics — including the
-  web build, where there is no native prompt — show only the password path.
+  a failing sensor never locks someone out), a **6-digit transaction-PIN pad** (verified
+  server-side against the still-valid session via `POST /pin/verify`, so unlocking never
+  requires a re-login), or "Use password instead", which routes to `/login` with the
+  remembered email pre-filled. Devices without biometrics — including the web build, where
+  there is no native prompt — show the PIN pad by default with the password path as the
+  escape hatch. Because the lock screen is stacked *above* the main navigator it hosts its
+  own `Navigator` in `AppLockGate`, providing the `Overlay` its PIN text fields require.
 - **Friction guards**: 3 consecutive failed biometric attempts hide the biometric button
-  (password only) and a hint tells the user why. The token itself is never rendered or
-  logged; the unlock screen carries Semantics labels for screen readers.
+  (PIN pad only) and a hint tells the user why. Likewise, 3 wrong transaction PINs replace
+  the pad with the password → `/login` path. The token and PIN are never rendered or logged;
+  the unlock screen carries Semantics labels for screen readers.
 - **Re-lock**: returning from background after more than 30s (a configurable
   `AppConstants.appLockBackgroundThreshold`) covers the app again and re-arms the prompt;
   the profile page also exposes a manual "Lock app now" tile.

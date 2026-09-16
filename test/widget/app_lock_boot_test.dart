@@ -10,6 +10,7 @@ import 'package:globe_mint/app/providers.dart';
 import 'package:globe_mint/app/router.dart';
 import 'package:globe_mint/core/theme/app_theme.dart';
 import 'package:globe_mint/core/widgets/app_button.dart';
+import 'package:globe_mint/core/widgets/pin_input.dart';
 import 'package:globe_mint/features/auth/presentation/widgets/unlock_screen.dart';
 import 'package:globe_mint/features/home/presentation/pages/home_page.dart';
 import 'package:globe_mint/shared/services/api_client.dart';
@@ -131,10 +132,13 @@ void main() {
     );
 
     // Valid session, but no biometrics on web: the gate stays up and the
-    // guarded page (and its data calls) is not mounted underneath.
+    // guarded page (and its data calls) is not mounted underneath. The PIN
+    // pad is the primary unlock, with the password escape available.
     expect(client.transactionsCalls, 0);
     expect(find.byType(HomePage), findsNothing);
     expect(find.byType(UnlockScreen), findsOneWidget);
-    expect(find.widgetWithText(AppButton, 'Use password'), findsOneWidget);
+    expect(find.byType(PinInput), findsOneWidget);
+    expect(find.widgetWithText(AppButton, 'Use password instead'),
+        findsOneWidget);
   });
 }

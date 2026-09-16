@@ -102,7 +102,7 @@ final appLockProvider = StateNotifierProvider<AppLockNotifier, AppLockState>(
   ),
 );
 
-/// State of the biometric / password lock gate.
+/// State of the biometric / PIN / password lock gate.
 class AppLockState {
   const AppLockState({
     this.status = AppLockStatus.starting,
@@ -110,6 +110,9 @@ class AppLockState {
     this.failedAttempts = 0,
     this.needsLogin = false,
     this.sessionExists = false,
+    this.pinMode = false,
+    this.pinFailures = 0,
+    this.pinError,
   });
 
   final AppLockStatus status;
@@ -125,9 +128,25 @@ class AppLockState {
   /// app (the session was invalid, or the user chose "Use password instead").
   final bool needsLogin;
 
+  /// True when the user chose the on-screen 6-digit transaction PIN to unlock
+  /// instead of biometrics. Only meaningful on devices with biometrics; when
+  /// the device has none the PIN pad is shown by default.
+  final bool pinMode;
+
+  /// Consecutive failed transaction-PIN attempts since the gate armed.
+  final int pinFailures;
+
+  /// Message describing the last failed PIN attempt (wrong PIN, throttled,
+  /// network), displayed under the pad; null when no attempt failed.
+  final String? pinError;
+
   /// Whether the biometric button must be hidden — either the device has no
-  /// biometrics or 3 consecutive failures forced a password fallback.
+  /// biometrics or 3 consecutive failures forced a PIN/password fallback.
   bool get passwordFallbackRequired => !biometricsAvailable || failedAttempts >= 3;
+
+  /// Whether the PIN pad must be hidden too — after [AppLockNotifier.
+  /// pinMaxAttempts] wrong PINs only the password → `/login` escape remains.
+  bool get pinFallbackRequired => pinFailures >= AppLockNotifier.pinMaxAttempts;
 
   AppLockState copyWith({
     AppLockStatus? status,
@@ -135,6 +154,9 @@ class AppLockState {
     int? failedAttempts,
     bool? needsLogin,
     bool? sessionExists,
+    bool? pinMode,
+    int? pinFailures,
+    String? pinError,
   }) =>
       AppLockState(
         status: status ?? this.status,
@@ -142,6 +164,9 @@ class AppLockState {
         failedAttempts: failedAttempts ?? this.failedAttempts,
         needsLogin: needsLogin ?? this.needsLogin,
         sessionExists: sessionExists ?? this.sessionExists,
+        pinMode: pinMode ?? this.pinMode,
+        pinFailures: pinFailures ?? this.pinFailures,
+        pinError: pinError ?? this.pinError,
       );
 }
 
@@ -156,6 +181,10 @@ class AppLockNotifier extends StateNotifier<AppLockState> {
   }) : super(const AppLockState()) {
     _initialize();
   }
+
+  /// Wrong transaction-PIN attempts allowed on the lock screen before the
+  /// pad is replaced by the password → `/login` escape.
+  static const int pinMaxAttempts = 3;
 
   final AppLockService _service;
   final AuthService _auth;
@@ -246,6 +275,72 @@ class AppLockNotifier extends StateNotifier<AppLockState> {
         failedAttempts: attempts,
         // After 3 consecutive failures, hide the biometric button.
         biometricsAvailable: attempts >= 3 ? false : state.biometricsAvailable,
+      );
+    }
+  }
+
+  /// The user tapped "Use PIN": swap the biometric button for the on-screen
+  /// transaction-PIN pad.
+  void signalPinFallback() {
+    state = state.copyWith(pinMode: true);
+  }
+
+  /// The user tapped "Use Face ID/fingerprint" while on the PIN pad (only
+  /// offered when the device actually has biometrics and they aren't locked
+  /// out of them).
+  void cancelPinFallback() {
+    state = state.copyWith(pinMode: false);
+  }
+
+  /// Verifies the on-screen 6-digit transaction PIN against the backend and
+  /// unlocks on success — using the still-valid session, so no re-login is
+  /// ever required. A wrong PIN (INVALID_PIN) counts a failure; after
+  /// [pinMaxAttempts] the pad is replaced by the password escape. A 401 means
+  /// the session is genuinely gone: ownership of the routing is handed back
+  /// to the [UnauthorizedHandler] (→ login), this method leaves the gate as
+  /// is. Other failures (network, 5xx, throttled) show an error but never
+  /// count as a wrong PIN.
+  Future<void> unlockWithPin(String pin) async {
+    if (state.status == AppLockStatus.unlocking ||
+        state.status == AppLockStatus.unlocked ||
+        state.pinFallbackRequired) {
+      return;
+    }
+    state = state.copyWith(status: AppLockStatus.unlocking, pinError: null);
+    try {
+      await _auth.verifyPin(pin);
+      if (state.status != AppLockStatus.unlocking) return;
+      state = AppLockState(
+        status: AppLockStatus.unlocked,
+        biometricsAvailable: state.biometricsAvailable,
+        sessionExists: state.sessionExists,
+      );
+    } on ApiException catch (e) {
+      if (state.status != AppLockStatus.unlocking) return;
+      if (e.statusCode == 401) {
+        // The stored session was rejected: the unauthorized handler has
+        // already routed the gate to /login (see expireToLogin).
+        return;
+      }
+      if (e.code == 'INVALID_PIN') {
+        final failures = state.pinFailures + 1;
+        state = AppLockState(
+          status: AppLockStatus.locked,
+          biometricsAvailable: state.biometricsAvailable,
+          sessionExists: state.sessionExists,
+          pinMode: state.pinMode,
+          pinFailures: failures,
+          pinError: failures >= pinMaxAttempts
+              ? 'Too many failed attempts — use your password instead.'
+              : 'Invalid PIN. Please try again.',
+        );
+        return;
+      }
+      state = state.copyWith(
+        status: AppLockStatus.locked,
+        pinError: e.code == 'TOO_MANY_ATTEMPTS'
+            ? e.message
+            : 'Could not verify your PIN. Please try again.',
       );
     }
   }
