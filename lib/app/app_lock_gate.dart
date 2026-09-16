@@ -111,8 +111,9 @@ class _AppLockGateState extends ConsumerState<AppLockGate>
     });
   }
 
-  void _handleUnauthorized() {
-    ref.read(appLockProvider.notifier).expireToLogin();
+  void _handleUnauthorized(String? rejectedToken) {
+    ref.read(appLockProvider.notifier)
+        .expireToLogin(rejectedToken: rejectedToken);
   }
 
   @override

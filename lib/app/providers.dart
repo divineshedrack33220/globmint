@@ -30,23 +30,25 @@ final connectivityServiceProvider = Provider<ConnectivityService>(
 /// place the bearer token lives on device; [ApiClient] and [AuthService] share
 /// it so there is never a second copy in plain preferences.
 final sessionStoreProvider = Provider<SessionStore>(
-  (ref) => const SecureSessionStore(),
+  (ref) => SecureSessionStore(),
 );
 
 /// Broadcasts "the server rejected our bearer token (401)" from [ApiClient]
 /// to whichever services own the session. Kept as its own provider so
 /// [apiClientProvider] and [authServiceProvider] never depend on each other
-/// (which would be a provider cycle).
+/// (which would be a provider cycle). [rejectedToken] is the token the failed
+/// request carried; handlers ignore it when it no longer matches the stored
+/// session (a newer login may have replaced it mid-flight).
 class UnauthorizedHandler {
-  final List<void Function()> _handlers = [];
+  final List<void Function(String? token)> _handlers = [];
 
-  void add(void Function() handler) => _handlers.add(handler);
+  void add(void Function(String? token) handler) => _handlers.add(handler);
 
-  void remove(void Function() handler) => _handlers.remove(handler);
+  void remove(void Function(String? token) handler) => _handlers.remove(handler);
 
-  void notify() {
+  void notify([String? token]) {
     for (final handler in List.of(_handlers)) {
-      handler();
+      handler(token);
     }
   }
 }
@@ -77,7 +79,7 @@ final authServiceProvider = Provider<AuthService>(
       sessionStore: ref.watch(sessionStoreProvider),
     );
     ref.watch(unauthorizedHandlerProvider).add(
-          () => auth.handleSessionExpired(),
+          (rejectedToken) => auth.handleSessionExpired(rejectedToken: rejectedToken),
         );
     return auth;
   },
@@ -277,7 +279,16 @@ class AppLockNotifier extends StateNotifier<AppLockState> {
 
   /// Called by [UnauthorizedHandler] when the backend rejects the bearer
   /// token mid-session (401): unlock so the gate can route to `/login`.
-  void expireToLogin() {
+  /// When [rejectedToken] is given and a *newer* token is already in place
+  /// (the user logged in again while the stale request was in flight), the
+  /// expiry is ignored so the fresh session is not killed.
+  Future<void> expireToLogin({String? rejectedToken}) async {
+    if (rejectedToken != null && rejectedToken.isNotEmpty) {
+      final current = await _store.readToken();
+      if (current != null && current.isNotEmpty && current != rejectedToken) {
+        return;
+      }
+    }
     state = AppLockState(
       status: AppLockStatus.unlocked,
       biometricsAvailable: state.biometricsAvailable,

@@ -24,16 +24,19 @@ class ApiClient {
     SessionStore? sessionStore,
   }) : _http = httpClient ?? http.Client(),
        _baseUrl = baseUrl ?? _defaultBaseUrl(),
-       _sessionStore = sessionStore ?? const SecureSessionStore();
+       _sessionStore = sessionStore ?? SecureSessionStore();
 
   final http.Client _http;
   final String _baseUrl;
   final SessionStore _sessionStore;
 
   /// Invoked when any request returns HTTP 401 while a bearer token was
-  /// attached (i.e. the stored session is no longer valid). Wired up by the
-  /// provider layer to clear the session and route the user to login.
-  void Function()? onUnauthorized;
+  /// attached (i.e. the stored session is no longer valid). [rejectedToken]
+  /// is the bearer token that was sent (null when the request had none);
+  /// handlers use it to ignore stale rejections that belong to an older
+  /// session. Wired up by the provider layer to clear the session and route
+  /// the user to login.
+  void Function(String? rejectedToken)? onUnauthorized;
 
   /// Online/offline signal updated from transport outcomes (may be null in
   /// tests where connectivity reporting is irrelevant).
@@ -112,8 +115,9 @@ class ApiClient {
   }) async {
     final key = idempotent ? _idempotencyKeyFor(path) : null;
     final headers = await _headers(idempotencyKey: key);
+    final rejectedToken = headers['Authorization'];
     final res = await _run(() => _http.get(_uri(path), headers: headers));
-    final data = _decode(res);
+    final data = _decode(res, rejectedToken: rejectedToken);
     if (key != null) _releaseKey(path);
     return data;
   }
@@ -125,6 +129,7 @@ class ApiClient {
   }) async {
     final key = idempotent ? _idempotencyKeyFor(path) : null;
     final headers = await _headers(idempotencyKey: key);
+    final rejectedToken = headers['Authorization'];
     final res = await _run(
       () => _http.post(
         _uri(path),
@@ -132,7 +137,7 @@ class ApiClient {
         body: body == null ? null : jsonEncode(body),
       ),
     );
-    final data = _decode(res);
+    final data = _decode(res, rejectedToken: rejectedToken);
     if (key != null) _releaseKey(path);
     return data;
   }
@@ -144,6 +149,7 @@ class ApiClient {
   }) async {
     final key = idempotent ? _idempotencyKeyFor(path) : null;
     final headers = await _headers(idempotencyKey: key);
+    final rejectedToken = headers['Authorization'];
     final res = await _run(
       () => _http.put(
         _uri(path),
@@ -151,7 +157,7 @@ class ApiClient {
         body: body == null ? null : jsonEncode(body),
       ),
     );
-    final data = _decode(res);
+    final data = _decode(res, rejectedToken: rejectedToken);
     if (key != null) _releaseKey(path);
     return data;
   }
@@ -163,6 +169,7 @@ class ApiClient {
   }) async {
     final key = idempotent ? _idempotencyKeyFor(path) : null;
     final headers = await _headers(idempotencyKey: key);
+    final rejectedToken = headers['Authorization'];
     final res = await _run(
       () => _http.patch(
         _uri(path),
@@ -170,7 +177,7 @@ class ApiClient {
         body: body == null ? null : jsonEncode(body),
       ),
     );
-    final data = _decode(res);
+    final data = _decode(res, rejectedToken: rejectedToken);
     if (key != null) _releaseKey(path);
     return data;
   }
@@ -181,19 +188,26 @@ class ApiClient {
   }) async {
     final key = idempotent ? _idempotencyKeyFor(path) : null;
     final headers = await _headers(idempotencyKey: key);
+    final rejectedToken = headers['Authorization'];
     final res = await _run(() => _http.delete(_uri(path), headers: headers));
-    final data = _decode(res);
+    final data = _decode(res, rejectedToken: rejectedToken);
     if (key != null) _releaseKey(path);
     return data;
   }
 
   /// Decodes the body and throws [ApiException] on non-2xx responses, surfacing
-  /// the backend's stable error message when present.
-  Map<String, dynamic>? _decode(http.Response res) {
+  /// the backend's stable error message when present. [rejectedToken] is the
+  /// bearer token the failed request carried (null when unauthenticated).
+  Map<String, dynamic>? _decode(
+    http.Response res, {
+    String? rejectedToken,
+  }) {
     if (res.statusCode == 401) {
-      // The attached bearer token was rejected: the stored session is gone.
-      // Best-effort notify so the app clears it and routes to login.
-      onUnauthorized?.call();
+      // The attached bearer token (or lack of one) was rejected: the stored
+      // session may be gone. Best-effort notify so the app clears it and
+      // routes to login — but only for the token that was just rejected, so a
+      // stale 401 never signs out a newer session.
+      onUnauthorized?.call(rejectedToken);
     }
     Map<String, dynamic>? data;
     if (res.body.isNotEmpty) {

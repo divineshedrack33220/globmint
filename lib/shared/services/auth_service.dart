@@ -10,7 +10,7 @@ import 'session_store.dart';
 /// plain preferences.
 class AuthService {
   AuthService(this._api, {SessionStore? sessionStore})
-    : _sessionStore = sessionStore ?? const SecureSessionStore();
+    : _sessionStore = sessionStore ?? SecureSessionStore();
 
   final ApiClient _api;
   final SessionStore _sessionStore;
@@ -156,15 +156,26 @@ class AuthService {
 
   /// Drops the session from memory and secure storage. Safe to call at any
   /// point; used by logout, password change, and mid-session 401 handling.
-  Future<void> clearSession() async {
+  /// With [expected] set it is a compare-and-clear: when a *different* token
+  /// is currently stored the call is skipped, so a stale 401 (or its handler)
+  /// can never sign out a session a newer login has already replaced.
+  Future<void> clearSession({String? expected}) async {
+    final stored = await _sessionStore.readToken();
+    if (expected != null &&
+        stored != null &&
+        stored.isNotEmpty &&
+        stored != expected) {
+      return;
+    }
     _currentUser = null;
     _isAuthenticated = false;
-    await _sessionStore.clearToken();
+    await _sessionStore.clearToken(expected: expected);
   }
 
   /// Clears the session after the backend rejected the bearer token on a
   /// regular call (see [ApiClient.onUnauthorized]).
-  Future<void> handleSessionExpired() => clearSession();
+  Future<void> handleSessionExpired({String? rejectedToken}) =>
+      clearSession(expected: rejectedToken);
 
   /// The account email remembered at the last successful sign-in, used to
   /// pre-fill the login form from the unlock screen. Not a secret.

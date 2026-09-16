@@ -223,4 +223,55 @@ void main() {
     expect(await storedToken(), isNull);
     expect(auth.isAuthenticated, isFalse);
   });
+
+  test('a stale 401 for a replaced session never signs out the fresh token',
+      () async {
+    store = MemorySessionStore(token: 'stale-token');
+    final mock = MockClient((request) async {
+      return http.Response(
+        jsonEncode({
+          'token': 'fresh-token',
+          'requires_2fa': false,
+          'user': {
+            'id': 'u1',
+            'first_name': 'Ada',
+            'last_name': 'Lovelace',
+            'email': 'ada@dev.com',
+            'phone': '08000000000',
+            'created_at': '2026-01-01T00:00:00Z',
+            'status': 'verified',
+            'two_factor_enabled': false,
+          },
+        }),
+        200,
+        headers: {'content-type': 'application/json'},
+      );
+    });
+    final auth = buildAuth(mock);
+
+    await auth.login('ada@dev.com', 'password');
+    expect(await storedToken(), 'fresh-token');
+
+    // A request that had carried the OLD token comes back 401 after the
+    // re-login already stored the fresh one.
+    await auth.handleSessionExpired(rejectedToken: 'stale-token');
+
+    expect(await storedToken(), 'fresh-token');
+    expect(auth.isAuthenticated, isTrue);
+  });
+
+  test('handleSessionExpired clears exactly the token that was rejected',
+      () async {
+    store = MemorySessionStore(token: 'current-token');
+    final mock = MockClient((request) async {
+      return http.Response('{}', 200,
+          headers: {'content-type': 'application/json'});
+    });
+    final auth = buildAuth(mock);
+
+    await auth.handleSessionExpired(rejectedToken: 'current-token');
+
+    expect(await storedToken(), isNull);
+    expect(auth.isAuthenticated, isFalse);
+  });
 }

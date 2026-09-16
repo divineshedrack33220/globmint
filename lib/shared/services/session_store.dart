@@ -16,7 +16,11 @@ abstract class SessionStore {
 
   Future<void> writeToken(String token);
 
-  Future<void> clearToken();
+  /// Deletes the stored token. When [expected] is given the deletion is a
+  /// compare-and-clear: if a *different* token is currently stored (a newer
+  /// session took over), the call is a no-op so a stale 401 can never sign
+  /// out a fresh login.
+  Future<void> clearToken({String? expected});
 
   /// Last-known account email, remembered locally so the unlock screen's
   /// password fallback can pre-fill the login form. Not secret.
@@ -29,29 +33,42 @@ abstract class SessionStore {
 /// Keystore, and the WebCrypto-backed web store). Platform calls that fail
 /// (e.g. the plugin is missing under `flutter test`) degrade to "no session"
 /// instead of crashing the client.
+///
+/// Every value is mirrored in an in-process cache. The token stays available
+/// for the whole app session the moment it is written — requests never wait on
+/// platform I/O for authorization, and a login is instantly visible to every
+/// later read even if the underlying store misbehaves (notably WebCrypto /
+/// IndexedDB failures in some browsers). Secure storage remains the
+/// persistence layer; the mirror is the runtime source of truth.
 class SecureSessionStore implements SessionStore {
-  const SecureSessionStore();
+  SecureSessionStore();
 
   static const _tokenKey = 'globmint.session_token';
   static const _emailKey = 'globmint.session_email';
 
   static const _storage = FlutterSecureStorage();
 
+  String? _cachedToken;
+  String? _cachedEmail;
+
   @override
   Future<String?> readToken() async {
+    if (_cachedToken != null) return _cachedToken;
     try {
       final token = await _storage.read(key: _tokenKey);
-      return (token == null || token.isEmpty) ? null : token;
+      _cachedToken = (token == null || token.isEmpty) ? null : token;
     } on MissingPluginException {
-      return null;
+      _cachedToken = null;
     } on PlatformException {
-      return null;
+      _cachedToken = null;
     }
+    return _cachedToken;
   }
 
   @override
   Future<void> writeToken(String token) async {
     if (token.isEmpty) return;
+    _cachedToken = token;
     try {
       await _storage.write(key: _tokenKey, value: token);
     } on MissingPluginException {
@@ -63,7 +80,13 @@ class SecureSessionStore implements SessionStore {
   }
 
   @override
-  Future<void> clearToken() async {
+  Future<void> clearToken({String? expected}) async {
+    if (expected != null &&
+        _cachedToken != null &&
+        _cachedToken != expected) {
+      return;
+    }
+    _cachedToken = null;
     try {
       await _storage.delete(key: _tokenKey);
     } on MissingPluginException {
@@ -75,19 +98,22 @@ class SecureSessionStore implements SessionStore {
 
   @override
   Future<String?> readEmail() async {
+    if (_cachedEmail != null) return _cachedEmail;
     try {
       final email = await _storage.read(key: _emailKey);
-      return (email == null || email.isEmpty) ? null : email;
+      _cachedEmail = (email == null || email.isEmpty) ? null : email;
     } on MissingPluginException {
-      return null;
+      _cachedEmail = null;
     } on PlatformException {
-      return null;
+      _cachedEmail = null;
     }
+    return _cachedEmail;
   }
 
   @override
   Future<void> writeEmail(String email) async {
     if (email.isEmpty) return;
+    _cachedEmail = email;
     try {
       await _storage.write(key: _emailKey, value: email);
     } on MissingPluginException {
@@ -118,7 +144,8 @@ class MemorySessionStore implements SessionStore {
   }
 
   @override
-  Future<void> clearToken() async {
+  Future<void> clearToken({String? expected}) async {
+    if (expected != null && _token != null && _token != expected) return;
     _token = null;
   }
 

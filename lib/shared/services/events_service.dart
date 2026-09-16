@@ -48,7 +48,7 @@ class EventsServer {
     SessionStore? sessionStore,
   }) : _baseUrl = baseUrl ?? AppConstants.baseApiUrl(),
        _http = httpClient ?? http.Client(),
-       _sessionStore = sessionStore ?? const SecureSessionStore();
+       _sessionStore = sessionStore ?? SecureSessionStore();
 
   final String _baseUrl;
   final http.Client _http;

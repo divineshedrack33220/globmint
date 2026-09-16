@@ -134,7 +134,7 @@ void main() {
     await notifier.unlockWithBiometric();
     expect(notifier.state.status, AppLockStatus.unlocked);
 
-    notifier.expireToLogin();
+    await notifier.expireToLogin();
     expect(notifier.state.status, AppLockStatus.unlocked);
     expect(notifier.state.needsLogin, isTrue);
   });
