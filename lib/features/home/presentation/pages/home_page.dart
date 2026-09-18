@@ -146,11 +146,23 @@ class _HomePageState extends ConsumerState<HomePage> {
                   ),
                   error: (e, _) => Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 24),
-                    child: BalanceCard(
-                      label: 'BALANCE',
-                      amount: '₦0.00',
-                      subtitle: 'Unable to load balance',
-                      isHero: true,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        BalanceCard(
+                          label: 'BALANCE',
+                          amount: '—',
+                          subtitle: 'Unable to load balance',
+                          isHero: true,
+                        ),
+                        const SizedBox(height: 12),
+                        TextButton.icon(
+                          onPressed: () =>
+                              ref.invalidate(accountSummaryProvider),
+                          icon: const Icon(Icons.refresh, size: 18),
+                          label: const Text('Retry'),
+                        ),
+                      ],
                     ),
                   ),
                   data: (summary) => Padding(
