@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"globmint/backend/internal/domain"
+	"globmint/backend/internal/events"
 )
 
 // DeviceView is a user-facing snapshot of an active session (device).
@@ -24,6 +25,8 @@ type DeviceView struct {
 // events into the same stores.
 type SecurityService struct {
 	store store
+	// SecurityHub fans security events out to SSE subscribers. Nil in tests.
+	SecurityHub *events.Hub
 }
 
 func NewSecurityService(store store) *SecurityService { return &SecurityService{store: store} }
@@ -49,7 +52,8 @@ func (s *SecurityService) ListDevices(ctx context.Context, userID, currentSessio
 	return out, nil
 }
 
-// RevokeDevice revokes a single session, verifying ownership.
+// RevokeDevice revokes a single session, verifying ownership. The remote
+// device's owner and every logged-in session see a critical revocation event.
 func (s *SecurityService) RevokeDevice(ctx context.Context, userID, deviceID string) error {
 	sess, err := s.store.SessionRepo().FindByID(ctx, deviceID)
 	if err != nil {
@@ -63,8 +67,16 @@ func (s *SecurityService) RevokeDevice(ctx context.Context, userID, deviceID str
 	}
 	// Comment: keep event recording best-effort so a failed audit write does not
 	// bubble up as a hard error to the user.
-	_ = s.record(ctx, userID, domain.SecurityEventDevice,
-		"Device logged out", "A signed-in device was logged out remotely", sess.IP, sess.Device)
+	_ = s.record(ctx, &domain.SecurityEvent{
+		UserID:   userID,
+		Type:     domain.SecurityEventSessionRevoked,
+		Severity: domain.SeverityCritical,
+		Title:    "Session revoked",
+		Detail:   "A signed-in device was logged out remotely",
+		IP:       sess.IP,
+		Device:   sess.Device,
+	})
+	s.publishSecurity(userID)
 	return nil
 }
 
@@ -73,14 +85,48 @@ func (s *SecurityService) RevokeOtherDevices(ctx context.Context, userID, keepID
 	if err := s.store.SessionRepo().RevokeAllExcept(ctx, userID, keepID); err != nil {
 		return err
 	}
-	_ = s.record(ctx, userID, domain.SecurityEventDevice,
-		"Other devices logged out", "All other signed-in devices were logged out", "", "")
+	_ = s.record(ctx, &domain.SecurityEvent{
+		UserID:   userID,
+		Type:     domain.SecurityEventSessionRevoked,
+		Severity: domain.SeverityCritical,
+		Title:    "Other sessions revoked",
+		Detail:   "All other signed-in devices were logged out",
+	})
+	s.publishSecurity(userID)
 	return nil
 }
 
-// ListSecurityEvents returns the security activity feed.
+// ListSecurityEvents returns the most recent security activity events.
 func (s *SecurityService) ListSecurityEvents(ctx context.Context, userID string) ([]domain.SecurityEvent, error) {
 	return s.store.SecurityEventRepo().ListByUser(ctx, userID, 50)
+}
+
+// ListSecurityEventsPaged returns one page of the security feed (newest
+// first) plus the owning user's total event count.
+func (s *SecurityService) ListSecurityEventsPaged(ctx context.Context, userID string, limit, offset int) ([]domain.SecurityEvent, int, error) {
+	return s.store.SecurityEventRepo().ListByUserPaged(ctx, userID, limit, offset)
+}
+
+// NotificationPrefs returns the user's email-alert preferences.
+func (s *SecurityService) NotificationPrefs(ctx context.Context, userID string) (newSignin bool, failedLogin bool, err error) {
+	return s.store.UserRepo().NotificationPrefs(ctx, userID)
+}
+
+// UpdateNotificationPrefs persists the user's email-alert preferences and
+// notifies the security feed so other open devices pick up the change.
+func (s *SecurityService) UpdateNotificationPrefs(ctx context.Context, userID string, newSignin, failedLogin bool) error {
+	if err := s.store.UserRepo().UpdateNotificationPrefs(ctx, userID, newSignin, failedLogin); err != nil {
+		return err
+	}
+	_ = s.record(ctx, &domain.SecurityEvent{
+		UserID:   userID,
+		Type:     domain.SecurityEventDevice,
+		Severity: domain.SeverityInfo,
+		Title:    "Alert preferences updated",
+		Detail:   "Email security-alert preferences were changed on this account",
+	})
+	s.publishSecurity(userID)
+	return nil
 }
 
 // ListNotifications returns the in-app inbox.
@@ -112,14 +158,26 @@ func (s *SecurityService) Notify(ctx context.Context, userID string, category do
 }
 
 // record appends a security event (best-effort, see callers).
-func (s *SecurityService) record(ctx context.Context, userID string, etype domain.SecurityEventType, title, detail, ip, device string) error {
-	return s.store.SecurityEventRepo().Create(ctx, &domain.SecurityEvent{
-		UserID: userID,
-		Type:   etype,
-		Title:  title,
-		Detail: detail,
-		IP:     ip,
-		Device: device,
+func (s *SecurityService) record(ctx context.Context, ev *domain.SecurityEvent) error {
+	return s.store.SecurityEventRepo().Create(ctx, ev)
+}
+
+// Record writes an arbitrary security event (best-effort) and pushes an SSE
+// refresh. Handlers use it when they hold request context the services do not
+// (e.g. IP/user-agent for PIN, withdrawal, recovery and custody actions).
+func (s *SecurityService) Record(ctx context.Context, ev *domain.SecurityEvent) {
+	_ = s.record(ctx, ev)
+	s.publishSecurity(ev.UserID)
+}
+
+// publishSecurity pushes a kind:security SSE notification so open security
+// centers invalidate their providers. No-op when the hub is unset (tests).
+func (s *SecurityService) publishSecurity(userID string) {
+	if s.SecurityHub == nil {
+		return
+	}
+	s.SecurityHub.Publish(events.Event{
+		Type: "data.changed", UserID: userID, Kind: "security", At: time.Now().UTC().Format(time.RFC3339),
 	})
 }
 

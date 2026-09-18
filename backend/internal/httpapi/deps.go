@@ -1,6 +1,9 @@
 package httpapi
 
 import (
+	"context"
+
+	"globmint/backend/internal/domain"
 	"globmint/backend/internal/events"
 	"globmint/backend/internal/infrastructure/blockchain"
 	"globmint/backend/internal/services"
@@ -28,4 +31,14 @@ type Deps struct {
 	// withdrawals must be signed by the user's wallet (true) or may still run
 	// through the transitional platform-signer path (false).
 	RequireUserSignature bool
+}
+
+// RecordSecurityEvent writes a best-effort security event and fans an SSE
+// refresh to the owning user. Handlers call it with request context (IP,
+// user-agent) for PIN/withdrawal/recovery/custody actions. No-op when the
+// Security service is unset.
+func (d *Deps) RecordSecurityEvent(ctx context.Context, ev *domain.SecurityEvent) {
+	if d.Security != nil {
+		d.Security.Record(ctx, ev)
+	}
 }

@@ -110,6 +110,14 @@ func (d *Deps) handleSetPin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err, "")
 		return
 	}
+	d.RecordSecurityEvent(r.Context(), &domain.SecurityEvent{
+		UserID:   user.ID,
+		Type:     domain.SecurityEventPinChange,
+		Severity: domain.SeverityInfo,
+		Title:    "Transaction PIN changed",
+		Detail:   "The 6-digit transaction PIN for this account was updated",
+		IP:       clientIP(r), UserAgent: r.UserAgent(),
+	})
 	writeJSON(w, http.StatusOK, map[string]any{"updated": true})
 }
 
@@ -240,10 +248,32 @@ func (d *Deps) handleVaultWithdraw(w http.ResponseWriter, r *http.Request) {
 
 	result, err := d.Vault.WithdrawToAddressSigned(r.Context(), user.ID, req.Destination, amountMinor, req.signature(), middleware.IdempotencyKeyFrom(r.Context()))
 	if err != nil {
+		d.RecordSecurityEvent(r.Context(), &domain.SecurityEvent{
+			UserID:   user.ID,
+			Type:     domain.SecurityEventWithdrawal,
+			Severity: domain.SeverityWarn,
+			Title:    "Withdrawal rejected",
+			Detail:   "A withdrawal request could not be fulfilled",
+			IP:       clientIP(r), UserAgent: r.UserAgent(),
+			Metadata: map[string]any{"destination": req.Destination, "outcome": "rejected"},
+		})
 		writeError(w, r, err, "")
 		return
 	}
 	d.publish(user.ID, "all")
+	detail := "Withdrawal requested to your destination address"
+	if result.Elevation != nil {
+		detail = "Withdrawal requested. Subject to a time-lock before broadcast."
+	}
+	d.RecordSecurityEvent(r.Context(), &domain.SecurityEvent{
+		UserID:   user.ID,
+		Type:     domain.SecurityEventWithdrawal,
+		Severity: domain.SeverityInfo,
+		Title:    "Withdrawal requested",
+		Detail:   detail,
+		IP:       clientIP(r), UserAgent: r.UserAgent(),
+		Metadata: map[string]any{"destination": req.Destination, "scheduled": result.Elevation != nil},
+	})
 	resp := vaultWithdrawResponse{}
 	if result.Transaction != nil {
 		tr := newTransactionResponse(result.Transaction)
@@ -298,6 +328,15 @@ func (d *Deps) handleCancelVaultWithdraw(w http.ResponseWriter, r *http.Request)
 		writeError(w, r, err, "")
 		return
 	}
+	d.RecordSecurityEvent(r.Context(), &domain.SecurityEvent{
+		UserID:   user.ID,
+		Type:     domain.SecurityEventWithdrawal,
+		Severity: domain.SeverityInfo,
+		Title:    "Withdrawal cancelled",
+		Detail:   "A pending time-locked withdrawal was cancelled before its release time",
+		IP:       clientIP(r), UserAgent: r.UserAgent(),
+		Metadata: map[string]any{"elevation_id": id, "outcome": "cancelled"},
+	})
 	writeJSON(w, http.StatusOK, map[string]any{"cancelled": true})
 }
 
@@ -443,6 +482,15 @@ func (d *Deps) handleClaimCustody(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err, "")
 		return
 	}
+	d.RecordSecurityEvent(r.Context(), &domain.SecurityEvent{
+		UserID:   user.ID,
+		Type:     domain.SecurityEventCustody,
+		Severity: domain.SeverityInfo,
+		Title:    "Custody claimed",
+		Detail:   "Ownership of your account was claimed or transferred",
+		IP:       clientIP(r), UserAgent: r.UserAgent(),
+		Metadata: map[string]any{"new_owner": req.NewOwner},
+	})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"claimed":   true,
 		"new_owner": req.NewOwner,
@@ -548,6 +596,15 @@ func (d *Deps) handleSetRecoveryAddress(w http.ResponseWriter, r *http.Request) 
 		writeError(w, r, err, "")
 		return
 	}
+	d.RecordSecurityEvent(r.Context(), &domain.SecurityEvent{
+		UserID:   user.ID,
+		Type:     domain.SecurityEventRecovery,
+		Severity: domain.SeverityInfo,
+		Title:    "Recovery address designated",
+		Detail:   "A recovery address was set for this account",
+		IP:       clientIP(r), UserAgent: r.UserAgent(),
+		Metadata: map[string]any{"recovery_address": req.RecoveryAddress},
+	})
 	d.publish(user.ID, "all")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"recovery_address": req.RecoveryAddress,

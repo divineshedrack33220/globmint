@@ -2,15 +2,16 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../../../app/providers.dart';
-import '../../../../core/theme/app_colors.dart';
+import '../../../../shared/models/security.dart';
+import '../../../../core/theme/app_theme.dart';
 import '../../../../core/theme/theme_extensions.dart';
 import '../../../../core/widgets/app_button.dart';
 import '../../../../core/widgets/app_text_field.dart';
+import '../../../../core/theme/app_colors.dart';
 import '../../../../shared/services/api_client.dart';
 import '../../../../shared/services/wallet_service.dart';
-import '../../../savings/presentation/widgets/custody_claim_sheet.dart';
 import '../widgets/wallet_connect_button.dart';
-
+import '../../../savings/presentation/widgets/custody_claim_sheet.dart';
 class SecurityCenterPage extends ConsumerStatefulWidget {
   const SecurityCenterPage({super.key});
 
@@ -394,11 +395,30 @@ Text(
                       title: 'Login Alerts',
                       subtitle: 'Get notified of new device logins',
                       value: _loginAlerts,
-                      onChanged: (v) => setState(() => _loginAlerts = v),
+                      onChanged: (v) async {
+                        setState(() => _loginAlerts = v);
+                        try {
+                          await ref
+                              .read(securityServiceProvider)
+                              .updateSecurityPrefs(notifyNewSignin: v);
+                          ref.invalidate(securityPrefsProvider);
+                        } catch (_) {
+                          // Non-fatal: keep the local toggle; the next save
+                          // retries persistence.
+                        }
+                      },
                     ),
                   ],
                 ),
               ),
+              const SizedBox(height: 24),
+              Text('Active Devices', style: context.typography.title),
+              const SizedBox(height: 12),
+              _ActiveDevicesSection(onChanged: (v) => setState(() {})),
+              const SizedBox(height: 24),
+              Text('Recent Security Activity', style: context.typography.title),
+              const SizedBox(height: 12),
+              _SecurityActivityFeed(),
               const SizedBox(height: 24),
               Text('Change Security', style: context.typography.title),
               const SizedBox(height: 12),
@@ -410,19 +430,19 @@ Text(
                 ),
                 child: Column(
                   children: [
-                    ListTile(
+                    Material(color: Colors.transparent, child: ListTile(
                       leading: const Icon(Icons.lock_outline, color: AppColors.textSecondary),
                       title: Text('Change PIN', style: context.typography.bodyLarge),
                       trailing: const Icon(Icons.chevron_right, color: AppColors.textTertiary),
                       onTap: () => context.push('/profile/change-pin'),
-                    ),
+                    )),
                     const Divider(color: AppColors.divider, height: 1, indent: 52),
-                    ListTile(
+                    Material(color: Colors.transparent, child: ListTile(
                       leading: const Icon(Icons.password, color: AppColors.textSecondary),
                       title: Text('Change Password', style: context.typography.bodyLarge),
                       trailing: const Icon(Icons.chevron_right, color: AppColors.textTertiary),
                       onTap: () => context.push('/profile/change-password'),
-                    ),
+                    )),
                   ],
                 ),
               ),
@@ -445,6 +465,194 @@ Text(
   }
 }
 
+class _ActiveDevicesSection extends ConsumerWidget {
+  const _ActiveDevicesSection({required this.onChanged});
+
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final devices = ref.watch(devicesProvider);
+    return devices.when(
+      data: (items) {
+        if (items.isEmpty) {
+          return Padding(
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            child: Text(
+              'No other devices are signed in.',
+              style: context.typography.bodySmall,
+            ),
+          );
+        }
+        return Column(
+          children: [
+            for (final device in items) ...[
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: AppColors.surface,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: AppColors.border, width: 1),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      device.isCurrent ? Icons.phone_iphone : Icons.devices,
+                      color: device.isCurrent
+                          ? AppColors.primary
+                          : AppColors.textSecondary,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            device.name,
+                            style: context.typography.bodyLarge,
+                          ),
+                          Text(
+                            device.detail,
+                            style: context.typography.bodySmall,
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (!device.isCurrent)
+                      IconButton(
+                        icon: const Icon(Icons.logout, color: AppColors.destructive),
+                        tooltip: 'Revoke this device',
+                        onPressed: () async {
+                          final service = ref.read(securityServiceProvider);
+                          await service.revokeDevice(device.id);
+                          if (context.mounted) {
+                            onChanged(true);
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Device revoked'),
+                              ),
+                            );
+                          }
+                        },
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+            ],
+          ],
+        );
+      },
+      loading: () => const Center(
+        child: Padding(
+          padding: EdgeInsets.all(16),
+          child: CircularProgressIndicator(),
+        ),
+      ),
+      error: (e, _) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        child: Text(
+          'Could not load devices. $e',
+          style: context.typography.bodySmall,
+        ),
+      ),
+    );
+  }
+}
+
+class _SecurityActivityFeed extends ConsumerWidget {
+  const _SecurityActivityFeed();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final feed = ref.watch(securityEventsProvider);
+    return feed.when(
+      data: (events) {
+        if (events.isEmpty) {
+          return Padding(
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            child: Text(
+              'No security activity yet.',
+              style: context.typography.bodySmall,
+            ),
+          );
+        }
+        return Column(
+          children: [
+            for (final event in events.take(6)) ...[
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    _iconFor(event.type),
+                    size: 18,
+                    color: _colorFor(event.type),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(event.title, style: context.typography.bodyMedium),
+                        Text(
+                          _formatTime(event.time),
+                          style: context.typography.bodySmall,
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+            ],
+          ],
+        );
+      },
+      loading: () => const Center(
+        child: Padding(
+          padding: EdgeInsets.all(16),
+          child: CircularProgressIndicator(),
+        ),
+      ),
+      error: (e, _) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        child: Text(
+          'Could not load security activity. $e',
+          style: context.typography.bodySmall,
+        ),
+      ),
+    );
+  }
+
+  static IconData _iconFor(String type) => switch (type) {
+        'failed_login' || 'throttle' => Icons.priority_high,
+        'new_device' ||
+        'session_revoked' =>
+          Icons.devices_other,
+        'withdrawal' ||
+        'elevated' ||
+        'custody' =>
+          Icons.security,
+        _ => Icons.shield_outlined,
+      };
+
+  static Color _colorFor(String type) => switch (type) {
+        'failed_login' || 'throttle' => AppColors.destructive,
+        'new_device' || 'session_revoked' || 'withdrawal' => AppColors.warning,
+        _ => AppColors.success,
+      };
+
+  static String _formatTime(DateTime time) {
+    final local = time.toLocal();
+    final now = DateTime.now();
+    final diff = now.difference(local);
+    if (diff.inMinutes < 1) return 'Just now';
+    if (diff.inHours < 1) return '${diff.inMinutes}m ago';
+    if (diff.inDays < 1) return '${diff.inHours}h ago';
+    return '${local.month}/${local.day}/${local.year}';
+  }
+}
+
 class _SwitchTile extends StatelessWidget {
   const _SwitchTile({
     required this.icon,
@@ -462,7 +670,7 @@ class _SwitchTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SwitchListTile(
+    return Material(color: Colors.transparent, child: SwitchListTile(
       value: value,
       onChanged: onChanged,
       contentPadding: const EdgeInsets.symmetric(horizontal: 16),
@@ -474,6 +682,7 @@ class _SwitchTile extends StatelessWidget {
       inactiveThumbColor: AppColors.textTertiary,
       inactiveTrackColor: AppColors.surfaceHighlight,
       dense: true,
-    );
+    ));
   }
 }
+

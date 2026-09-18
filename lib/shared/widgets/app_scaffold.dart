@@ -67,6 +67,13 @@ class _ScaffoldWithNavBarState extends ConsumerState<ScaffoldWithNavBar> {
         ref.invalidate(transactionsProvider);
         ref.invalidate(recentTransactionsProvider);
         ref.invalidate(pendingElevationsProvider);
+      case EventKind.security:
+        // New security activity (failed login, throttle, new device, session
+        // revocation, withdrawals, custody) — refresh the security center and
+        // the active-device list so a just-revoked device disappears promptly.
+        ref.invalidate(securityEventsProvider);
+        ref.invalidate(securityPrefsProvider);
+        ref.invalidate(devicesProvider);
       case EventKind.all:
         // `connected` events also trigger a full refresh so the UI catches up
         // on anything missed while disconnected.

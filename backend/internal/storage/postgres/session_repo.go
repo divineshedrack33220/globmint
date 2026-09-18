@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"time"
 
 	"globmint/backend/internal/domain"
 	"globmint/backend/internal/storage"
@@ -94,4 +95,16 @@ func (r *sessionRepo) RevokeAllExcept(ctx context.Context, userID, keepID string
 func (r *sessionRepo) TouchLastActive(ctx context.Context, id string) error {
 	_, err := r.q.Exec(ctx, `UPDATE sessions SET last_active_at = now() WHERE id = $1::uuid`, id)
 	return mapPgErr(err)
+}
+
+func (r *sessionRepo) CountRecentByDevice(ctx context.Context, userID, device string, since time.Time) (int, error) {
+	var n int
+	err := r.q.QueryRow(ctx, `
+		SELECT count(*) FROM sessions
+		WHERE user_id = $1::uuid AND device = $2 AND created_at >= $3`,
+		userID, device, since).Scan(&n)
+	if err != nil {
+		return 0, mapPgErr(err)
+	}
+	return n, nil
 }

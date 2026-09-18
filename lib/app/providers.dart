@@ -510,7 +510,13 @@ final devicesProvider = FutureProvider<List<Device>>((ref) async {
 });
 
 final securityEventsProvider = FutureProvider<List<SecurityEvent>>((ref) async {
-  return ref.watch(securityServiceProvider).getSecurityEvents();
+  return (await ref.watch(securityServiceProvider).getSecurityEvents())
+      .items;
+});
+
+/// The user's email-alert preferences (persisted UI toggles).
+final securityPrefsProvider = FutureProvider<SecurityPrefs>((ref) async {
+  return ref.watch(securityServiceProvider).getSecurityPrefs();
 });
 
 final notificationsProvider =

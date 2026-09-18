@@ -28,8 +28,8 @@ var tmplFuncs = template.FuncMap{
 	"logo": func() template.URL { return template.URL("cid:" + logoCID) },
 }
 
-// Sender delivers transactional email: one-time codes and money-movement
-// notifications.
+// Sender delivers transactional email: one-time codes, money-movement
+// notifications, and security alerts.
 type Sender interface {
 	SendOTP(ctx context.Context, to, code string) error
 	// SendMoneyReceived emails the user that funds arrived in their account.
@@ -38,6 +38,12 @@ type Sender interface {
 	// SendMoneySent emails the user a confirmation that funds left their
 	// account.
 	SendMoneySent(ctx context.Context, to, name, amount string) error
+	// SendNewSignIn alerts the user to a first-time (previously unseen)
+	// device signing in. Only the owning user sees device name/IP.
+	SendNewSignIn(ctx context.Context, to, deviceName, ip, timestamp string) error
+	// SendFailedSignIn alerts the user that repeated login attempts failed.
+	// Only the owning user sees the IP/timestamp.
+	SendFailedSignIn(ctx context.Context, to, ip, timestamp string) error
 }
 
 // New returns a Resend-backed Sender when an API key is configured, otherwise a
@@ -80,6 +86,16 @@ func (c *consoleSender) SendMoneyReceived(_ context.Context, to, name, amount st
 
 func (c *consoleSender) SendMoneySent(_ context.Context, to, name, amount string) error {
 	log.Printf("mailer [dev fallback]: money sent %s -> %s (%s)", amount, to, name)
+	return nil
+}
+
+func (c *consoleSender) SendNewSignIn(_ context.Context, to, deviceName, ip, timestamp string) error {
+	log.Printf("mailer [dev fallback]: new sign-in for %s from %s (%s) at %s", to, deviceName, ip, timestamp)
+	return nil
+}
+
+func (c *consoleSender) SendFailedSignIn(_ context.Context, to, ip, timestamp string) error {
+	log.Printf("mailer [dev fallback]: failed sign-in attempts for %s from %s at %s", to, ip, timestamp)
 	return nil
 }
 
@@ -126,6 +142,29 @@ func (r *resendClient) SendMoneySent(ctx context.Context, to, name, amount strin
 		Amount:   amount,
 		Label:    "Money sent",
 		Note:     "This is a confirmation that money left your Globmint account.",
+	}))
+}
+
+func (r *resendClient) SendNewSignIn(ctx context.Context, to, deviceName, ip, timestamp string) error {
+	return r.sendEmail(ctx, to, "New sign-in to your Globmint account", securityAlertBody(securityAlert{
+		Heading: "A new device signed in to your account",
+		Rows: []securityRow{
+			{Label: "Device", Value: deviceName},
+			{Label: "IP address", Value: ip},
+			{Label: "Time", Value: timestamp},
+		},
+		Note: "If this wasn't you, please secure your account immediately and contact support.",
+	}))
+}
+
+func (r *resendClient) SendFailedSignIn(ctx context.Context, to, ip, timestamp string) error {
+	return r.sendEmail(ctx, to, "Failed sign-in attempts on your Globmint account", securityAlertBody(securityAlert{
+		Heading: "There were repeated failed sign-in attempts on your account",
+		Rows: []securityRow{
+			{Label: "IP address", Value: ip},
+			{Label: "Time", Value: timestamp},
+		},
+		Note: "If this wasn't you, please secure your account immediately and contact support.",
 	}))
 }
 
@@ -236,4 +275,41 @@ func greeting(name string) string {
 		name = "Globmint user"
 	}
 	return "Hey, " + name
+}
+
+type securityRow struct {
+	Label string
+	Value string
+}
+
+type securityAlert struct {
+	Heading string
+	Rows    []securityRow
+	Note    string
+}
+
+var securityAlertTmpl = template.Must(template.New("security").Funcs(tmplFuncs).Parse(`<!doctype html>
+<html>
+  <body style="margin:0;padding:0;background:#0a0a0a;font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
+    <div style="max-width:480px;margin:40px auto;background:#111;border:1px solid #2a2a2a;border-radius:16px;padding:32px;color:#f5f5f5">
+      <div style="display:flex;align-items:center;gap:12px;margin:0 0 8px">
+        <img src="{{logo}}" width="40" height="40" alt="Globmint logo" style="width:40px;height:40px;border-radius:10px;display:block">
+        <div style="font-weight:700;font-size:17px;letter-spacing:-0.3px;color:#f5f5f5">Globmint</div>
+      </div>
+      <p style="margin:0 0 20px;color:#a0a0a0;font-size:14px">{{.Heading}}</p>
+      <div style="background:#0a0a0a;border:1px solid #2a2a2a;border-radius:12px;padding:16px;margin:0 0 16px">
+        {{range .Rows}}
+        <p style="margin:0 0 4px;font-size:13px;color:#a0a0a0;text-transform:uppercase;letter-spacing:0.5px">{{.Label}}</p>
+        <p style="margin:0 0 12px;font-size:15px;color:#f5f5f5">{{.Value}}</p>
+        {{end}}
+      </div>
+      <p style="margin:0;color:#a0a0a0;font-size:13px;line-height:1.5">{{.Note}}</p>
+    </div>
+  </body>
+</html>`))
+
+func securityAlertBody(a securityAlert) string {
+	var buf bytes.Buffer
+	_ = securityAlertTmpl.Execute(&buf, a)
+	return buf.String()
 }

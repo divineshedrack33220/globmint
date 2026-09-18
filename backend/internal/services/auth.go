@@ -19,6 +19,8 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"globmint/backend/internal/domain"
+	"globmint/backend/internal/events"
+	"globmint/backend/internal/infrastructure/mailer"
 	"globmint/backend/internal/observability"
 	"globmint/backend/internal/storage"
 )
@@ -33,8 +35,20 @@ type AuthService struct {
 	challengeKey []byte
 	otpSender    OTPMailer
 
+	// AlertMailer delivers security-notification email (new sign-in, failed
+	// sign-in). Set by the server bootstrap; the no-op console sender when
+	// unset (dev/tests).
+	AlertMailer mailer.Sender
+	// SecurityHub fans security events out to SSE subscribers. Nil in tests.
+	SecurityHub *events.Hub
+
 	mu       sync.Mutex
 	attempts map[string]*attemptWindow // key: "login:<sha256(email)>" or "pin:<userID>"
+
+	// lastAlertAt dedupes security-alert email to at most one per hour per
+	// user per type ("new_signin" | "failed_login").
+	alertMu   sync.Mutex
+	lastAlert map[string]time.Time
 }
 
 type attemptWindow struct {
@@ -54,6 +68,9 @@ const (
 	attemptWindowDur = 15 * time.Minute
 	pinMaxAttempts   = 5
 	totpChallengeTTL = 5 * time.Minute
+	// alertDedupe is the minimum gap between two emails of the same alert type
+	// sent to the same account.
+	alertDedupe = time.Hour
 
 	// Email OTP policy: 6 digits, 10-minute validity, 60s resend cooldown,
 	// 5 verify attempts before the code is voided.
@@ -73,6 +90,7 @@ func NewAuthService(store store, sessionTTL time.Duration, sessionSecret string,
 		challengeKey: []byte(sessionSecret),
 		otpSender:    otpSender,
 		attempts:     map[string]*attemptWindow{},
+		lastAlert:    map[string]time.Time{},
 	}
 }
 
@@ -265,7 +283,10 @@ func (s *AuthService) Login(ctx context.Context, email, password, device, ip str
 	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)) != nil {
 		observability.Default.LoginFailure()
 		s.noteFailure(failKey)
+		s.recordLoginFailure(ctx, user, device, ip, "bad_password")
 		if s.isThrottled(failKey, loginMaxAttempts) {
+			s.recordThrottle(ctx, user, device, ip)
+			s.sendFailedLoginAlert(ctx, user, ip)
 			return nil, domain.ErrTooManyAttempts
 		}
 		return nil, domain.ErrInvalidCredentials
@@ -273,6 +294,11 @@ func (s *AuthService) Login(ctx context.Context, email, password, device, ip str
 	s.clearFailure(failKey)
 
 	if user.TOTPEnabled {
+		s.recordEvent(ctx, &domain.SecurityEvent{
+			UserID: user.ID, Type: domain.SecurityEventTwoFactor, Severity: domain.SeverityInfo,
+			Title: "Two-factor challenge issued", Detail: "Signing in requires your authenticator code",
+			IP: ip, UserAgent: device, Device: device, Metadata: map[string]any{"outcome": "issued"},
+		})
 		return &LoginResult{
 			User:           user,
 			Requires2FA:    true,
@@ -284,7 +310,7 @@ func (s *AuthService) Login(ctx context.Context, email, password, device, ip str
 	if err != nil {
 		return nil, err
 	}
-	s.recordSecurity(ctx, user.ID, domain.SecurityEventLogin, "New login", "Signed in from a new device", ip, device)
+	s.recordLoginSuccess(ctx, user, device, ip, "password")
 	return &LoginResult{User: user, Token: token}, nil
 }
 
@@ -292,6 +318,11 @@ func (s *AuthService) Login(ctx context.Context, email, password, device, ip str
 func (s *AuthService) Verify2FA(ctx context.Context, challengeToken, code, device, ip string) (*LoginResult, error) {
 	userID, err := s.verifyChallenge(challengeToken)
 	if err != nil {
+		s.recordEvent(ctx, &domain.SecurityEvent{
+			UserID: userID, Type: domain.SecurityEventTwoFactor, Severity: domain.SeverityWarn,
+			Title: "Two-factor challenge rejected", Detail: "An invalid or expired 2FA challenge was presented",
+			IP: ip, UserAgent: device, Device: device, Metadata: map[string]any{"outcome": "challenge_rejected"},
+		})
 		return nil, err
 	}
 	user, err := s.store.UserRepo().FindByID(ctx, userID)
@@ -302,6 +333,11 @@ func (s *AuthService) Verify2FA(ctx context.Context, challengeToken, code, devic
 		return nil, domain.ErrTwoFactorInvalid
 	}
 	if !verifyTOTP(user.TOTPSecret, code) {
+		s.recordEvent(ctx, &domain.SecurityEvent{
+			UserID: userID, Type: domain.SecurityEventTwoFactor, Severity: domain.SeverityWarn,
+			Title: "Two-factor code rejected", Detail: "An incorrect authenticator code was submitted",
+			IP: ip, UserAgent: device, Device: device, Metadata: map[string]any{"outcome": "failed"},
+		})
 		return nil, domain.ErrInvalidCode
 	}
 	s.clearFailure("login:" + emailHashKey(user.Email))
@@ -309,7 +345,7 @@ func (s *AuthService) Verify2FA(ctx context.Context, challengeToken, code, devic
 	if err != nil {
 		return nil, err
 	}
-	s.recordSecurity(ctx, user.ID, domain.SecurityEventLogin, "Two-factor login", "Signed in with a one-time code", ip, device)
+	s.recordLoginSuccess(ctx, user, device, ip, "two_factor")
 	return &LoginResult{User: user, Token: token}, nil
 }
 
@@ -348,7 +384,11 @@ func (s *AuthService) EnableTOTP(ctx context.Context, userID, code string) error
 	if err := s.store.UserRepo().UpdateTOTP(ctx, userID, user.TOTPSecret, true); err != nil {
 		return err
 	}
-	s.recordSecurity(ctx, userID, domain.SecurityEventRegister, "Two-factor enabled", "Authenticator app linked to this account", "", "")
+	s.recordEvent(ctx, &domain.SecurityEvent{
+		UserID: userID, Type: domain.SecurityEventTwoFactor, Severity: domain.SeverityInfo,
+		Title: "Two-factor enabled", Detail: "Authenticator app linked to this account",
+		Metadata: map[string]any{"outcome": "enabled"},
+	})
 	return nil
 }
 
@@ -367,7 +407,11 @@ func (s *AuthService) DisableTOTP(ctx context.Context, userID, pin, code string)
 	if err := s.store.UserRepo().UpdateTOTP(ctx, userID, user.TOTPSecret, false); err != nil {
 		return err
 	}
-	s.recordSecurity(ctx, userID, domain.SecurityEventRegister, "Two-factor disabled", "Authenticator app unlinked", "", "")
+	s.recordEvent(ctx, &domain.SecurityEvent{
+		UserID: userID, Type: domain.SecurityEventTwoFactor, Severity: domain.SeverityInfo,
+		Title: "Two-factor disabled", Detail: "Authenticator app unlinked from this account",
+		Metadata: map[string]any{"outcome": "disabled"},
+	})
 	return nil
 }
 
@@ -394,7 +438,14 @@ func (s *AuthService) ChangePassword(ctx context.Context, userID, current, next,
 	if err := s.store.SessionRepo().RevokeAllExcept(ctx, userID, keepSessionID); err != nil {
 		return err
 	}
-	s.recordSecurity(ctx, userID, domain.SecurityEventRegister, "Password changed", "Your password was updated", "", "")
+	s.recordEvent(ctx, &domain.SecurityEvent{
+		UserID: userID, Type: domain.SecurityEventPassword, Severity: domain.SeverityInfo,
+		Title: "Password changed", Detail: "Your password was updated",
+	})
+	s.recordEvent(ctx, &domain.SecurityEvent{
+		UserID: userID, Type: domain.SecurityEventSessionRevoked, Severity: domain.SeverityCritical,
+		Title: "Other sessions revoked", Detail: "A password change signed every other device out",
+	})
 	return nil
 }
 
@@ -412,7 +463,10 @@ func (s *AuthService) SendOTPCode(ctx context.Context, email string) error {
 		return err
 	}
 	if user, uerr := s.store.UserRepo().FindByEmail(ctx, email); uerr == nil {
-		s.recordSecurity(ctx, user.ID, domain.SecurityEventRegister, "Verification code sent", "A one-time code was emailed to the account address", "", "")
+		s.recordEvent(ctx, &domain.SecurityEvent{
+			UserID: user.ID, Type: domain.SecurityEventRecovery, Severity: domain.SeverityInfo,
+			Title: "Verification code sent", Detail: "A one-time code was emailed to the account address",
+		})
 	}
 	return nil
 }
@@ -666,7 +720,11 @@ func (s *AuthService) Logout(ctx context.Context, token string) error {
 	if err := s.store.SessionRepo().Revoke(ctx, sess.ID); err != nil {
 		return err
 	}
-	s.recordSecurity(ctx, sess.UserID, domain.SecurityEventLogout, "Signed out", "You signed out of this device", sess.IP, sess.Device)
+	s.recordEvent(ctx, &domain.SecurityEvent{
+		UserID: sess.UserID, Type: domain.SecurityEventLogout, Severity: domain.SeverityInfo,
+		Title: "Signed out", Detail: "You signed out of this device",
+		IP: sess.IP, UserAgent: sess.Device, Device: sess.Device,
+	})
 	return nil
 }
 
@@ -686,14 +744,120 @@ func (s *AuthService) CurrentSessionID(ctx context.Context, token string) string
 // recordSecurity appends a security event. Failures are intentionally ignored
 // so that an audit-log write never fails the primary auth operation.
 func (s *AuthService) recordSecurity(ctx context.Context, userID string, etype domain.SecurityEventType, title, detail, ip, device string) {
-	_ = s.store.SecurityEventRepo().Create(ctx, &domain.SecurityEvent{
-		UserID: userID,
-		Type:   etype,
-		Title:  title,
-		Detail: detail,
-		IP:     ip,
-		Device: device,
+	s.recordEvent(ctx, &domain.SecurityEvent{
+		UserID:   userID,
+		Type:     etype,
+		Severity: domain.SeverityInfo,
+		Title:    title,
+		Detail:   detail,
+		IP:       ip,
+		Device:   device,
 	})
+}
+
+// recordEvent appends a security event (best-effort; an audit write must never
+// fail the primary auth operation) and pushes an SSE refresh so open security
+// centers update.
+func (s *AuthService) recordEvent(ctx context.Context, ev *domain.SecurityEvent) {
+	if ev.Severity == "" {
+		ev.Severity = domain.SeverityInfo
+	}
+	_ = s.store.SecurityEventRepo().Create(ctx, ev)
+	s.publishSecurity(ev.UserID)
+}
+
+func (s *AuthService) publishSecurity(userID string) {
+	if s.SecurityHub == nil {
+		return
+	}
+	s.SecurityHub.Publish(events.Event{
+		Type: "data.changed", UserID: userID, Kind: "security", At: time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+// recordLoginSuccess logs a successful sign-in and, when the device was not
+// seen in the trailing 30 days, a new-device event plus an alert email.
+func (s *AuthService) recordLoginSuccess(ctx context.Context, user *domain.User, device, ip, via string) {
+	s.recordEvent(ctx, &domain.SecurityEvent{
+		UserID: user.ID, Type: domain.SecurityEventLogin, Severity: domain.SeverityInfo,
+		Title: "Signed in", Detail: "Signed in to your account",
+		IP: ip, UserAgent: device, Device: device, Metadata: map[string]any{"via": via},
+	})
+	recent, err := s.store.SessionRepo().CountRecentByDevice(ctx, user.ID, device, time.Now().Add(-30*24*time.Hour))
+	if err != nil || recent > 1 {
+		return
+	}
+	// recent==1 is only the session created by this login — a first-seen device.
+	s.recordEvent(ctx, &domain.SecurityEvent{
+		UserID: user.ID, Type: domain.SecurityEventNewDevice, Severity: domain.SeverityInfo,
+		Title: "New device sign-in", Detail: "Signed in from a device not seen in the last 30 days",
+		IP: ip, UserAgent: device, Device: device,
+	})
+	s.sendNewSignInAlert(ctx, user, device, ip)
+}
+
+// recordLoginFailure logs an incorrect-credential attempt.
+func (s *AuthService) recordLoginFailure(ctx context.Context, user *domain.User, device, ip, reason string) {
+	s.recordEvent(ctx, &domain.SecurityEvent{
+		UserID: user.ID, Type: domain.SecurityEventLoginFailed, Severity: domain.SeverityWarn,
+		Title: "Failed sign-in attempt", Detail: "An incorrect password was submitted for this account",
+		IP: ip, UserAgent: device, Device: device, Metadata: map[string]any{"reason": reason},
+	})
+}
+
+// recordThrottle logs the temporary sign-in lockout reached after repeated
+// failures.
+func (s *AuthService) recordThrottle(ctx context.Context, user *domain.User, device, ip string) {
+	s.recordEvent(ctx, &domain.SecurityEvent{
+		UserID: user.ID, Type: domain.SecurityEventThrottle, Severity: domain.SeverityWarn,
+		Title: "Sign-in locked out", Detail: "Repeated failed attempts temporarily locked sign-in for this account",
+		IP: ip, UserAgent: device, Device: device, Metadata: map[string]any{"locked_for_seconds": int(attemptWindowDur.Seconds())},
+	})
+}
+
+// sendNewSignInAlert emails the user about the first-seen device, respecting
+// their stored notification preference and deduping to once per hour. Failures
+// are swallowed so an alert never breaks the login.
+func (s *AuthService) sendNewSignInAlert(ctx context.Context, user *domain.User, device, ip string) {
+	if s.AlertMailer == nil || !s.notificationsOn(ctx, user, "new_signin") || !s.dedupeAlert(user.ID, "new_signin") {
+		return
+	}
+	_ = s.AlertMailer.SendNewSignIn(ctx, user.Email, deviceName(device), ip, time.Now().UTC().Format(time.RFC3339))
+}
+
+// sendFailedLoginAlert emails the user after repeated failed attempts.
+func (s *AuthService) sendFailedLoginAlert(ctx context.Context, user *domain.User, ip string) {
+	if s.AlertMailer == nil || !s.notificationsOn(ctx, user, "failed_login") || !s.dedupeAlert(user.ID, "failed_login") {
+		return
+	}
+	_ = s.AlertMailer.SendFailedSignIn(ctx, user.Email, ip, time.Now().UTC().Format(time.RFC3339))
+}
+
+// notificationsOn reads the account's email-alert preference for the given
+// bucket. Opted-out users get fewer emails but never lose feed events; a read
+// failure defaults to ON.
+func (s *AuthService) notificationsOn(ctx context.Context, user *domain.User, bucket string) bool {
+	newSigninOn, failedLoginOn, err := s.store.UserRepo().NotificationPrefs(ctx, user.ID)
+	if err != nil {
+		return true
+	}
+	if bucket == "failed_login" {
+		return failedLoginOn
+	}
+	return newSigninOn
+}
+
+// dedupeAlert returns true when no alert of this type has gone out to the user
+// in the last hour.
+func (s *AuthService) dedupeAlert(userID, typ string) bool {
+	key := userID + ":" + typ
+	s.alertMu.Lock()
+	defer s.alertMu.Unlock()
+	if last, ok := s.lastAlert[key]; ok && time.Since(last) < alertDedupe {
+		return false
+	}
+	s.lastAlert[key] = time.Now()
+	return true
 }
 
 func (s *AuthService) issueSession(ctx context.Context, userID, device, ip string) (string, error) {

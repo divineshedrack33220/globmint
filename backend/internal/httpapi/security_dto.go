@@ -30,25 +30,43 @@ func newDeviceResponse(d services.DeviceView) deviceResponse {
 }
 
 type securityEventResponse struct {
-	ID        string `json:"id"`
-	Type      string `json:"type"`
-	Title     string `json:"title"`
-	Detail    string `json:"detail"`
-	IP        string `json:"ip"`
-	Device    string `json:"device"`
-	CreatedAt string `json:"created_at"`
+	ID        string         `json:"id"`
+	Type      string         `json:"type"`
+	Severity  string         `json:"severity"`
+	Title     string         `json:"title"`
+	Detail    string         `json:"detail"`
+	IP        string         `json:"ip"`
+	Device    string         `json:"device"`
+	UserAgent string         `json:"user_agent"`
+	CreatedAt string         `json:"created_at"`
+	Metadata  map[string]any `json:"metadata,omitempty"`
 }
 
 func newSecurityEventResponse(e domain.SecurityEvent) securityEventResponse {
 	return securityEventResponse{
 		ID:        e.ID,
 		Type:      string(e.Type),
+		Severity:  string(e.Severity),
 		Title:     e.Title,
 		Detail:    e.Detail,
 		IP:        e.IP,
 		Device:    e.Device,
+		UserAgent: e.UserAgent,
 		CreatedAt: formatTime(e.CreatedAt),
+		Metadata:  e.Metadata,
 	}
+}
+
+// securityPrefsResponse is the user's email-alert preference set. Both flags
+// default ON when the stored row is missing.
+type securityPrefsResponse struct {
+	NewSigninEmail    bool `json:"notify_new_signin"`
+	FailedLoginEmail  bool `json:"notify_failed_login"`
+}
+
+type securityPrefsRequest struct {
+	NewSigninEmail    bool `json:"notify_new_signin"`
+	FailedLoginEmail  bool `json:"notify_failed_login"`
 }
 
 type notificationResponse struct {

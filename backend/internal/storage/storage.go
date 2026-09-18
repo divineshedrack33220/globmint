@@ -19,6 +19,11 @@ type UserRepository interface {
 	// MarkEmailVerified stamps users.email_verified_at when the user first
 	// proves ownership of their email with a delivered one-time code.
 	MarkEmailVerified(ctx context.Context, id string) error
+	// NotificationPrefs returns the user's email-alert preferences:
+	// (notifyNewSignin, notifyFailedLogin).
+	NotificationPrefs(ctx context.Context, id string) (newSignin bool, failedLogin bool, err error)
+	// UpdateNotificationPrefs persists the user's email-alert preferences.
+	UpdateNotificationPrefs(ctx context.Context, id string, newSignin, failedLogin bool) error
 }
 
 // EmailOTPRepository persists short-lived email verification codes (stored
@@ -48,6 +53,10 @@ type SessionRepository interface {
 	RevokeAllForUser(ctx context.Context, userID string) error
 	RevokeAllExcept(ctx context.Context, userID, keepID string) error
 	TouchLastActive(ctx context.Context, id string) error
+	// CountRecentByDevice returns how many of the user's sessions carry this
+	// exact device (User-Agent) signature created at or after since. Used to
+	// flag a "new device" login that was not seen in the trailing window.
+	CountRecentByDevice(ctx context.Context, userID, device string, since time.Time) (int, error)
 }
 
 // AccountRepository persists accounts and their balances.
@@ -137,6 +146,10 @@ type DepositAddressRepository interface {
 type SecurityEventRepository interface {
 	Create(ctx context.Context, e *domain.SecurityEvent) error
 	ListByUser(ctx context.Context, userID string, limit int) ([]domain.SecurityEvent, error)
+	// ListByUserPaged returns a page of the user's events (newest first) plus
+	// the total number of events that match. limit bounds the page; offset
+	// skips already-fetched rows (needed by the infinite-scrolling feed).
+	ListByUserPaged(ctx context.Context, userID string, limit, offset int) ([]domain.SecurityEvent, int, error)
 }
 
 // NotificationRepository persists the in-app notification inbox.

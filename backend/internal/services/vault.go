@@ -713,6 +713,19 @@ func (v *VaultService) handleDeposit(ctx context.Context, t blockchain.TokenTran
 
 // creditTransfer writes the durable event log and credits the user's NGN
 // balance for a confirmed deposit, under the user's lock, idempotent by key.
+// recordSecurityEvent writes a security event (best-effort; an audit write or
+// SSE fan never fails financial movement) and pushes a kind:"security" refresh
+// so open security centers update alongside the "all" invalidation.
+func (v *VaultService) recordSecurityEvent(ctx context.Context, ev *domain.SecurityEvent) {
+	_ = v.store.SecurityEventRepo().Create(ctx, ev)
+	if v.Hub != nil {
+		v.Hub.Publish(events.Event{
+			Type: "data.changed", UserID: ev.UserID, Kind: "security",
+			At: time.Now().UTC().Format(time.RFC3339),
+		})
+	}
+}
+
 func (v *VaultService) creditTransfer(ctx context.Context, userID string, t blockchain.TokenTransfer, key string) error {
 	// Durable, replayable event log (write-ahead for idempotency + audit).
 	if err := v.store.IndexerEventRepo().Insert(ctx, &domain.IndexerEvent{
@@ -749,6 +762,19 @@ func (v *VaultService) creditTransfer(ctx context.Context, userID string, t bloc
 		}
 		return err
 	}
+	v.recordSecurityEvent(ctx, &domain.SecurityEvent{
+		UserID:   userID,
+		Type:     domain.SecurityEventDeposit,
+		Severity: domain.SeverityInfo,
+		Title:    "Savings deposit received",
+		Detail:   "A deposit into your vault was confirmed and credited",
+		Metadata: map[string]any{
+			"source":      t.From,
+			"stablecoin":  v.cfg.StablecoinSymbol,
+			"amount_usdc": baseToMajorString(t.Value, v.cfg.StablecoinDecimals),
+			"amount_ngn":  formatMinor(ngnMinor, "NGN"),
+		},
+	})
 	if v.Hub != nil {
 		v.Hub.Publish(events.Event{
 			Type: "data.changed", UserID: userID, Kind: "all",
@@ -1185,6 +1211,21 @@ func (v *VaultService) executeWithdrawal(ctx context.Context, userID, destinatio
 		return nil, fmt.Errorf("on-chain sent (%s) but ledger debit failed: %w", txHash, err)
 	}
 	observability.Default.Withdrawal()
+	// Security event: the on-chain broadcast is the point of no return for the
+	// withdrawal. Feeds the user-visible Security Events panel.
+	v.recordSecurityEvent(ctx, &domain.SecurityEvent{
+		UserID:   userID,
+		Type:     domain.SecurityEventWithdrawal,
+		Severity: domain.SeverityInfo,
+		Title:    "Withdrawal completed",
+		Detail:   "A withdrawal was broadcast and debited from your ledger",
+		Metadata: map[string]any{
+			"destination": destination,
+			"stablecoin":  v.cfg.StablecoinSymbol,
+			"amount_ngn":  formatMinor(amountNgnMinor, "NGN"),
+			"amount_usdc": baseToMajorString(big.NewInt(usdcBase), v.cfg.StablecoinDecimals),
+		},
+	})
 	// Inbox: the user asked to be told whenever money arrives or leaves.
 	v.money.notify(ctx, userID, domain.NotificationCategoryWithdrawal,
 		"Withdrawal broadcast",
@@ -2005,6 +2046,14 @@ func (v *VaultService) sweepDueElevations(ctx context.Context) error {
 		if err := v.store.ElevationRepo().MarkBroadcast(ctx, e.ID, txn.ProviderRef); err != nil {
 			log.Printf("elevation sweeper: mark %s broadcast: %v", e.ID, err)
 		}
+		v.recordSecurityEvent(ctx, &domain.SecurityEvent{
+			UserID:   e.UserID,
+			Type:     domain.SecurityEventWithdrawal,
+			Severity: domain.SeverityInfo,
+			Title:    "Withdrawal completed",
+			Detail:   "A time-locked withdrawal was released and broadcast",
+			Metadata: map[string]any{"elevation_id": e.ID},
+		})
 		if v.Hub != nil {
 			v.Hub.Publish(events.Event{
 				Type: "data.changed", UserID: e.UserID, Kind: "all",

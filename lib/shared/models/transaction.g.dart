@@ -50,13 +50,21 @@ const _$TransactionTypeEnumMap = {
   TransactionType.conversion: 'conversion',
   TransactionType.transfer: 'transfer',
   TransactionType.savings: 'savings',
+  TransactionType.fee: 'fee',
+  TransactionType.adjustment: 'adjustment',
+  TransactionType.reversal: 'reversal',
 };
 
 const _$TransactionStatusEnumMap = {
   TransactionStatus.initiated: 'initiated',
+  TransactionStatus.pending: 'pending',
+  TransactionStatus.authorized: 'authorized',
   TransactionStatus.processing: 'processing',
+  TransactionStatus.submitted: 'submitted',
+  TransactionStatus.confirmed: 'confirmed',
   TransactionStatus.completed: 'completed',
   TransactionStatus.failed: 'failed',
   TransactionStatus.cancelled: 'cancelled',
   TransactionStatus.reversed: 'reversed',
+  TransactionStatus.expired: 'expired',
 };

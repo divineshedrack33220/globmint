@@ -16,10 +16,10 @@ class Device with _$Device {
     required DateTime createdAt,
   }) = _Device;
 
-  factory Device.fromJson(Map<String, dynamic> json) => _$DeviceFromJson(json);
+  factory Device.fromJson(Map<String, dynamic> json) =>
+      _$DeviceFromJson(json);
 }
 
-/// A security-activity event on the user's account.
 @freezed
 class SecurityEvent with _$SecurityEvent {
   const factory SecurityEvent({
@@ -27,6 +27,11 @@ class SecurityEvent with _$SecurityEvent {
     required String type,
     required String title,
     required String detail,
+    @Default('info') String severity,
+    String? ip,
+    String? userAgent,
+    String? device,
+    Map<String, dynamic>? metadata,
     required DateTime time,
   }) = _SecurityEvent;
 
@@ -34,7 +39,20 @@ class SecurityEvent with _$SecurityEvent {
       _$SecurityEventFromJson(json);
 }
 
-/// An in-app inbox notification.
+/// The user's email-alert preferences (severity + notification toggles),
+/// mirrored from the backend `/security/prefs` surface.
+@freezed
+class SecurityPrefs with _$SecurityPrefs {
+  const factory SecurityPrefs({
+    @Default(true) bool notifyNewSignin,
+    @Default(true) bool notifyFailedLogin,
+  }) = _SecurityPrefs;
+
+  factory SecurityPrefs.fromJson(Map<String, dynamic> json) =>
+      _$SecurityPrefsFromJson(json);
+}
+
+/// An in-app notification.
 @freezed
 class AppNotification with _$AppNotification {
   const factory AppNotification({

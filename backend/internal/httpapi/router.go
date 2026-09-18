@@ -18,6 +18,10 @@ func clientIPKey(r *http.Request) string {
 	return r.RemoteAddr
 }
 
+// clientIP is an alias used by handlers that record security events and need
+// only the originating IP.
+func clientIP(r *http.Request) string { return clientIPKey(r) }
+
 // NewHandler builds the full HTTP handler, applying middleware and registering
 // routes. corsOrigins is the explicit browser-origin allowlist (empty = open).
 // limits overrides the per-route rate budgets; chaos injects failures (test-only).
@@ -176,6 +180,8 @@ func NewHandler(deps *Deps, auth middleware.Authenticator, corsOrigins []string,
 
 	// Security activity + notifications
 	mux.Handle("GET "+api+"/security-events", middleware.Auth(auth, http.HandlerFunc(deps.handleListSecurityEvents)))
+	mux.Handle("GET "+api+"/security/prefs", middleware.Auth(auth, http.HandlerFunc(deps.handleGetSecurityPrefs)))
+	mux.Handle("PUT "+api+"/security/prefs", middleware.Auth(auth, http.HandlerFunc(deps.handleUpdateSecurityPrefs)))
 	mux.Handle("GET "+api+"/notifications", middleware.Auth(auth, http.HandlerFunc(deps.handleListNotifications)))
 	mux.Handle("POST "+api+"/notifications/read-all", middleware.Auth(auth, http.HandlerFunc(deps.handleMarkAllNotificationsRead)))
 	mux.Handle("POST "+api+"/notifications/{id}/read", middleware.Auth(auth, http.HandlerFunc(deps.handleMarkNotificationRead)))

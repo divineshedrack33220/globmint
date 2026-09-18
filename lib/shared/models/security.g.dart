@@ -33,6 +33,11 @@ _$SecurityEventImpl _$$SecurityEventImplFromJson(Map<String, dynamic> json) =>
       type: json['type'] as String,
       title: json['title'] as String,
       detail: json['detail'] as String,
+      severity: json['severity'] as String? ?? 'info',
+      ip: json['ip'] as String?,
+      userAgent: json['userAgent'] as String?,
+      device: json['device'] as String?,
+      metadata: json['metadata'] as Map<String, dynamic>?,
       time: DateTime.parse(json['time'] as String),
     );
 
@@ -42,7 +47,24 @@ Map<String, dynamic> _$$SecurityEventImplToJson(_$SecurityEventImpl instance) =>
       'type': instance.type,
       'title': instance.title,
       'detail': instance.detail,
+      'severity': instance.severity,
+      'ip': instance.ip,
+      'userAgent': instance.userAgent,
+      'device': instance.device,
+      'metadata': instance.metadata,
       'time': instance.time.toIso8601String(),
+    };
+
+_$SecurityPrefsImpl _$$SecurityPrefsImplFromJson(Map<String, dynamic> json) =>
+    _$SecurityPrefsImpl(
+      notifyNewSignin: json['notifyNewSignin'] as bool? ?? true,
+      notifyFailedLogin: json['notifyFailedLogin'] as bool? ?? true,
+    );
+
+Map<String, dynamic> _$$SecurityPrefsImplToJson(_$SecurityPrefsImpl instance) =>
+    <String, dynamic>{
+      'notifyNewSignin': instance.notifyNewSignin,
+      'notifyFailedLogin': instance.notifyFailedLogin,
     };
 
 _$AppNotificationImpl _$$AppNotificationImplFromJson(

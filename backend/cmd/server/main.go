@@ -151,6 +151,12 @@ func main() {
 		RequireUserSignature: cfg.RequireUserSignature,
 	}
 	vaultSvc.Hub = eventsHub
+	// Security alerts share the Resend-backed sender (console fallback when no
+	// API key); the same instance also delivers OTP codes.
+	alertMailer := mailer.New(cfg.ResendAPIKey, cfg.EmailFrom)
+	authSvc.AlertMailer = alertMailer
+	authSvc.SecurityHub = eventsHub
+	securitySvc.SecurityHub = eventsHub
 
 	handler := httpapi.NewHandler(deps, authSvc, cfg.CORSOrigins,
 		middleware.RateLimits{AuthBurst: cfg.RateLimitAuthBurst, MoneyBurst: cfg.RateLimitMoneyBurst},

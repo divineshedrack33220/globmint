@@ -316,6 +316,11 @@ mixin _$SecurityEvent {
   String get type => throw _privateConstructorUsedError;
   String get title => throw _privateConstructorUsedError;
   String get detail => throw _privateConstructorUsedError;
+  String get severity => throw _privateConstructorUsedError;
+  String? get ip => throw _privateConstructorUsedError;
+  String? get userAgent => throw _privateConstructorUsedError;
+  String? get device => throw _privateConstructorUsedError;
+  Map<String, dynamic>? get metadata => throw _privateConstructorUsedError;
   DateTime get time => throw _privateConstructorUsedError;
 
   /// Serializes this SecurityEvent to a JSON map.
@@ -340,6 +345,11 @@ abstract class $SecurityEventCopyWith<$Res> {
     String type,
     String title,
     String detail,
+    String severity,
+    String? ip,
+    String? userAgent,
+    String? device,
+    Map<String, dynamic>? metadata,
     DateTime time,
   });
 }
@@ -363,6 +373,11 @@ class _$SecurityEventCopyWithImpl<$Res, $Val extends SecurityEvent>
     Object? type = null,
     Object? title = null,
     Object? detail = null,
+    Object? severity = null,
+    Object? ip = freezed,
+    Object? userAgent = freezed,
+    Object? device = freezed,
+    Object? metadata = freezed,
     Object? time = null,
   }) {
     return _then(
@@ -383,6 +398,26 @@ class _$SecurityEventCopyWithImpl<$Res, $Val extends SecurityEvent>
                 ? _value.detail
                 : detail // ignore: cast_nullable_to_non_nullable
                       as String,
+            severity: null == severity
+                ? _value.severity
+                : severity // ignore: cast_nullable_to_non_nullable
+                      as String,
+            ip: freezed == ip
+                ? _value.ip
+                : ip // ignore: cast_nullable_to_non_nullable
+                      as String?,
+            userAgent: freezed == userAgent
+                ? _value.userAgent
+                : userAgent // ignore: cast_nullable_to_non_nullable
+                      as String?,
+            device: freezed == device
+                ? _value.device
+                : device // ignore: cast_nullable_to_non_nullable
+                      as String?,
+            metadata: freezed == metadata
+                ? _value.metadata
+                : metadata // ignore: cast_nullable_to_non_nullable
+                      as Map<String, dynamic>?,
             time: null == time
                 ? _value.time
                 : time // ignore: cast_nullable_to_non_nullable
@@ -407,6 +442,11 @@ abstract class _$$SecurityEventImplCopyWith<$Res>
     String type,
     String title,
     String detail,
+    String severity,
+    String? ip,
+    String? userAgent,
+    String? device,
+    Map<String, dynamic>? metadata,
     DateTime time,
   });
 }
@@ -429,6 +469,11 @@ class __$$SecurityEventImplCopyWithImpl<$Res>
     Object? type = null,
     Object? title = null,
     Object? detail = null,
+    Object? severity = null,
+    Object? ip = freezed,
+    Object? userAgent = freezed,
+    Object? device = freezed,
+    Object? metadata = freezed,
     Object? time = null,
   }) {
     return _then(
@@ -449,6 +494,26 @@ class __$$SecurityEventImplCopyWithImpl<$Res>
             ? _value.detail
             : detail // ignore: cast_nullable_to_non_nullable
                   as String,
+        severity: null == severity
+            ? _value.severity
+            : severity // ignore: cast_nullable_to_non_nullable
+                  as String,
+        ip: freezed == ip
+            ? _value.ip
+            : ip // ignore: cast_nullable_to_non_nullable
+                  as String?,
+        userAgent: freezed == userAgent
+            ? _value.userAgent
+            : userAgent // ignore: cast_nullable_to_non_nullable
+                  as String?,
+        device: freezed == device
+            ? _value.device
+            : device // ignore: cast_nullable_to_non_nullable
+                  as String?,
+        metadata: freezed == metadata
+            ? _value._metadata
+            : metadata // ignore: cast_nullable_to_non_nullable
+                  as Map<String, dynamic>?,
         time: null == time
             ? _value.time
             : time // ignore: cast_nullable_to_non_nullable
@@ -466,8 +531,13 @@ class _$SecurityEventImpl implements _SecurityEvent {
     required this.type,
     required this.title,
     required this.detail,
+    this.severity = 'info',
+    this.ip,
+    this.userAgent,
+    this.device,
+    final Map<String, dynamic>? metadata,
     required this.time,
-  });
+  }) : _metadata = metadata;
 
   factory _$SecurityEventImpl.fromJson(Map<String, dynamic> json) =>
       _$$SecurityEventImplFromJson(json);
@@ -481,11 +551,30 @@ class _$SecurityEventImpl implements _SecurityEvent {
   @override
   final String detail;
   @override
+  @JsonKey()
+  final String severity;
+  @override
+  final String? ip;
+  @override
+  final String? userAgent;
+  @override
+  final String? device;
+  final Map<String, dynamic>? _metadata;
+  @override
+  Map<String, dynamic>? get metadata {
+    final value = _metadata;
+    if (value == null) return null;
+    if (_metadata is EqualUnmodifiableMapView) return _metadata;
+    // ignore: implicit_dynamic_type
+    return EqualUnmodifiableMapView(value);
+  }
+
+  @override
   final DateTime time;
 
   @override
   String toString() {
-    return 'SecurityEvent(id: $id, type: $type, title: $title, detail: $detail, time: $time)';
+    return 'SecurityEvent(id: $id, type: $type, title: $title, detail: $detail, severity: $severity, ip: $ip, userAgent: $userAgent, device: $device, metadata: $metadata, time: $time)';
   }
 
   @override
@@ -497,12 +586,31 @@ class _$SecurityEventImpl implements _SecurityEvent {
             (identical(other.type, type) || other.type == type) &&
             (identical(other.title, title) || other.title == title) &&
             (identical(other.detail, detail) || other.detail == detail) &&
+            (identical(other.severity, severity) ||
+                other.severity == severity) &&
+            (identical(other.ip, ip) || other.ip == ip) &&
+            (identical(other.userAgent, userAgent) ||
+                other.userAgent == userAgent) &&
+            (identical(other.device, device) || other.device == device) &&
+            const DeepCollectionEquality().equals(other._metadata, _metadata) &&
             (identical(other.time, time) || other.time == time));
   }
 
   @JsonKey(includeFromJson: false, includeToJson: false)
   @override
-  int get hashCode => Object.hash(runtimeType, id, type, title, detail, time);
+  int get hashCode => Object.hash(
+    runtimeType,
+    id,
+    type,
+    title,
+    detail,
+    severity,
+    ip,
+    userAgent,
+    device,
+    const DeepCollectionEquality().hash(_metadata),
+    time,
+  );
 
   /// Create a copy of SecurityEvent
   /// with the given fields replaced by the non-null parameter values.
@@ -524,6 +632,11 @@ abstract class _SecurityEvent implements SecurityEvent {
     required final String type,
     required final String title,
     required final String detail,
+    final String severity,
+    final String? ip,
+    final String? userAgent,
+    final String? device,
+    final Map<String, dynamic>? metadata,
     required final DateTime time,
   }) = _$SecurityEventImpl;
 
@@ -539,6 +652,16 @@ abstract class _SecurityEvent implements SecurityEvent {
   @override
   String get detail;
   @override
+  String get severity;
+  @override
+  String? get ip;
+  @override
+  String? get userAgent;
+  @override
+  String? get device;
+  @override
+  Map<String, dynamic>? get metadata;
+  @override
   DateTime get time;
 
   /// Create a copy of SecurityEvent
@@ -546,6 +669,188 @@ abstract class _SecurityEvent implements SecurityEvent {
   @override
   @JsonKey(includeFromJson: false, includeToJson: false)
   _$$SecurityEventImplCopyWith<_$SecurityEventImpl> get copyWith =>
+      throw _privateConstructorUsedError;
+}
+
+SecurityPrefs _$SecurityPrefsFromJson(Map<String, dynamic> json) {
+  return _SecurityPrefs.fromJson(json);
+}
+
+/// @nodoc
+mixin _$SecurityPrefs {
+  bool get notifyNewSignin => throw _privateConstructorUsedError;
+  bool get notifyFailedLogin => throw _privateConstructorUsedError;
+
+  /// Serializes this SecurityPrefs to a JSON map.
+  Map<String, dynamic> toJson() => throw _privateConstructorUsedError;
+
+  /// Create a copy of SecurityPrefs
+  /// with the given fields replaced by the non-null parameter values.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  $SecurityPrefsCopyWith<SecurityPrefs> get copyWith =>
+      throw _privateConstructorUsedError;
+}
+
+/// @nodoc
+abstract class $SecurityPrefsCopyWith<$Res> {
+  factory $SecurityPrefsCopyWith(
+    SecurityPrefs value,
+    $Res Function(SecurityPrefs) then,
+  ) = _$SecurityPrefsCopyWithImpl<$Res, SecurityPrefs>;
+  @useResult
+  $Res call({bool notifyNewSignin, bool notifyFailedLogin});
+}
+
+/// @nodoc
+class _$SecurityPrefsCopyWithImpl<$Res, $Val extends SecurityPrefs>
+    implements $SecurityPrefsCopyWith<$Res> {
+  _$SecurityPrefsCopyWithImpl(this._value, this._then);
+
+  // ignore: unused_field
+  final $Val _value;
+  // ignore: unused_field
+  final $Res Function($Val) _then;
+
+  /// Create a copy of SecurityPrefs
+  /// with the given fields replaced by the non-null parameter values.
+  @pragma('vm:prefer-inline')
+  @override
+  $Res call({
+    Object? notifyNewSignin = null,
+    Object? notifyFailedLogin = null,
+  }) {
+    return _then(
+      _value.copyWith(
+            notifyNewSignin: null == notifyNewSignin
+                ? _value.notifyNewSignin
+                : notifyNewSignin // ignore: cast_nullable_to_non_nullable
+                      as bool,
+            notifyFailedLogin: null == notifyFailedLogin
+                ? _value.notifyFailedLogin
+                : notifyFailedLogin // ignore: cast_nullable_to_non_nullable
+                      as bool,
+          )
+          as $Val,
+    );
+  }
+}
+
+/// @nodoc
+abstract class _$$SecurityPrefsImplCopyWith<$Res>
+    implements $SecurityPrefsCopyWith<$Res> {
+  factory _$$SecurityPrefsImplCopyWith(
+    _$SecurityPrefsImpl value,
+    $Res Function(_$SecurityPrefsImpl) then,
+  ) = __$$SecurityPrefsImplCopyWithImpl<$Res>;
+  @override
+  @useResult
+  $Res call({bool notifyNewSignin, bool notifyFailedLogin});
+}
+
+/// @nodoc
+class __$$SecurityPrefsImplCopyWithImpl<$Res>
+    extends _$SecurityPrefsCopyWithImpl<$Res, _$SecurityPrefsImpl>
+    implements _$$SecurityPrefsImplCopyWith<$Res> {
+  __$$SecurityPrefsImplCopyWithImpl(
+    _$SecurityPrefsImpl _value,
+    $Res Function(_$SecurityPrefsImpl) _then,
+  ) : super(_value, _then);
+
+  /// Create a copy of SecurityPrefs
+  /// with the given fields replaced by the non-null parameter values.
+  @pragma('vm:prefer-inline')
+  @override
+  $Res call({
+    Object? notifyNewSignin = null,
+    Object? notifyFailedLogin = null,
+  }) {
+    return _then(
+      _$SecurityPrefsImpl(
+        notifyNewSignin: null == notifyNewSignin
+            ? _value.notifyNewSignin
+            : notifyNewSignin // ignore: cast_nullable_to_non_nullable
+                  as bool,
+        notifyFailedLogin: null == notifyFailedLogin
+            ? _value.notifyFailedLogin
+            : notifyFailedLogin // ignore: cast_nullable_to_non_nullable
+                  as bool,
+      ),
+    );
+  }
+}
+
+/// @nodoc
+@JsonSerializable()
+class _$SecurityPrefsImpl implements _SecurityPrefs {
+  const _$SecurityPrefsImpl({
+    this.notifyNewSignin = true,
+    this.notifyFailedLogin = true,
+  });
+
+  factory _$SecurityPrefsImpl.fromJson(Map<String, dynamic> json) =>
+      _$$SecurityPrefsImplFromJson(json);
+
+  @override
+  @JsonKey()
+  final bool notifyNewSignin;
+  @override
+  @JsonKey()
+  final bool notifyFailedLogin;
+
+  @override
+  String toString() {
+    return 'SecurityPrefs(notifyNewSignin: $notifyNewSignin, notifyFailedLogin: $notifyFailedLogin)';
+  }
+
+  @override
+  bool operator ==(Object other) {
+    return identical(this, other) ||
+        (other.runtimeType == runtimeType &&
+            other is _$SecurityPrefsImpl &&
+            (identical(other.notifyNewSignin, notifyNewSignin) ||
+                other.notifyNewSignin == notifyNewSignin) &&
+            (identical(other.notifyFailedLogin, notifyFailedLogin) ||
+                other.notifyFailedLogin == notifyFailedLogin));
+  }
+
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  int get hashCode =>
+      Object.hash(runtimeType, notifyNewSignin, notifyFailedLogin);
+
+  /// Create a copy of SecurityPrefs
+  /// with the given fields replaced by the non-null parameter values.
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  @override
+  @pragma('vm:prefer-inline')
+  _$$SecurityPrefsImplCopyWith<_$SecurityPrefsImpl> get copyWith =>
+      __$$SecurityPrefsImplCopyWithImpl<_$SecurityPrefsImpl>(this, _$identity);
+
+  @override
+  Map<String, dynamic> toJson() {
+    return _$$SecurityPrefsImplToJson(this);
+  }
+}
+
+abstract class _SecurityPrefs implements SecurityPrefs {
+  const factory _SecurityPrefs({
+    final bool notifyNewSignin,
+    final bool notifyFailedLogin,
+  }) = _$SecurityPrefsImpl;
+
+  factory _SecurityPrefs.fromJson(Map<String, dynamic> json) =
+      _$SecurityPrefsImpl.fromJson;
+
+  @override
+  bool get notifyNewSignin;
+  @override
+  bool get notifyFailedLogin;
+
+  /// Create a copy of SecurityPrefs
+  /// with the given fields replaced by the non-null parameter values.
+  @override
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  _$$SecurityPrefsImplCopyWith<_$SecurityPrefsImpl> get copyWith =>
       throw _privateConstructorUsedError;
 }
 

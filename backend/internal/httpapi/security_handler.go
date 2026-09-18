@@ -2,10 +2,25 @@ package httpapi
 
 import (
 	"net/http"
+	"strconv"
 
 	"globmint/backend/internal/domain"
 	"globmint/backend/internal/httpapi/middleware"
 )
+
+// queryInt parses an optional integer query parameter, returning def when the
+// parameter is absent and ErrBadRequest when it is present but not a number.
+func queryInt(r *http.Request, key string, def int) (int, error) {
+	raw := r.URL.Query().Get(key)
+	if raw == "" {
+		return def, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, domain.ErrBadRequest
+	}
+	return n, nil
+}
 
 func (d *Deps) handleListDevices(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserFrom(r.Context())
@@ -59,7 +74,23 @@ func (d *Deps) handleListSecurityEvents(w http.ResponseWriter, r *http.Request) 
 		writeError(w, r, domain.ErrUnauthenticated, "")
 		return
 	}
-	events, err := d.Security.ListSecurityEvents(r.Context(), user.ID)
+	limit, err := queryInt(r, "limit", 50)
+	if err != nil {
+		writeError(w, r, err, "")
+		return
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	offset, err := queryInt(r, "offset", 0)
+	if err != nil {
+		writeError(w, r, err, "")
+		return
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	events, total, err := d.Security.ListSecurityEventsPaged(r.Context(), user.ID, limit, offset)
 	if err != nil {
 		writeError(w, r, err, "")
 		return
@@ -68,7 +99,45 @@ func (d *Deps) handleListSecurityEvents(w http.ResponseWriter, r *http.Request) 
 	for _, e := range events {
 		out = append(out, newSecurityEventResponse(e))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": out})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":    out,
+		"total":    total,
+		"limit":    limit,
+		"offset":   offset,
+		"has_more": offset+len(out) < total,
+	})
+}
+
+func (d *Deps) handleGetSecurityPrefs(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	if user == nil {
+		writeError(w, r, domain.ErrUnauthenticated, "")
+		return
+	}
+	ns, fl, err := d.Security.NotificationPrefs(r.Context(), user.ID)
+	if err != nil {
+		writeError(w, r, err, "")
+		return
+	}
+	writeJSON(w, http.StatusOK, securityPrefsResponse{NewSigninEmail: ns, FailedLoginEmail: fl})
+}
+
+func (d *Deps) handleUpdateSecurityPrefs(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	if user == nil {
+		writeError(w, r, domain.ErrUnauthenticated, "")
+		return
+	}
+	var req securityPrefsRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, r, err, "")
+		return
+	}
+	if err := d.Security.UpdateNotificationPrefs(r.Context(), user.ID, req.NewSigninEmail, req.FailedLoginEmail); err != nil {
+		writeError(w, r, err, "")
+		return
+	}
+	writeJSON(w, http.StatusOK, securityPrefsResponse{NewSigninEmail: req.NewSigninEmail, FailedLoginEmail: req.FailedLoginEmail})
 }
 
 func (d *Deps) handleListNotifications(w http.ResponseWriter, r *http.Request) {

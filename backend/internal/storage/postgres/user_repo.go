@@ -103,3 +103,28 @@ func (r *userRepo) MarkEmailVerified(ctx context.Context, id string) error {
 	}
 	return nil
 }
+
+func (r *userRepo) NotificationPrefs(ctx context.Context, id string) (bool, bool, error) {
+	var newSignin, failedLogin bool
+	err := r.q.QueryRow(ctx, `
+		SELECT COALESCE(notify_new_signin, TRUE), COALESCE(notify_failed_login, TRUE)
+		FROM users WHERE id = $1::uuid`, id).Scan(&newSignin, &failedLogin)
+	if err != nil {
+		return false, false, mapPgErr(err)
+	}
+	return newSignin, failedLogin, nil
+}
+
+func (r *userRepo) UpdateNotificationPrefs(ctx context.Context, id string, newSignin, failedLogin bool) error {
+	tag, err := r.q.Exec(ctx, `
+		UPDATE users
+		SET notify_new_signin = $2, notify_failed_login = $3, updated_at = now()
+		WHERE id = $1::uuid`, id, newSignin, failedLogin)
+	if err != nil {
+		return mapPgErr(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}

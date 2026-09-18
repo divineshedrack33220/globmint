@@ -8,7 +8,7 @@ import 'connectivity.dart';
 import 'session_store.dart';
 
 /// Kind of data mutation pushed by the backend over the SSE feed.
-enum EventKind { account, vault, transactions, all }
+enum EventKind { account, vault, transactions, security, all }
 
 /// A server-pushed change notification from `GET /api/v1/events`.
 class UserEvent {
@@ -31,6 +31,7 @@ class UserEvent {
       'account' => EventKind.account,
       'vault' => EventKind.vault,
       'transactions' => EventKind.transactions,
+      'security' => EventKind.security,
       _ => EventKind.all,
     };
   }

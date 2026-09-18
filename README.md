@@ -427,15 +427,15 @@ flowchart TB
 | Savings/Vault | `GET /savings/deposit-info`, `PUT /savings/deposit-address`, `GET /savings/vault-status`, `GET /savings/custody` (clone owner-seat snapshot; chain-authoritative, cache fallback), `GET /savings/custody/prepare?new_owner=…` (quotes the `TransferOwnership` EIP-712 payload), `POST /savings/custody/claim` (idempotent; relays the custody handover signed by the platform signer), `GET /savings/withdraw/prepare` (quotes the EIP-712 payload to sign), `POST /savings/withdraw` (relays the signed `withdrawWithSig`), `GET /savings/withdraw` (pending time-locks), `POST /savings/withdraw/{id}/cancel`, `GET /savings/recovery` (clone recovery state; chain-authoritative, cache fallback), `GET /savings/recovery/prepare?recovery_address=…` (quotes the `SetRecovery` payload to sign), `PUT /savings/recovery` (relays the signed `setRecoveryAddressBySig`) |
 | Beneficiaries | `GET/POST /beneficiaries`, `PATCH /beneficiaries/{id}`, `POST …/favorite`, `DELETE …/{id}`, `GET /beneficiaries/address/{address}` |
 | Bank accounts | `GET/POST /bank-accounts`, `POST /bank-accounts/{id}/default`, `DELETE …/{id}` |
-| Devices / security | `GET /devices`, `POST /devices/revoke-others`, `POST /devices/{id}/revoke`, `GET /security-events` |
+| Devices / security | `GET /devices`, `POST /devices/revoke-others`, `POST /devices/{id}/revoke`, `GET /security-events?limit&offset` (paged, has_more), `GET/PUT /security/prefs` (`notify_new_signin`, `notify_failed_login`) |
 | Notifications | `GET /notifications` |
 | Realtime | `GET /events` (Server-Sent Events, Bearer auth) |
 | Ops | `GET /health`, `GET /live`, `GET /metrics` |
 
 **SSE (`GET /events`)** pushes balance/vault/transaction invalidation to connected clients
 instead of UI polling. On (re)connect the server sends a `connected` frame, then a small
-`data.changed` event per `kind` (`account` | `vault` | `transactions` | `all`) whenever a
-deposit, withdrawal, transfer, conversion, or vault hold mutates state. A 25-second
+`data.changed` event per `kind` (`account` | `vault` | `transactions` | `security` | `notification` | `all`) whenever a
+deposit, withdrawal, transfer, conversion, or vault hold mutates state. `kind=security` invalidates the Security Center (devices, security events, user prefs) on the connected client. A 25-second
 heartbeat keeps proxies from dropping the stream; a publish with no subscribers is a no-op.
 The Flutter client reconnects with exponential backoff (1s → 15s).
 
@@ -1141,7 +1141,7 @@ then decides what a cold start shows:
 | `0003_payments` | bank accounts, transfers |
 | `0004_deposit_address` | user ↔ on-chain wallet link |
 | `0004_seed_rates` | FX rates for USDT/USDC ↔ NGN |
-| `0005_security` | security events, devices, notifications |
+| `0005_security` + `0021_security_notifications` | security events, devices, notify-preferences, biometrically triggered alert mails |
 | `0006_indexer_state` | vault-indexer block cursor (singleton, resumable) |
 | `0007_beneficiary_addresses` | crypto beneficiaries with wallet addresses |
 | `0008_audit_log` | append-only admin/security audit trail |
