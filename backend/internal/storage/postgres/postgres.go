@@ -131,6 +131,7 @@ func (s *Store) ElevationRepo() storage.ElevationRepository { return NewElevatio
 func (s *Store) VaultCloneRepo() storage.VaultCloneRepository { return NewVaultCloneRepo(s.q) }
 func (s *Store) UserSaltsRepo() storage.UserSaltsRepository { return NewUserSaltsRepo(s.q) }
 func (s *Store) EmailOTPRepo() storage.EmailOTPRepository     { return NewEmailOTPRepo(s.q) }
+func (s *Store) WaitlistRepo() storage.WaitlistRepository  { return NewWaitlistRepo(s.q) }
 
 // TryAcquireIndexerLeadership grabs a session-level Postgres advisory lock on
 // a dedicated connection so exactly one indexer instance scans at a time. The

@@ -57,3 +57,6 @@ app.*.map.json
 
 # Mainnet env (contains real keys — never commit)
 .env.mainnet
+
+# Go build artifacts
+backend/bin/

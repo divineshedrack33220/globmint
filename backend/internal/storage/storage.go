@@ -43,6 +43,14 @@ type EmailOTPRepository interface {
 	Clear(ctx context.Context, email string) error
 }
 
+// WaitlistRepository persists early-access signups (email-only, no account).
+type WaitlistRepository interface {
+	// Join records an email on the waitlist. Duplicate emails are ignored.
+	Join(ctx context.Context, email string) error
+	// Count returns how many emails are currently on the waitlist.
+	Count(ctx context.Context) (int, error)
+}
+
 // SessionRepository persists sessions.
 type SessionRepository interface {
 	Create(ctx context.Context, s *domain.Session) error
@@ -260,6 +268,7 @@ type Store interface {
 	// is stored here so the backend can derive keccak256(user, salt) commitments.
 	UserSaltsRepo() UserSaltsRepository
 	EmailOTPRepo() EmailOTPRepository
+	WaitlistRepo() WaitlistRepository
 	// TryAcquireIndexerLeadership attempts a Postgres session-level advisory
 	// lock so only one indexer instance scans at a time. On success it returns
 	// a release func and ok=true; the caller must hold the lock for the whole

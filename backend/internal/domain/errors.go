@@ -14,6 +14,7 @@ var (
 	ErrUserLocked          = errors.New("account locked")
 	ErrInsufficientBalance = errors.New("insufficient balance")
 	ErrInvalidAmount       = errors.New("invalid amount")
+	ErrInvalidEmail        = errors.New("invalid email address")
 	ErrBadRequest          = errors.New("bad request")
 	ErrIdempotentReplay    = errors.New("idempotent request already processed")
 	ErrAccountNotFound     = errors.New("account not found")
@@ -63,7 +64,7 @@ func ErrorCode(err error) string {
 		return "ACCOUNT_LOCKED"
 	case errors.Is(err, ErrInsufficientBalance):
 		return "INSUFFICIENT_BALANCE"
-	case errors.Is(err, ErrInvalidAmount), errors.Is(err, ErrBadRequest), errors.Is(err, ErrUnsupportedCurrency), errors.Is(err, ErrRateExceeded), errors.Is(err, ErrInvalidAddress), errors.Is(err, ErrInvalidSalt):
+	case errors.Is(err, ErrInvalidAmount), errors.Is(err, ErrBadRequest), errors.Is(err, ErrUnsupportedCurrency), errors.Is(err, ErrRateExceeded), errors.Is(err, ErrInvalidAddress), errors.Is(err, ErrInvalidSalt), errors.Is(err, ErrInvalidEmail):
 		return "INVALID_REQUEST"
 	case errors.Is(err, ErrInvalidPin):
 		return "INVALID_PIN"

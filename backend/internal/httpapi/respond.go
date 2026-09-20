@@ -121,7 +121,8 @@ func errorStatus(err error) int {	switch {
 		errors.Is(err, domain.ErrInvalidPin),
 		errors.Is(err, domain.ErrInvalidCode),
 		errors.Is(err, domain.ErrOTPExpired),
-		errors.Is(err, domain.ErrOTPNotFound):
+		errors.Is(err, domain.ErrOTPNotFound),
+		errors.Is(err, domain.ErrInvalidEmail):
 		return http.StatusBadRequest
 	case errors.Is(err, domain.ErrLimitExceeded), errors.Is(err, domain.ErrFeatureDisabled):
 		return http.StatusForbidden

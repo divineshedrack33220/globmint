@@ -18,6 +18,7 @@ type Deps struct {
 	Money      *services.MoneyService
 	Savings    *services.SavingsService
 	Security   *services.SecurityService
+	Waitlist   *services.WaitlistService
 	Blockchain blockchain.BlockchainService
 	Vault      *services.VaultService
 	// Events fans change notifications out to SSE subscribers.

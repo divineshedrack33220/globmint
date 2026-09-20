@@ -48,6 +48,9 @@ func NewHandler(deps *Deps, auth middleware.Authenticator, corsOrigins []string,
 	mux.Handle("POST "+api+"/auth/otp/send", middleware.RateLimiter(http.HandlerFunc(deps.handleSendOTP), time.Second, limits.AuthBurst, clientIPKey))
 	mux.Handle("POST "+api+"/auth/otp/verify", middleware.RateLimiter(http.HandlerFunc(deps.handleVerifyOTP), time.Second, limits.AuthBurst, clientIPKey))
 
+	// Early-access waitlist (public, rate-limited, idempotent).
+	mux.Handle("POST "+api+"/waitlist", middleware.RateLimiter(http.HandlerFunc(deps.handleWaitlistJoin), time.Second, limits.AuthBurst, clientIPKey))
+
 	// Authenticated
 	mux.Handle("POST "+api+"/auth/logout", middleware.Auth(auth, http.HandlerFunc(deps.handleLogout)))
 	mux.Handle("POST "+api+"/auth/password", middleware.Auth(auth, http.HandlerFunc(deps.handleChangePassword)))

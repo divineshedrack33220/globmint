@@ -85,6 +85,7 @@ func main() {
 	savingsCfg.VaultAddress = vaultAddress
 	savingsSvc := services.NewSavingsService(store, savingsCfg)
 	securitySvc := services.NewSecurityService(store)
+	waitlistSvc := services.NewWaitlistService(store)
 
 	// NGN-per-USDC rate (kobo per USDC). There is NO invented fallback: the
 	// rate comes from the live market feed, or, when the feed is unreachable,
@@ -144,6 +145,7 @@ func main() {
 		Money:                moneySvc,
 		Savings:              savingsSvc,
 		Security:             securitySvc,
+		Waitlist:             waitlistSvc,
 		Blockchain:           chainSvc,
 		Vault:                vaultSvc,
 		Events:               eventsHub,
