@@ -1,15 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { promises as fs } from "fs";
-import path from "path";
 
 export const runtime = "nodejs";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-type WaitlistEntry = {
-  email: string;
-  joinedAt: string;
-};
+const API_URL =
+  process.env.GLOBMINT_API_URL?.replace(/\/$/, "") ||
+  "https://globmint-backend.onrender.com";
 
 export async function POST(request: NextRequest) {
   let body: unknown;
@@ -21,32 +18,25 @@ export async function POST(request: NextRequest) {
 
   const { email } = (body ?? {}) as { email?: unknown };
   if (typeof email !== "string" || !EMAIL_RE.test(email.trim())) {
-    return NextResponse.json({ error: "Please enter a valid email address." }, { status: 400 });
+    return NextResponse.json(
+      { error: "Please enter a valid email address." },
+      { status: 400 }
+    );
   }
 
-  const normalized = email.trim().toLowerCase();
-  const entry: WaitlistEntry = { email: normalized, joinedAt: new Date().toISOString() };
+  const res = await fetch(`${API_URL}/api/v1/waitlist`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email: email.trim().toLowerCase() }),
+    // The backend seeds real market rates from live feeds; give it a moment.
+    signal: AbortSignal.timeout(8000),
+  });
 
-  try {
-    const dir = path.join(process.cwd(), "data");
-    await fs.mkdir(dir, { recursive: true });
-    const file = path.join(dir, "waitlist.json");
-    let list: WaitlistEntry[] = [];
-    try {
-      const raw = await fs.readFile(file, "utf8");
-      list = JSON.parse(raw);
-    } catch {
-      list = [];
-    }
-
-    if (!list.some((item) => item.email === normalized)) {
-      list.push(entry);
-      await fs.writeFile(file, JSON.stringify(list, null, 2), "utf8");
-    }
-  } catch {
-    // Persistence must never break the signup UX. Vercel's filesystem is
-    // ephemeral; production should point this at a database. We still
-    // acknowledge the join so the visitor gets confirmed.
+  if (!res.ok) {
+    return NextResponse.json(
+      { error: "Could not save your email. Please try again." },
+      { status: res.status }
+    );
   }
 
   return NextResponse.json({ ok: true });
