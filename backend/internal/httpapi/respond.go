@@ -62,6 +62,8 @@ func safeMessage(err error) string {
 		return "The request conflicts with existing data."
 	case errors.Is(err, domain.ErrInvalidAmount):
 		return "The amount provided is invalid."
+	case errors.Is(err, domain.ErrInvalidEmail):
+		return "Please enter a valid email address."
 	case errors.Is(err, domain.ErrInvalidAddress):
 		return "A valid Ethereum deposit address is required."
 	case errors.Is(err, domain.ErrInvalidPin):

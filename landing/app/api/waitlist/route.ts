@@ -33,8 +33,9 @@ export async function POST(request: NextRequest) {
   });
 
   if (!res.ok) {
+    const data = await res.json().catch(() => null);
     return NextResponse.json(
-      { error: "Could not save your email. Please try again." },
+      { error: data?.message ?? "Could not save your email. Please try again." },
       { status: res.status }
     );
   }
