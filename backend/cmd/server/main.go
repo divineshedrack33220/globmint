@@ -54,10 +54,19 @@ func main() {
 		mailer.New(cfg.ResendAPIKey, cfg.EmailFrom))
 	balanceSvc := services.NewBalanceService(store)
 	ledgerSvc := services.NewLedgerService(store)
+
+	// Fan-out hub for SSE push; shared by the money handlers, the vault
+	// indexer, and every money service method so any balance/transaction
+	// change reaches connected clients.
+	eventsHub := events.NewHub()
+
 	moneySvc := services.NewMoneyService(store,
 		// Same sender notifies users when money arrives or leaves: "you
 		// received X" on deposits, "you sent X" on withdrawals.
-		services.WithTransactionMailer(mailer.New(cfg.ResendAPIKey, cfg.EmailFrom)))
+		services.WithTransactionMailer(mailer.New(cfg.ResendAPIKey, cfg.EmailFrom)),
+		// Every money event pushes data.changed out to the user's SSE
+		// subscribers, regardless of which code path triggered it.
+		services.WithEventHub(eventsHub))
 
 	// Blockchain settlement layer. Uses the mock service unless the configured
 	// mode is "real" and a valid RPC URL is present.
@@ -133,10 +142,6 @@ func main() {
 		PrivacyMode:                     cfg.PrivacyMode,
 		RequireUserSignature:            cfg.RequireUserSignature,
 	}, rateMinor)
-
-	// Fan-out hub for SSE push; shared by the money handlers and the vault
-	// indexer so any balance/transaction change reaches connected clients.
-	eventsHub := events.NewHub()
 
 	deps := &httpapi.Deps{
 		Auth:                 authSvc,

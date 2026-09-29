@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"globmint/backend/internal/domain"
 	"globmint/backend/internal/domain/money"
+	"globmint/backend/internal/events"
 	"globmint/backend/internal/storage"
 )
 
@@ -24,6 +26,7 @@ type TransactionNotifier interface {
 type MoneyService struct {
 	store    store
 	txMailer TransactionNotifier
+	hub      *events.Hub
 }
 
 // MoneyOption configures a MoneyService without breaking existing call sites.
@@ -33,6 +36,26 @@ type MoneyOption func(*MoneyService)
 // withdrawals. The notifier must be non-blocking on failure (best-effort).
 func WithTransactionMailer(m TransactionNotifier) MoneyOption {
 	return func(s *MoneyService) { s.txMailer = m }
+}
+
+// WithEventHub wires the SSE change hub so every money event the service
+// performs — deposits, withdrawals, transfers, conversions — pushes a
+// data.changed notification to the user's connected clients, regardless of
+// which code path (HTTP handler, operator tooling, or indexer) triggered it.
+func WithEventHub(h *events.Hub) MoneyOption {
+	return func(s *MoneyService) { s.hub = h }
+}
+
+// notifyChanged fans a data.changed event out to the user's SSE subscribers.
+// No-op when no hub is wired (e.g. headless or tests).
+func (s *MoneyService) notifyChanged(userID string) {
+	if s.hub == nil {
+		return
+	}
+	s.hub.Publish(events.Event{
+		Type: "data.changed", UserID: userID, Kind: "all",
+		At: time.Now().UTC().Format(time.RFC3339),
+	})
 }
 
 func NewMoneyService(store store, opts ...MoneyOption) *MoneyService {
@@ -122,6 +145,7 @@ func (s *MoneyService) Deposit(ctx context.Context, userID, currency string, amo
 	s.emailUser(ctx, userID, func(tm TransactionNotifier, to, name, amount string) error {
 		return tm.SendMoneyReceived(ctx, to, name, amount)
 	}, currency, amountMinor)
+	s.notifyChanged(userID)
 	return txn, nil
 }
 
@@ -149,6 +173,7 @@ func (s *MoneyService) Withdraw(ctx context.Context, req LedgerMoveRequest, key 
 	s.emailUser(ctx, req.UserID, func(tm TransactionNotifier, to, name, amount string) error {
 		return tm.SendMoneySent(ctx, to, name, amount)
 	}, req.Currency, req.AmountMinor)
+	s.notifyChanged(req.UserID)
 	return txn, nil
 }
 
@@ -265,6 +290,7 @@ func (s *MoneyService) WithdrawExternal(ctx context.Context, req LedgerMoveReque
 	s.emailUser(ctx, req.UserID, func(tm TransactionNotifier, to, name, amount string) error {
 		return tm.SendMoneySent(ctx, to, name, amount)
 	}, req.Currency, req.AmountMinor)
+	s.notifyChanged(req.UserID)
 	return result, nil
 }
 
@@ -437,6 +463,7 @@ func (s *MoneyService) Transfer(ctx context.Context, req TransferRequest) (*doma
 			return tm.SendMoneySent(ctx, to, name, amount)
 		}, req.Currency, req.AmountMinor)
 	}
+	s.notifyChanged(req.UserID)
 	return result, err
 }
 
@@ -631,6 +658,7 @@ func (s *MoneyService) Convert(ctx context.Context, userID string, amountMinor i
 		"Conversion completed",
 		formatMinor(quote.InputAmount, fromCurrency)+" → "+
 			formatMinor(quote.OutputAmount, toCurrency)+".")
+	s.notifyChanged(userID)
 	return result, err
 }
 

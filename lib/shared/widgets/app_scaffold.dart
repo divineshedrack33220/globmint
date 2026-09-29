@@ -35,6 +35,7 @@ class ScaffoldWithNavBar extends ConsumerStatefulWidget {
 
 class _ScaffoldWithNavBarState extends ConsumerState<ScaffoldWithNavBar> {
   Timer? _notifPoll;
+  Timer? _refreshPoll;
   ProviderSubscription<AsyncValue<UserEvent>>? _eventsSub;
 
   @override
@@ -53,6 +54,21 @@ class _ScaffoldWithNavBarState extends ConsumerState<ScaffoldWithNavBar> {
       final event = next.valueOrNull;
       if (event != null) _onEvent(event);
     });
+    // Safety net: if the SSE feed ever drops or is blocked (e.g. a browser
+    // that buffers text/event-stream), periodically self-refresh the money
+    // providers so a balance/transaction change is never left stale until a
+    // manual refresh. Cheap no-op when nothing changed.
+    _refreshPoll = Timer.periodic(const Duration(seconds: 30), (_) {
+      _refreshFinancialData();
+    });
+  }
+
+  void _refreshFinancialData() {
+    ref.invalidate(accountSummaryProvider);
+    ref.invalidate(vaultStatusProvider);
+    ref.invalidate(transactionsProvider);
+    ref.invalidate(recentTransactionsProvider);
+    ref.invalidate(pendingElevationsProvider);
   }
 
   void _onEvent(UserEvent event) {
@@ -77,17 +93,14 @@ class _ScaffoldWithNavBarState extends ConsumerState<ScaffoldWithNavBar> {
       case EventKind.all:
         // `connected` events also trigger a full refresh so the UI catches up
         // on anything missed while disconnected.
-        ref.invalidate(accountSummaryProvider);
-        ref.invalidate(vaultStatusProvider);
-        ref.invalidate(transactionsProvider);
-        ref.invalidate(recentTransactionsProvider);
-        ref.invalidate(pendingElevationsProvider);
+        _refreshFinancialData();
     }
   }
 
   @override
   void dispose() {
     _notifPoll?.cancel();
+    _refreshPoll?.cancel();
     _eventsSub?.close();
     super.dispose();
   }

@@ -640,12 +640,6 @@ func (v *VaultService) handleVaultDeposit(ctx context.Context, d blockchain.Vaul
 		}
 		return err
 	}
-	if v.Hub != nil {
-		v.Hub.Publish(events.Event{
-			Type: "data.changed", UserID: userID, Kind: "all",
-			At: time.Now().UTC().Format(time.RFC3339),
-		})
-	}
 	log.Printf("vault indexer: credited %d kobo to %s (vault deposit %s, %s USDC)",
 		ngnMinor, userID, d.TxHash, baseToMajorString(d.Amount, v.cfg.StablecoinDecimals))
 	return nil
@@ -775,12 +769,6 @@ func (v *VaultService) creditTransfer(ctx context.Context, userID string, t bloc
 			"amount_ngn":  formatMinor(ngnMinor, "NGN"),
 		},
 	})
-	if v.Hub != nil {
-		v.Hub.Publish(events.Event{
-			Type: "data.changed", UserID: userID, Kind: "all",
-			At: time.Now().UTC().Format(time.RFC3339),
-		})
-	}
 	log.Printf("vault indexer: credited %d kobo to %s (tx %s, %s USDC)",
 		ngnMinor, userID, t.TxHash, baseToMajorString(t.Value, v.cfg.StablecoinDecimals))
 	return nil
@@ -896,10 +884,6 @@ func (v *VaultService) AttributeDeposit(ctx context.Context, txHash string, logI
 
 	if err := v.store.IndexerEventRepo().MarkAttributed(ctx, evt.TxHash, evt.LogIndex); err != nil {
 		return false, err
-	}
-	if v.Hub != nil {
-		v.Hub.Publish(events.Event{Type: "data.changed", UserID: userID, Kind: "all",
-			At: time.Now().UTC().Format(time.RFC3339)})
 	}
 	log.Printf("vault indexer: operator attributed %d kobo to %s (tx %s)", ngnMinor, userID, evt.TxHash)
 	return true, nil
@@ -1230,12 +1214,6 @@ func (v *VaultService) executeWithdrawal(ctx context.Context, userID, destinatio
 	v.money.notify(ctx, userID, domain.NotificationCategoryWithdrawal,
 		"Withdrawal broadcast",
 		formatMinor(amountNgnMinor, "NGN")+" (≈"+baseToMajorString(big.NewInt(usdcBase), v.cfg.StablecoinDecimals)+" USDC) sent to "+shortAddress(destination)+".")
-	if v.Hub != nil {
-		v.Hub.Publish(events.Event{
-			Type: "data.changed", UserID: userID, Kind: "all",
-			At: time.Now().UTC().Format(time.RFC3339),
-		})
-	}
 	return txn, nil
 }
 
