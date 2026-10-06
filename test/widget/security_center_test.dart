@@ -11,7 +11,6 @@ import 'package:globe_mint/app/providers.dart';
 import 'package:globe_mint/core/theme/app_theme.dart';
 import 'package:globe_mint/shared/services/api_client.dart';
 import 'package:globe_mint/shared/services/session_store.dart';
-import 'package:globe_mint/core/theme/app_theme.dart';
 import 'package:globe_mint/features/profile/presentation/pages/security_center_page.dart';
 
 void main() {
