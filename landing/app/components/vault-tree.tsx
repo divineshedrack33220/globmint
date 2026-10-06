@@ -7,17 +7,17 @@ import { theme } from "@/lib/theme";
 
 /**
  * The vault tree — desktop. A single scalable SVG of the funds flow, drawn in
- * one viewBox ("0 0 1000 548") and scaled to fill the section with
+ * one viewBox ("0 0 1000 680") and scaled to fill the section with
  * `preserveAspectRatio="xMidYMid meet"`, so every label keeps a physical
  * floor on screen (titles ≥14px, body ≥12px, connection labels ≥12px with
- * ≥8px arrow clearance).
+ * ≥8px arrow/line clearance).
  *
- * Layout: two small sender cards up top (YOU / ANYONE, ≥120px apart), the two
- * tall anchor cards in the middle (clone vault + ownerless contract, ~1.4×
- * the top cards' height), then the three safety badges below (smallest cards,
- * still ≥100px tall / ≥180px wide). The vertical line from the contract to
- * the badges has a visible break where the "vault has no owner" sentence sits
- * alongside it.
+ * Layout: two small sender cards up top (YOU / ANYONE, ≥120px apart) both feed
+ * the tall clone-vault card (≈1.4× the top cards' height), which feeds the
+ * ownerless contract card below it, which then fans out to the three safety
+ * badges (smallest cards, still ≥100px tall / ≥180px wide). The vertical line
+ * from the contract to the badges has a visible break where the "vault has no
+ * owner" sentence sits alongside it.
  *
  * Motion: each branch draws itself over 1.2s (pathLength), staggered
  * top-left → top-right → vault → badges. When the lines finish the contract
@@ -79,16 +79,16 @@ export function VaultTree() {
 
   return (
     <div
-      className="relative mx-auto w-full max-w-[1100px]"
-      style={{ aspectRatio: "1000 / 548" }}
+      className="relative mx-auto w-full max-w-[920px]"
+      style={{ aspectRatio: "1000 / 680" }}
     >
       <svg
-        viewBox="0 0 1000 548"
+        viewBox="0 0 1000 680"
         width="100%"
         height="100%"
         preserveAspectRatio="xMidYMid meet"
         role="img"
-        aria-label="Funds flow: you and anyone can move USDC into a clone vault address deployed with CREATE2, held by an ownerless GlobMint vault contract, protected by your PIN and 2FA, a 24-hour time lock, and an optional recovery address."
+        aria-label="Funds flow: you and anyone can move USDC into your clone vault address, deployed deterministically via CREATE2, held by an ownerless GlobMint vault contract, protected by your PIN and 2FA, a 24-hour time lock, and an optional recovery address."
         className="block"
       >
         <title>
@@ -98,10 +98,10 @@ export function VaultTree() {
         </title>
 
         <desc>
-          Two senders (you and anyone) at the top feed the clone vault and the
-          ownerless GlobMint contract in the middle; the contract then fans out
-          to three safety layers below. The vault has no owner, no admin, and
-          no pause.
+          Two senders (you and anyone) at the top both feed the clone vault,
+          which feeds the ownerless GlobMint contract in the middle; the
+          contract then fans out to three safety layers below. The vault has no
+          owner, no admin, and no pause.
         </desc>
 
         <style>{`
@@ -146,7 +146,7 @@ export function VaultTree() {
           {/* ---------- Branch A: YOU → clone vault (delay 0.2) ---------- */}
           <motion.path
             {...lineProps}
-            d="M170 140 L170 188"
+            d="M170 128 L170 192"
             variants={lineVariants}
             custom={0.2}
             initial="hidden"
@@ -166,19 +166,19 @@ export function VaultTree() {
             whileInView="visible"
             viewport={viewport}
           >
-            <path d="M163 181 L170 188 L163 195" />
+            <path d="M163 185 L170 192 L163 199" />
           </motion.g>
-          <text x="192" y="158" fill={theme.colors.textSecondary} fontSize="12">
+          <text x="186" y="152" fill={theme.colors.textSecondary} fontSize="13">
             withdraw signed
           </text>
-          <text x="192" y="174" fill={theme.colors.textSecondary} fontSize="12">
+          <text x="186" y="170" fill={theme.colors.textSecondary} fontSize="13">
             by your wallet (EIP-712)
           </text>
 
-          {/* ---------- Branch B: ANYONE → contract (delay 1.6) ---------- */}
+          {/* ---------- Branch B: ANYONE → clone vault (delay 1.6) ---------- */}
           <motion.path
             {...lineProps}
-            d="M830 140 L830 188"
+            d="M830 128 L830 192"
             variants={lineVariants}
             custom={1.6}
             initial="hidden"
@@ -198,31 +198,31 @@ export function VaultTree() {
             whileInView="visible"
             viewport={viewport}
           >
-            <path d="M823 181 L830 188 L823 195" />
+            <path d="M823 185 L830 192 L823 199" />
           </motion.g>
           <text
-            x="808"
-            y="158"
+            x="814"
+            y="152"
             textAnchor="end"
             fill={theme.colors.textSecondary}
-            fontSize="12"
+            fontSize="13"
           >
             deposit USDC
           </text>
           <text
-            x="808"
-            y="174"
+            x="814"
+            y="170"
             textAnchor="end"
             fill={theme.colors.textSecondary}
-            fontSize="12"
+            fontSize="13"
           >
             (no wallet link needed)
           </text>
 
-          {/* ---------- Branch C: vault → contract (delay 3.0) ---------- */}
+          {/* ---------- Branch C: clone vault → contract (delay 3.0) ---------- */}
           <motion.path
             {...lineProps}
-            d="M480 265 L520 265"
+            d="M500 326 L500 372"
             variants={lineVariants}
             custom={3}
             initial="hidden"
@@ -242,14 +242,14 @@ export function VaultTree() {
             whileInView="visible"
             viewport={viewport}
           >
-            <path d="M513 258 L520 265 L513 272" />
+            <path d="M493 365 L500 372 L493 379" />
           </motion.g>
 
           {/* ---------- Branch D: contract → badges, broken by the sentence
                  (delay 4.4) ---------- */}
           <motion.path
             {...lineProps}
-            d="M740 334 L740 352"
+            d="M220 506 L220 512"
             variants={lineVariants}
             custom={4.4}
             initial="hidden"
@@ -258,7 +258,7 @@ export function VaultTree() {
           />
           <motion.path
             {...lineProps}
-            d="M740 400 L740 408"
+            d="M500 506 L500 512"
             variants={lineVariants}
             custom={4.4}
             initial="hidden"
@@ -267,7 +267,7 @@ export function VaultTree() {
           />
           <motion.path
             {...lineProps}
-            d="M150 408 L850 408"
+            d="M780 506 L780 512"
             variants={lineVariants}
             custom={4.4}
             initial="hidden"
@@ -276,7 +276,7 @@ export function VaultTree() {
           />
           <motion.path
             {...lineProps}
-            d="M150 408 L150 414"
+            d="M220 512 L780 512"
             variants={lineVariants}
             custom={4.4}
             initial="hidden"
@@ -285,7 +285,7 @@ export function VaultTree() {
           />
           <motion.path
             {...lineProps}
-            d="M500 408 L500 414"
+            d="M220 512 L220 560"
             variants={lineVariants}
             custom={4.4}
             initial="hidden"
@@ -294,14 +294,23 @@ export function VaultTree() {
           />
           <motion.path
             {...lineProps}
-            d="M850 408 L850 414"
+            d="M500 512 L500 560"
             variants={lineVariants}
             custom={4.4}
             initial="hidden"
             whileInView="visible"
             viewport={viewport}
           />
-          {[150, 500, 850].map((cx) => (
+          <motion.path
+            {...lineProps}
+            d="M780 512 L780 560"
+            variants={lineVariants}
+            custom={4.4}
+            initial="hidden"
+            whileInView="visible"
+            viewport={viewport}
+          />
+          {[220, 500, 780].map((cx) => (
             <motion.g
               key={`arrow-${cx}`}
               stroke={theme.colors.primary}
@@ -316,25 +325,25 @@ export function VaultTree() {
               whileInView="visible"
               viewport={viewport}
             >
-              <path d={`M${cx - 7} 407 L${cx} 414 L${cx + 7} 407`} />
+              <path d={`M${cx - 7} 553 L${cx} 560 L${cx + 7} 553`} />
             </motion.g>
           ))}
 
           <text
-            x="700"
-            y="366"
+            x="764"
+            y="522"
             textAnchor="end"
             fill={theme.colors.textSecondary}
-            fontSize="12"
+            fontSize="13"
           >
             the vault has no owner. no admin. no pause.
           </text>
           <text
-            x="700"
-            y="386"
+            x="764"
+            y="542"
             textAnchor="end"
             fill={theme.colors.textSecondary}
-            fontSize="12"
+            fontSize="13"
           >
             no way for us to touch it.
           </text>
@@ -343,9 +352,9 @@ export function VaultTree() {
           <g>
             <rect
               x="40"
-              y="36"
+              y="32"
               width="260"
-              height="104"
+              height="96"
               rx={theme.radius.lg}
               fill={theme.colors.surfaceElevated}
               stroke={theme.colors.primary}
@@ -353,10 +362,10 @@ export function VaultTree() {
             />
             <text
               x="170"
-              y="70"
+              y="66"
               textAnchor="middle"
               fill={theme.colors.textPrimary}
-              fontSize="14"
+              fontSize="15"
               fontWeight="600"
               letterSpacing="-0.01em"
             >
@@ -364,19 +373,19 @@ export function VaultTree() {
             </text>
             <text
               x="170"
-              y="94"
+              y="90"
               textAnchor="middle"
               fill={theme.colors.textSecondary}
-              fontSize="12"
+              fontSize="13"
             >
               (your wallet)
             </text>
             <text
               x="170"
-              y="116"
+              y="112"
               textAnchor="middle"
               fill={theme.colors.textSecondary}
-              fontSize="12"
+              fontSize="13"
             >
               signs every withdrawal
             </text>
@@ -385,9 +394,9 @@ export function VaultTree() {
           <g>
             <rect
               x="700"
-              y="36"
+              y="32"
               width="260"
-              height="104"
+              height="96"
               rx={theme.radius.lg}
               fill={theme.colors.surfaceElevated}
               stroke={theme.colors.primary}
@@ -395,10 +404,10 @@ export function VaultTree() {
             />
             <text
               x="830"
-              y="70"
+              y="66"
               textAnchor="middle"
               fill={theme.colors.textPrimary}
-              fontSize="14"
+              fontSize="15"
               fontWeight="600"
               letterSpacing="-0.01em"
             >
@@ -406,57 +415,57 @@ export function VaultTree() {
             </text>
             <text
               x="830"
-              y="94"
+              y="90"
               textAnchor="middle"
               fill={theme.colors.textSecondary}
-              fontSize="12"
+              fontSize="13"
             >
               friend, exchange, new wallet
             </text>
             <text
               x="830"
-              y="116"
+              y="112"
               textAnchor="middle"
               fill={theme.colors.textSecondary}
-              fontSize="12"
+              fontSize="13"
             >
               no wallet link required
             </text>
           </g>
 
-          {/* ---------- Middle anchors ---------- */}
+          {/* ---------- Clone vault anchor (tall, 1.4×) ---------- */}
           <g>
             <rect
-              x="40"
+              x="140"
               y="192"
-              width="440"
-              height="146"
+              width="720"
+              height="134"
               rx={theme.radius.lg}
               fill={theme.colors.surfaceElevated}
               stroke={theme.colors.primary}
               strokeWidth="1"
             />
             <rect
-              x="40"
+              x="140"
               y="192"
-              width="440"
+              width="720"
               height="32"
               rx={theme.radius.lg}
               fill={theme.colors.primaryOverlay}
             />
             <rect
-              x="40"
+              x="140"
               y="208"
-              width="440"
+              width="720"
               height="16"
               fill={theme.colors.primaryOverlay}
             />
             <text
-              x="260"
-              y="216"
+              x="500"
+              y="218"
               textAnchor="middle"
               fill={theme.colors.primary}
-              fontSize="14"
+              fontSize="15"
               fontWeight="600"
               fontFamily="var(--font-jetbrains-mono), monospace"
               letterSpacing="0.02em"
@@ -464,11 +473,11 @@ export function VaultTree() {
               YOUR CLONE VAULT ADDRESS
             </text>
             <text
-              x="260"
-              y="268"
+              x="500"
+              y="264"
               textAnchor="middle"
               fill={theme.colors.textPrimary}
-              fontSize="14"
+              fontSize="15"
               fontWeight="600"
               letterSpacing="-0.01em"
               fontFamily="var(--font-jetbrains-mono), monospace"
@@ -476,22 +485,23 @@ export function VaultTree() {
               one address, yours alone
             </text>
             <text
-              x="260"
-              y="304"
+              x="500"
+              y="294"
               textAnchor="middle"
               fill={theme.colors.textSecondary}
-              fontSize="12"
+              fontSize="13"
             >
               deployed deterministically via CREATE2
             </text>
           </g>
 
+          {/* ---------- Ownerless contract anchor ---------- */}
           <g>
             <motion.rect
-              x="520"
-              y="192"
-              width="440"
-              height="146"
+              x="140"
+              y="372"
+              width="720"
+              height="134"
               rx={theme.radius.lg}
               fill={theme.colors.surfaceElevated}
               stroke={theme.colors.primary}
@@ -499,10 +509,10 @@ export function VaultTree() {
               filter="url(#vault-glow-rest)"
             />
             <motion.rect
-              x="520"
-              y="192"
-              width="440"
-              height="146"
+              x="140"
+              y="372"
+              width="720"
+              height="134"
               rx={theme.radius.lg}
               fill="none"
               stroke={theme.colors.primary}
@@ -522,26 +532,26 @@ export function VaultTree() {
               style={reduce ? { opacity: 0 } : undefined}
             />
             <rect
-              x="520"
-              y="192"
-              width="440"
+              x="140"
+              y="372"
+              width="720"
               height="32"
               rx={theme.radius.lg}
               fill={theme.colors.primaryOverlay}
             />
             <rect
-              x="520"
-              y="208"
-              width="440"
+              x="140"
+              y="388"
+              width="720"
               height="16"
               fill={theme.colors.primaryOverlay}
             />
             <text
-              x="740"
-              y="216"
+              x="500"
+              y="400"
               textAnchor="middle"
               fill={theme.colors.primary}
-              fontSize="14"
+              fontSize="15"
               fontWeight="600"
               fontFamily="var(--font-jetbrains-mono), monospace"
               letterSpacing="0.02em"
@@ -549,11 +559,11 @@ export function VaultTree() {
               GLOBMINT VAULT CONTRACT
             </text>
             <text
-              x="740"
-              y="268"
+              x="500"
+              y="436"
               textAnchor="middle"
               fill={theme.colors.textPrimary}
-              fontSize="14"
+              fontSize="15"
               fontWeight="600"
               letterSpacing="-0.01em"
               fontFamily="var(--font-jetbrains-mono), monospace"
@@ -561,20 +571,20 @@ export function VaultTree() {
               immutable, ownerless
             </text>
             <text
-              x="740"
-              y="304"
+              x="500"
+              y="458"
               textAnchor="middle"
               fill={theme.colors.textSecondary}
-              fontSize="12"
+              fontSize="13"
             >
               the backend relays — it can never move funds
             </text>
             <text
-              x="740"
-              y="322"
+              x="500"
+              y="478"
               textAnchor="middle"
               fill={theme.colors.textSecondary}
-              fontSize="12"
+              fontSize="13"
             >
               you didn&#8217;t sign for
             </text>
@@ -582,7 +592,8 @@ export function VaultTree() {
 
           {/* ---------- Safety badges ---------- */}
           {badges.map((badge, index) => {
-            const cx = 150 + index * 350;
+            const cx = 220 + index * 280;
+            const lineStart = badge.lines.length === 3 ? 614 : 620;
             return (
               <motion.g
                 key={badge.title}
@@ -596,9 +607,9 @@ export function VaultTree() {
                 <rect
                   className="badge-fill"
                   x={cx - 110}
-                  y="414"
+                  y="560"
                   width="220"
-                  height="98"
+                  height="120"
                   rx={theme.radius.lg}
                   fill={theme.colors.surfaceElevated}
                   stroke={theme.colors.primarySubtle}
@@ -606,10 +617,10 @@ export function VaultTree() {
                 />
                 <text
                   x={cx}
-                  y="440"
+                  y="590"
                   textAnchor="middle"
                   fill={theme.colors.primary}
-                  fontSize="14"
+                  fontSize="15"
                   fontWeight="600"
                 >
                   {badge.title}
@@ -618,10 +629,10 @@ export function VaultTree() {
                   <text
                     key={line}
                     x={cx}
-                    y={462 + li * 20}
+                    y={lineStart + li * 20}
                     textAnchor="middle"
                     fill={theme.colors.textSecondary}
-                    fontSize="12"
+                    fontSize="13"
                   >
                     {line}
                   </text>

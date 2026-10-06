@@ -106,7 +106,7 @@ function FlowCard({
         "rounded-[16px] border bg-ink-elev px-5",
         tall ? "min-h-[120px] py-5" : "min-h-[88px] py-4",
         glow
-          ? "border-2 border-brand shadow-[0_0_24px_rgba(214,251,87,0.15)]"
+          ? "border-2 border-brand shadow-brand-soft"
           : "border-brand/70"
       )}
     >

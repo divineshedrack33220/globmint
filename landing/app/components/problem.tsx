@@ -16,10 +16,7 @@ const LINES: Array<{ text: string; brand?: boolean }> = [
 export function Problem() {
   return (
     <Section id="problem" label="Problem" className="overflow-hidden">
-      <div
-        className="flex flex-col gap-5 text-center"
-        style={{ perspective: "600px" }}
-      >
+      <div className="flex flex-col gap-5 text-center">
         {LINES.map((line, index) => (
           <motion.p
             key={line.text}

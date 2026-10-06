@@ -58,7 +58,7 @@ export default function OpengraphImage() {
           Your money, your rules.
         </div>
         <div style={{ color: colors.textSecondary, fontSize: 28, textAlign: "center" }}>
-          Save and move USDC with full self-custody.
+          Hold and move USDC with full self-custody.
         </div>
       </div>
     ),

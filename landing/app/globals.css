@@ -32,34 +32,25 @@
   .snap-scroll {
     height: 100dvh;
     overflow-y: scroll;
-    /* On mobile several sections are taller than a viewport (stacked cards),
-       so snapping is proximity — the user can rest anywhere, nothing traps
-       or clips. Desktop sections fit exactly one viewport: mandatory. */
-    scroll-snap-type: y proximity;
+    /* One viewport per section on every device. The only section allowed to
+       grow past a viewport is the vault tree, which internal-scrolls inside
+       its own window on mobile (see Section relax variant). */
+    scroll-snap-type: y mandatory;
     overscroll-behavior-y: contain;
-  }
-
-  @media (min-width: 768px) {
-    .snap-scroll {
-      scroll-snap-type: y mandatory;
-    }
   }
 
   .snap-section {
     scroll-snap-align: start;
-    scroll-snap-stop: always;
-  }
-
-  /* Relaxed sections (vault tree) skip snapping below md, snap normally
-     on desktop so the page stays one-viewport-per-section. */
-  .snap-section-relaxed {
-    scroll-snap-align: none;
     scroll-snap-stop: normal;
   }
 
+  /* On desktop every section is exactly one viewport, so scroll-snap-stop:
+     always guarantees the user can never land between sections. On mobile a
+     section may grow taller than a viewport; normal lets the user rest
+     anywhere inside a tall section instead of being trapped or fighting a
+     jumpy snap. Align stays start so scrolling always lands on a section. */
   @media (min-width: 768px) {
-    .snap-section-relaxed {
-      scroll-snap-align: start;
+    .snap-section {
       scroll-snap-stop: always;
     }
   }

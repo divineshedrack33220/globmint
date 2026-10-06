@@ -64,10 +64,6 @@ export function BuiltOn() {
             <ChainGlyph label="Optimism" d="M12 4a8 8 0 100 16 8 8 0 000-16Z" />
           </span>
         </div>
-
-        <p className="mt-8 text-sm text-text-muted">
-          Testnet: Sepolia. Your money, your rules — on mainnet soon.
-        </p>
       </div>
     </Section>
   );

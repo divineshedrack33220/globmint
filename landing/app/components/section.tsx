@@ -12,8 +12,9 @@ import { cn } from "@/lib/utils";
  * - scroll-snap-align: start + scroll-snap-stop: always, overflow hidden so
  *   nothing bleeds into the neighbouring section.
  * - `relax` is for sections that cannot fit on small screens (the vault tree
- *   with all its badges): on mobile it stops being a snap target and is
- *   allowed to grow taller than the viewport, scrolling with the container.
+ *   with all its badges): on mobile it stays a snap target but is capped at
+ *   one viewport and internal-scrolls (content is taller than the screen);
+ *   on md+ it behaves like every other section.
  */
 export function Section({
   id,
@@ -37,12 +38,12 @@ export function Section({
       id={id}
       aria-label={label}
       className={cn(
-        "relative flex min-h-[100dvh] w-full flex-col items-center justify-center pb-16 pt-20 md:pb-20 md:pt-24",
+        "relative flex w-full flex-col items-center pb-16 pt-20 md:min-h-[100dvh] md:justify-center md:overflow-hidden md:pb-20 md:pt-24",
         compact && "pb-10 pt-12 md:pb-12 md:pt-16",
         flush && "pb-6 pt-10 md:pb-6 md:pt-10",
         relax
-          ? "snap-section-relaxed justify-start overflow-visible md:justify-center md:overflow-hidden"
-          : "snap-section overflow-hidden",
+          ? "snap-section h-[100dvh] justify-start overflow-y-auto md:h-auto"
+          : "snap-section min-h-[100dvh] md:overflow-hidden",
         className
       )}
     >

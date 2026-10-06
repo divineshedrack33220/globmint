@@ -64,7 +64,7 @@ const config: Config = {
       fontFamily: {
         sans: ["var(--font-inter)", "system-ui", "sans-serif"],
         mono: ["var(--font-jetbrains-mono)", "SFMono-Regular", "monospace"],
-        display: ["var(--font-space-grotesk)", "var(--font-inter)", "sans-serif"],
+        display: ["var(--font-inter)", "system-ui", "sans-serif"],
       },
       borderRadius: {
         lg: `${theme.radius.lg}px`,
@@ -76,6 +76,8 @@ const config: Config = {
       boxShadow: {
         brand: `0 0 24px ${theme.colors.primaryGlow}`,
         "brand-lg": `0 0 48px ${theme.colors.primaryGlow}`,
+        "brand-dot": `0 0 10px ${theme.colors.primaryHighlight}`,
+        "brand-soft": `0 0 24px ${theme.colors.primarySoft}`,
         card: `0 0 0 1px ${theme.colors.border}`,
       },
       keyframes: {
@@ -91,10 +93,15 @@ const config: Config = {
           from: { transform: "translateY(0)" },
           to: { transform: "translateY(-8px)" },
         },
+        "brand-pulse": {
+          "0%, 100%": { opacity: "0.35", transform: "scale(1)" },
+          "50%": { opacity: "0.7", transform: "scale(1.06)" },
+        },
       },
       animation: {
         "accordion-down": "accordion-down 0.25s cubic-bezier(0.22, 1, 0.36, 1)",
         "accordion-up": "accordion-up 0.25s cubic-bezier(0.22, 1, 0.36, 1)",
+        "brand-pulse": "brand-pulse 2.5s ease-in-out infinite",
       },
     },
   },

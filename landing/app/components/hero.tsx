@@ -7,12 +7,13 @@ import { theme } from "@/lib/theme";
 export function Hero() {
   return (
     <Section id="hero" label="Hero" className="overflow-hidden">
-      {/* Very faint brand glow behind the hero — 4% opacity, never a hard edge */}
+      {/* Very faint brand glow behind the hero — ~4% opacity, never a hard edge */}
       <div
         aria-hidden="true"
         className="pointer-events-none absolute inset-0"
         style={{
-          background: `radial-gradient(640px 320px at 50% -4%, ${theme.colors.primaryOverlay}, transparent 70%)`,
+          background: `radial-gradient(640px 320px at 50% -4%, ${theme.colors.primary}, transparent 70%)`,
+          opacity: 0.4,
         }}
       />
 
@@ -20,7 +21,7 @@ export function Hero() {
         <div className="relative">
           <div
             aria-hidden="true"
-            className="absolute inset-0 -z-10 rounded-full bg-brand/20 blur-2xl motion-reduce:hidden"
+            className="absolute inset-0 -z-10 animate-brand-pulse rounded-full bg-brand/20 blur-2xl motion-reduce:animate-none"
           />
           <LogoMark className="h-24 w-24" priority />
         </div>
@@ -32,7 +33,7 @@ export function Hero() {
           Your money, your rules.
         </h1>
         <p className="mt-6 max-w-xl text-balance text-lg leading-[1.6] text-text-muted">
-          Save and move USDC with full self-custody. No banks. No middlemen.
+          Hold and move USDC with full self-custody. No banks. No middlemen.
           Nobody can freeze your funds — not even us.
         </p>
 

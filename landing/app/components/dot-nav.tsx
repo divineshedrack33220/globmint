@@ -102,7 +102,7 @@ export function DotNav() {
             onClick={() => goTo(section.id)}
             className={`h-2.5 w-2.5 rounded-full transition-all duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${
               active
-                ? "scale-125 bg-brand shadow-[0_0_10px_rgba(214,251,87,0.6)]"
+                ? "scale-125 bg-brand shadow-brand-dot"
                 : "bg-ink-border hover:bg-brand-subtle"
             }`}
           />

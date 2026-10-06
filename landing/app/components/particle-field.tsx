@@ -2,6 +2,8 @@
 
 import * as React from "react";
 
+import { brandRgb } from "@/lib/theme";
+
 type Particle = {
   x: number;
   y: number;
@@ -11,10 +13,10 @@ type Particle = {
   flicker: number;
 };
 
-const BRAND_RGB = { r: 214, g: 251, b: 87 }; // #D6FB57
+const [BRAND_R, BRAND_G, BRAND_B] = brandRgb.split(" ").map(Number);
 
 function brandRgba(alpha: number) {
-  return `rgba(${BRAND_RGB.r}, ${BRAND_RGB.g}, ${BRAND_RGB.b}, ${alpha})`;
+  return `rgba(${BRAND_R}, ${BRAND_G}, ${BRAND_B}, ${alpha})`;
 }
 
 /**
