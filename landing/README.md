@@ -1,9 +1,9 @@
 # GlobMint — Marketing Landing Page
 
 A single-page, dark-themed marketing site for [GlobMint](https://globmint.com):
-self-custodial USDC savings on Ethereum. Built with **Next.js 14 (App Router)**,
+self-custodial USDC on Ethereum. Built with **Next.js 14 (App Router)**,
 **TypeScript**, **Tailwind CSS**, **shadcn/ui**, and **Framer Motion**.
-Deploy-ready for Vercel.
+Deploy-ready for Vercel or Render.
 
 The page sits in front of the GlobMint mobile app (Flutter), which is live on
 the **Sepolia testnet** and staged for **Base / Ethereum / Arbitrum / Optimism**
@@ -16,36 +16,42 @@ mainnet.
 - Tailwind CSS 3.4 with the GlobMint brand tokens as named colors
 - shadcn/ui primitives (Button, Card, Input, Accordion)
 - Framer Motion for section reveals, mounts, hovers, and the vault-tree draw
-- `next/font/google` — Inter (sans) + Space Grotesk (display) +
-  JetBrains Mono (mono), all self-hosted
+- `next/font/google` — **Inter** (sans = display) + **JetBrains Mono** (mono),
+  both self-hosted. No other webfonts.
 - Hand-rolled particle canvas (no animation libs for the background)
 - Generated OpenGraph image (`next/og`, nodejs runtime) — real logo embedded;
   no external assets anywhere
 
-## Layout model
+## Layout model — one viewport per section, every device
 
 - `#snap-scroller` is a `100dvh` container with `overflow-y: scroll` and
-  `scroll-snap-type: y mandatory` on **desktop (≥768px)**: every section is
-  exactly one viewport (`min-h-[100dvh]`, `scroll-snap-align: start`,
-  `scroll-snap-stop: always`, `overflow: hidden`) — no peeking, nothing bleeds.
-- **Mobile (<768px)** uses `y proximity` instead: several sections are taller
-  than a viewport (stacked cards, vault diagram), and mandatory snap would
-  trap the user at a section's top. Proximity lets you rest anywhere.
-- `.snap-section-relaxed` (used by the vault tree) opts a section out of being
-  a snap target below `md`; on desktop it snaps normally.
+  `scroll-snap-type: y mandatory` at **all** viewport sizes: every section is a
+  snap target (`min-h-[100dvh]`, `scroll-snap-align: start`).
+- `scroll-snap-stop: always` applies **only on desktop (≥768px)**, where each
+  section is exactly one viewport — the user can never land between sections.
+  On mobile a section may grow taller than a viewport; `scroll-snap-stop:
+  normal` lets the user rest anywhere inside a tall section instead of being
+  trapped by a jumpy snap.
+- Section `overflow: hidden` is **md+ only** so nothing bleeds into a
+  neighbour; on small screens sections are free to grow.
+- **Mobile exception — the vault tree.** The vault-tree section (`relax`
+  variant in `section.tsx`) is capped at `100dvh` on mobile and internal-
+  scrolls (`overflow-y: auto`) so the tall diagram reads fully without breaking
+  the mandatory snap.
 - A fixed dot nav (`dot-nav.tsx`) jumps between sections and writes the URL
   fragment via `history.replaceState` (no history spam). A top brand progress
   bar (`scroll-progress.tsx`) fills with scroll position.
 - All motion respects `prefers-reduced-motion`: framer variants render at
-  final state, ScrollTop animations become `auto`, and the particle field
-  draws one static frame.
+  final state, ScrollTop animations become `auto`, the particle field draws one
+  static frame, and the hero logo pulse is disabled.
 
 ## Brand tokens — single source of truth
 
 `lib/theme.ts` **mirrors `lib/core/theme/app_colors.dart` in the Flutter app
 and must not be edited independently.** If the Flutter palette changes, update
-that file and rebuild this page. No hardcoded hex lives in any component —
-derive every color/radius/shadow from this module.
+that file and rebuild this page. No hardcoded hex/rgb lives in any component —
+derive every color/radius/shadow from this module (e.g. `shadow-brand-soft`,
+`shadow-brand-dot` in `tailwind.config.ts`).
 
 Real palette (do not invent): brand `#D6FB57`, backgrounds `#080808`/
 `#000000`, surfaces `#111111`/`#181818`/`#202020`/`#0D0D0D`, text `#FFFFFF`/
@@ -62,28 +68,28 @@ OpenGraph image and used as `/icon.png`) — never invent an SVG mark.
 
 ```
 app/
-  layout.tsx             # fonts (Inter, Space Grotesk, JetBrains Mono), metadata
+  layout.tsx             # fonts (Inter, JetBrains Mono), metadata, MotionConfig
   page.tsx               # snap shell (#snap-scroller) + overlay composition
   globals.css            # snap utilities, themed scrollbar, reduced-motion
   opengraph-image.tsx    # at-request OG PNG (1200×630, theme + real logo)
-  api/waitlist/route.ts  # waitlist capture endpoint (POST)
+  api/waitlist/route.ts  # hardened waitlist proxy (POST)
   components/
-    section.tsx          # Section shell: 100dvh snap viewport + Reveal wrapper
+    section.tsx          # Section shell: snap viewport + relax (vault) variant
     reveal.tsx           # framer fade+slide entry (respects reduced motion)
     particle-field.tsx   # canvas constellation behind everything (area-based)
     scroll-progress.tsx  # top brand progress bar, reads #snap-scroller
     dot-nav.tsx          # right-edge section dots + replaceState fragments
-    hero.tsx             # real logo (soft static glow) + headline + CTAs + form
+    hero.tsx             # real logo (2.5s pulse) + headline + CTAs + form
     problem.tsx          # four scroll-fade lines
     how-it-works.tsx     # 1-2-3 cards (staggered, hover lift)
     vault-section.tsx    # section wrapper (intro + closing line)
     vault-tree.tsx       # THE funds-flow diagram (SVG desktop / stack mobile)
-    features.tsx         # 3×2 feature grid, lime outline icons
+    features.tsx         # 1-col mobile / 3-col desktop grid, lime outline icons
     security-note.tsx    # plain-language security card
     pricing.tsx          # one-panel pricing
     built-on.tsx         # Sepolia live / mainnet staged + chain glyphs
     faq.tsx              # shadcn Accordion (hover lime), keyboard-navigable
-    footer.tsx           # logo + links + honest legal small print
+    footer.tsx           # 3-column Product/Legal/Contact + honest legal small print
     waitlist-form.tsx    # client form → POST /api/waitlist
     logo-mark.tsx        # real /logo.png rendered as a circle (Flutter-like)
     ui/                  # shadcn/ui primitives
@@ -110,47 +116,61 @@ npm run lint      # Next.js lint (workspace)
 npm run typecheck # tsc --noEmit
 ```
 
-## Waitlist endpoint
+## Waitlist endpoint — hardened proxy
 
-`POST /api/waitlist` with a JSON body:
+`POST /api/waitlist` accepts a JSON body and proxies it to the verified
+backend service (`GLOBMINT_API_URL`, default the Render backend).
+
+Request body:
 
 ```json
 { "email": "you@example.com" }
 ```
 
-- Returns `201`-style `{ ok: true }` on success (validated, lowercased).
-- Duplicate emails are ignored.
-- Rows persist to `data/waitlist.json` (gitignored) so local runs keep a list.
-  That file is ephemeral on Vercel — for production, wire the route to your
-  database, Resend broadcast, or Airtable API instead. The handler is
-  deliberately isolated so a storage failure never breaks the visitor's submit.
+Behavior:
+
+- **Validates** the email and returns `400` only for an invalid JSON body or an
+  unparseable email address.
+- **Always returns `{ ok: true }` for valid input** — rate-limited or upstream
+  failures are swallowed, never surfaced to the visitor (leaks the backend
+  topology) and never break the submit.
+- **Rate-limits per IP, 5/hour**, keyed by a one-way SHA-256 hash of the
+  client IP (first 32 hex chars), held in an in-memory `Map` (best-effort per
+  instance; the backend rate limiter is the authoritative guard). **A raw IP is
+  never stored or forwarded.**
+- **Forwards attribution** to the backend: `source: "landing"`, the computed
+  `ip_hash`, and the browser `user_agent`.
+- The backend is the durable store (Postgres, migration `0023_waitlist_meta.sql`
+  adds `email_lower` unique index, `source`, `ip_hash`, `user_agent`,
+  `confirmed`); inserts are idempotent across case.
 
 ## VaultTree
 
 `app/components/vault-tree.tsx` is the centerpiece. It renders the funds-flow
 diagram:
 
-1. **Desktop (≥768px):** a single scalable SVG scene (`viewBox 1000×548`)
-   that fills the section's content column (`max-w-[1100px]` container) —
-   sender cards (`YOU`, `ANYONE` up top), your clone vault, the ownerless
-   `GLOBMINT VAULT CONTRACT`, and the three safety layers
-   (`PIN + 2FA`, `24h time-lock`, `Recovery address`). Each physical label
-   keeps a floor on screen because the whole scene scales from one viewBox:
-   card titles ≥14px, body ≥12px, connection labels ≥12px. Sizing hierarchy:
-   the two anchor cards are ~1.4× the top cards' height, and the badges are
-   the smallest cards (still ≥100px tall / ≥180px wide) so the eye lands on
-   the contract last. The section (`.snap-section-relaxed`) is fine-tuned so
-   the whole tree fits exactly one 1280×800 viewport with no internal scroll.
-2. **Connector animation:** flow lines self-draw top-to-bottom via framer
-   `pathLength` (1.2s each, staggered: YOU→vault, then anyone→contract, then
-   vault→contract, then contract→badges). Arrowheads appear as each branch
-   finishes; when the lines are done the contract pulses once and settles to
-   a rest glow, and the badges fade in one by one. Calm, once, no flash. On
-   `prefers-reduced-motion` the whole scene renders fully static.
-3. **Mobile (<768px / low width):** the same content collapses into a stacked
-   card list (`vault-tree-mobile.tsx`) with arrow separators; the three
-   safety badges become a simple list below. The section relaxes its snap so
-   the tall diagram can scroll naturally.
+1. **Desktop (≥768px):** a single scalable SVG scene
+   (`viewBox 1000×680`, `max-w-[920px]` container) with `preserveAspectRatio`
+   meet. Topology (one object flows into the next, no object feeds two):
+   the two sender cards **YOU** and **ANYONE** both feed **YOUR CLONE VAULT
+   ADDRESS** (deployed deterministically via CREATE2), which feeds the single
+   **GLOBMINT VAULT CONTRACT** anchor (immutable, ownerless), which fans out to
+   the three safety layers (**PIN + 2FA**, **24h time-lock**, **Recovery
+   address**). The "the vault has no owner. no admin. no pause." sentence
+   breaks the contract→badges line. Physical floors: the two anchor cards are
+   ~1.4× the sender cards, badges are the smallest cards (still ≥100px tall /
+   ≥180px wide), and the whole scene scales from one viewBox so every label
+   keeps a floor (titles ≥14px, body ≥12px, connection labels ≥12px with ≥8px
+   clearance). The section is tuned so the tree fits exactly one 1280×800
+   viewport.
+2. **Connector animation:** flow lines self-draw via framer `pathLength`
+   (1.2s each, staggered YOU→vault → anyone→vault → vault→contract →
+   contract→badges). Arrowheads appear as each branch finishes; the contract
+   pulses once and settles to a rest glow; badges fade in one by one. Calm,
+   once, no flash. On `prefers-reduced-motion` the scene renders fully static.
+3. **Mobile (<768px):** the same content collapses into a stacked card list
+   (`vault-tree-mobile.tsx`) with arrow separators and the badges as a simple
+   list below; the section internal-scrolls within its one viewport.
 4. All SVG colors/opacities come from `lib/theme.ts`.
 
 ## Testing motion / reduced motion
@@ -159,25 +179,19 @@ With the dev/prod server running:
 
 - Desktop (1440×900): every section should snap to exactly 900px; dot nav on
   the right updates the hash; the progress bar reaches 100% at the footer.
-- Mobile (375×667): page scrolls freely; vault tree scrolls through its whole
-  height (no snap trap).
+- Mobile (375×667): snap is mandatory but `scroll-snap-stop` is `normal`; the
+  vault tree internal-scrolls through its full height within its one-viewport
+  window.
 - DevTools → Rendering → `emulate prefers-reduced-motion: reduce`: no particles
   drift (single static frame), sections render instantly, dot-nav jumps
-  instantly.
+  instantly, hero logo does not pulse.
 
-## Deploy to Vercel
+## Deploy
 
-1. Push the `landing/` directory to a repo (or import it as a standalone
-   project).
-2. In Vercel, **Import Project** → framework preset **Next.js** is auto-detected
-   (`vercel.json` pins it explicitly).
-3. No environment variables are required for the marketing page itself.
-4. Deploy. The build runs `next build`; the page is fully static
-   (`/` is `○ Static`), with `/api/waitlist` + `/opengraph-image` as the only
-   dynamic routes.
-
-Optional (production waitlist): set any storage-crew env vars your waitlist
-integration needs via `vercel env add`.
+Vercel or Render; the build runs `next build`, `/` is `○ Static` with
+`/api/waitlist` + `/opengraph-image` the only dynamic routes. Set
+`GLOBMINT_API_URL` to the backend if it is not the default Render URL. No other
+environment variables are required.
 
 ## A note on copy
 

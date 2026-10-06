@@ -43,10 +43,21 @@ type EmailOTPRepository interface {
 	Clear(ctx context.Context, email string) error
 }
 
+// WaitlistSignup is the attribution payload recorded alongside a waitlist
+// join. Source defaults to "landing"; ip_hash is a one-way hash of the
+// client IP (never a raw address), pre-computed by the landing page.
+type WaitlistSignup struct {
+	Email     string
+	Source    string
+	IPHash    string
+	UserAgent string
+}
+
 // WaitlistRepository persists early-access signups (email-only, no account).
 type WaitlistRepository interface {
-	// Join records an email on the waitlist. Duplicate emails are ignored.
-	Join(ctx context.Context, email string) error
+	// Join records a signup on the waitlist. Duplicate emails are ignored,
+	// regardless of case (see the email_lower unique index).
+	Join(ctx context.Context, signup WaitlistSignup) error
 	// Count returns how many emails are currently on the waitlist.
 	Count(ctx context.Context) (int, error)
 }

@@ -11,11 +11,12 @@ type waitlistRepo struct{ q Querier }
 // NewWaitlistRepo returns a WaitlistRepository bound to the given querier.
 func NewWaitlistRepo(q Querier) storage.WaitlistRepository { return &waitlistRepo{q: q} }
 
-func (r *waitlistRepo) Join(ctx context.Context, email string) error {
+func (r *waitlistRepo) Join(ctx context.Context, signup storage.WaitlistSignup) error {
 	_, err := r.q.Exec(ctx, `
-		INSERT INTO waitlist (email)
-		VALUES ($1)
-		ON CONFLICT (email) DO NOTHING`, email)
+		INSERT INTO waitlist (email, source, ip_hash, user_agent)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (email_lower) DO NOTHING`,
+		signup.Email, signup.Source, signup.IPHash, signup.UserAgent)
 	return mapPgErr(err)
 }
 
